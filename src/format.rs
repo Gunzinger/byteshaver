@@ -4,16 +4,17 @@ use std::path::Path;
 ///
 /// This enumeration covers a wide range of common and less common image formats.
 /// Each variant represents a different format that an image file can be encoded in.
-/// The `Other` variant is provided to allow for formats not explicitly listed here,
-/// enabling the enumeration to hold any format specified as a `String`.
+/// The `Unknown` variant is used for formats not explicitly listed here.
 ///
 /// # Examples
 ///
 /// ```
-/// use your_crate::ImageFormat;
+/// use imgc::format::ImageFormat;
 ///
 /// let format = ImageFormat::Png;
-/// let unknown_format = ImageFormat::Other("custom-format".to_string());
+/// let unknown_format = ImageFormat::Unknown;
+/// assert_eq!(format.extension(), "png");
+/// assert_eq!(ImageFormat::from_extension("custom-format"), unknown_format);
 /// ```
 #[derive(Debug, PartialEq)]
 pub enum ImageFormat {
