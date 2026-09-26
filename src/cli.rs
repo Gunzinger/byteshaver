@@ -11,6 +11,16 @@ pub enum ExifPolicyArg {
     Filter,
 }
 
+/// Behavior when animated input meets a target that cannot encode animations.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub enum AnimatedInputArg {
+    /// Encode the first frame only, printing a notice (default).
+    #[default]
+    FirstFrame,
+    /// Fail the file with an error instead of silently dropping animation.
+    Error,
+}
+
 /// Image converter CLI
 #[derive(Parser, Debug)]
 #[command(
@@ -94,6 +104,21 @@ pub struct CliArgs {
     /// Print recognized EXIF tag names and exit.
     #[clap(long, action = Some(ArgAction::SetTrue))]
     pub exif_list_tags: Option<bool>,
+
+    /// How to treat animated input (gif / animated webp / APNG) when the
+    /// selected target cannot encode animations.
+    /// first-frame: encode the first frame only, with a notice (default).
+    /// error: fail the file with an error instead of silently dropping
+    /// the animation (for pipelines that must never drop frames).
+    #[clap(long, value_enum, value_name = "first-frame|error", global = true)]
+    pub animated_input: Option<AnimatedInputArg>,
+
+    /// Hard cap for decoded animation memory in MiB (frames are RGBA:
+    /// width x height x 4 x frames). Files whose projected frame buffers
+    /// exceed the cap fail with an error instead of risking an OOM.
+    /// Defaults to 4096.
+    #[clap(long, value_name = "MIB", global = true)]
+    pub max_animation_memory: Option<u64>,
 }
 
 /// Image converter actions
@@ -216,6 +241,70 @@ pub enum Command {
         /// Stop optimizing a file after this many seconds. Default: unlimited.
         #[clap(long, value_name = "SECS")]
         timeout_secs: Option<u64>,
+    },
+
+    /// Convert images to animated webp format (using webp-animation crate).
+    /// Supports animated input (gif, animated webp, APNG); the source loop
+    /// count is preserved. Still input becomes a 1-frame animation.
+    #[cfg(feature = "anim-webp")]
+    WebpAnim {
+        /// Use lossless encoding mode. Defaults to false.
+        #[clap(long, action = Some(ArgAction::SetTrue))]
+        lossless: Option<bool>,
+
+        /// Control target quality (0 - 100, lower is worse but results in smaller files).
+        /// In lossless mode this is the compression effort. Defaults to 90.0.
+        #[clap(short, long)]
+        quality: Option<f32>,
+
+        /// Minimum distance between keyframes (0 = libwebp default).
+        #[clap(long)]
+        kmin: Option<i32>,
+
+        /// Maximum distance between keyframes (0 = disables keyframe insertion).
+        #[clap(long)]
+        kmax: Option<i32>,
+
+        /// Minimize the output size (much slower; disables keyframe insertion).
+        #[clap(long, action = Some(ArgAction::SetTrue))]
+        minimize_size: Option<bool>,
+
+        /// Allow mixed lossy/lossless frames (libwebp picks per frame).
+        #[clap(long, action = Some(ArgAction::SetTrue))]
+        allow_mixed: Option<bool>,
+
+        /// Quality/speed trade-off (0 = fast, 6 = slower-better). Defaults to 4.
+        #[clap(long)]
+        method: Option<u8>,
+    },
+
+    /// Convert images to animated png format (APNG, using png crate).
+    /// Supports animated input (gif, animated webp, APNG); the source loop
+    /// count is preserved. Still input becomes a 1-frame animation.
+    /// The default image stays readable by non-APNG-aware viewers.
+    #[cfg(feature = "anim-apng")]
+    Apng {
+        /// Choose the png compression type (Fast pairs well with a
+        /// following oxipng post-optimization pass)
+        ///
+        /// See: https://docs.rs/image/latest/image/codecs/png/enum.CompressionType.html
+        #[clap(long, value_enum)]
+        compression_type: Option<crate::config::CompressionType>,
+
+        /// Choose the png filter type
+        ///
+        /// See: https://docs.rs/image/latest/image/codecs/png/enum.CompressionType.html
+        #[clap(long, value_enum)]
+        filter_type: Option<crate::config::FilterType>,
+    },
+
+    /// Convert images to (animated) gif format (using image crate).
+    /// Supports animated input; the source loop count is preserved.
+    /// Note: frame delays are rounded to the GIF-standard 10 ms granularity.
+    Gif {
+        /// Quantization speed (1 = best quality, 30 = fastest). Defaults to 10.
+        #[clap(long)]
+        speed: Option<i32>,
     },
 
     /// Remove files matching a glob pattern

@@ -16,7 +16,7 @@ use std::path::Path;
 /// assert_eq!(format.extension(), "png");
 /// assert_eq!(ImageFormat::from_extension("custom-format"), unknown_format);
 /// ```
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ImageFormat {
     /// AV1 Image File Format, a format designed for high compression efficiency.
     Avif,
@@ -48,6 +48,10 @@ pub enum ImageFormat {
     /// Portable Network Graphics, a raster graphics file format that supports lossless data compression.
     Png,
 
+    /// Animated Portable Network Graphics (APNG): a PNG containing an
+    /// animation (target-only pseudo format; the file itself is a PNG).
+    Apng,
+
     /// Portable anymap, a family of file formats to store bitmap images.
     Pnm,
 
@@ -64,6 +68,8 @@ pub enum ImageFormat {
     Webp,
     /// WebP, but encoded with the lossless VP8L encoder from image crate
     WebpImage,
+    /// Animated WebP (target-only pseudo format; the file itself is a WebP).
+    WebpAnim,
 
     /// Represents an image format not explicitly listed here.
     Unknown,
@@ -83,12 +89,14 @@ impl ImageFormat {
             ImageFormat::Jpeg => "jpeg",
             ImageFormat::Exr => "exr",
             ImageFormat::Png => "png",
+            ImageFormat::Apng => "png",
             ImageFormat::Pnm => "pnm",
             ImageFormat::Qoi => "qoi",
             ImageFormat::Tga => "tga",
             ImageFormat::Tiff => "tiff",
             ImageFormat::Webp => "webp",
             ImageFormat::WebpImage => "webp",
+            ImageFormat::WebpAnim => "webp",
             ImageFormat::Unknown => "?",
         }
     }
@@ -136,7 +144,8 @@ impl ImageFormat {
             ImageFormat::Tga => Some(image::ImageFormat::Tga),
             ImageFormat::Tiff => Some(image::ImageFormat::Tiff),
             ImageFormat::Webp => Some(image::ImageFormat::WebP),
-            ImageFormat::WebpImage | ImageFormat::Unknown => None,
+            ImageFormat::WebpImage | ImageFormat::WebpAnim | ImageFormat::Apng => None,
+            ImageFormat::Unknown => None,
         }
     }
 

@@ -25,7 +25,7 @@ include = [
 default-run = "byteshaver"
 
 [features]
-default = ["opt-oxipng", "exif"]
+default = ["opt-oxipng", "exif", "anim-webp", "anim-apng"]
 # Optional oxipng-based PNG re-optimization target (kept optional so
 # `--no-default-features` builds stay slim); intentionally excludes the
 # `parallel` and `binary` features of oxipng to avoid thread-pool
@@ -33,6 +33,10 @@ default = ["opt-oxipng", "exif"]
 opt-oxipng = ["dep:oxipng"]
 # EXIF/metadata handling (kamadak-exif); without it, all EXIF is stripped
 exif = ["dep:kamadak-exif"]
+# Animated WebP target (and decode-independent still targets) via webp-animation
+anim-webp = ["dep:webp-animation"]
+# Animated PNG (APNG) target via the png crate (already a direct dependency)
+anim-apng = []
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] } # 4.5.41 changes parser ordering; makes command ugly...
@@ -51,6 +55,7 @@ humansize = "2.1.3"
 oxipng = { version = "10.2", optional = true, default-features = false, features = ["zopfli"] }
 png = "0.18.1"
 kamadak-exif = { version = "0.6", optional = true }
+webp-animation = { version = "0.10", optional = true }
 
 [build-dependencies]
 cargo_metadata = "0.23.1"

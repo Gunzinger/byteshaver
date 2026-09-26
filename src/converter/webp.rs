@@ -126,7 +126,10 @@ fn encode_webp(
 ///
 /// On muxer failure the unmodified container is kept with a warning
 /// (never fail the whole encoding because of metadata).
-fn embed_exif_into_webp(webp: Vec<u8>, exif_payload: Option<&[u8]>) -> Result<Vec<u8>, Error> {
+pub(crate) fn embed_exif_into_webp(
+    webp: Vec<u8>,
+    exif_payload: Option<&[u8]>,
+) -> Result<Vec<u8>, Error> {
     let Some(payload) = exif_payload else {
         return Ok(webp);
     };

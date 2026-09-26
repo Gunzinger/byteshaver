@@ -20,12 +20,16 @@ fn main() -> Result<(), Error> {
     }
     warn_if_exif_feature_missing(&args);
     let conf = ConversionConfig::from_args(&args);
-    let mut enc = EncoderConfig::from_args(&args.command)
+    let enc = EncoderConfig::from_args(&args.command)
         .expect("conversion subcommand expected, clean is handled separately");
     #[cfg(all(feature = "opt-oxipng", feature = "exif"))]
-    if let byteshaver::config::EncoderConfig::Oxipng(oxipng_options) = &mut enc {
-        oxipng_options.exif_policy = conf.exif.clone();
-    }
+    let enc = {
+        let mut enc = enc;
+        if let byteshaver::config::EncoderConfig::Oxipng(oxipng_options) = &mut enc {
+            oxipng_options.exif_policy = conf.exif.clone();
+        }
+        enc
+    };
     run(conf, enc)?;
     Ok(())
 }
