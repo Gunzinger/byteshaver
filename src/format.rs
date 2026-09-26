@@ -207,7 +207,8 @@ mod tests {
         assert_eq!(ImageFormat::from_extension("avif"), ImageFormat::Heif);
         // case-insensitive matching
         assert_eq!(ImageFormat::from_extension("HEIC"), ImageFormat::Heif);
-        assert_eq!(ImageFormat::from_extension("jxl"), ImageFormat::Unknown);
+        // jxl is its own format (WS2), not part of the HEIF family
+        assert_eq!(ImageFormat::from_extension("jxl"), ImageFormat::Jxl);
         assert_eq!(
             ImageFormat::from(Path::new("photos/img.heic")),
             ImageFormat::Heif
