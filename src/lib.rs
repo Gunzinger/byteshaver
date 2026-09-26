@@ -7,19 +7,42 @@
 `byteshaver` simplifies the process of batch converting images,
  optimizing for both performance and storage efficiency.
 
+The crate is also a library: use [`job::JobSpec`] / [`job::JobHandle`] with a
+[`job::Reporter`] implementation to run conversions from other software without any
+terminal output, or call [`pipeline::run`] for the simplest entry point. The
+desktop GUI lives in the separate `byteshaver-gui` crate (workspace member `gui/`)
+and consumes the same job API, so its conversions are byte-identical to the CLI.
+
 */
 
 #![deny(missing_docs)]
 /// Command-line interface functionality.
 pub mod cli;
+/// User-facing configuration types (global + encoder configuration).
+pub mod config;
 /// Image conversion functionality.
 pub mod converter;
 /// Error handling for the application.
 mod error;
 /// Image formats supported by the application.
 pub mod format;
+/// Decode layer producing source images from files.
+pub mod input;
+/// Headless job API: job specs, reporters, capabilities (plan WS7).
+pub mod job;
+/// Metadata containers decoded from input images.
+pub mod metadata;
+/// Conversion pipeline (naming, collisions, statistics, entry point).
+pub mod pipeline;
 
 /// Utility functions and helpers.
 pub mod utils;
 
+pub use config::{ConversionConfig, EncoderConfig, HeifImagePolicy};
 pub use error::Error;
+pub use job::{
+    Capabilities, EncoderInfo, InputSelection, JobEvent, JobHandle, JobSpec, Reporter, RunReport,
+    Session, StopFlag,
+};
+pub use metadata::policy::{ExifPolicy, TagSelector};
+pub use pipeline::{CollisionPolicy, FileResult, Outcome, RunStats, run};

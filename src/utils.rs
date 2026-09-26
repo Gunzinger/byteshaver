@@ -1,9 +1,11 @@
+use crate::{Error, format::ImageFormat};
 use glob::glob;
+use humansize::{BINARY, FormatSizeOptions, format_size};
 use std::{fs, path::Path};
-use humansize::{format_size, FormatSizeOptions, BINARY};
-use crate::{format::ImageFormat, Error};
 
 /// Checks if the image format of the given path is supported, ignoring a specific format.
+///
+/// Only the first bytes of the file are read for header sniffing.
 ///
 /// # Arguments
 ///
@@ -14,16 +16,20 @@ use crate::{format::ImageFormat, Error};
 ///
 /// Returns `true` if the image format is supported and not ignored, `false` otherwise.
 pub fn is_supported(path: &Path, ignore_format: &ImageFormat) -> bool {
-    if let Some(extension) = path.extension() {
-        if extension == ignore_format.extension() {
-            return false;
-        }
+    if let Some(extension) = path.extension()
+        && extension == ignore_format.extension()
+    {
+        return false;
     }
 
-    match fs::read(path) {
-        Ok(data) => image::guess_format(&data).is_ok(),
-        Err(_) => false,
-    }
+    // sniffing the file header is sufficient to guess the format
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+    let mut header = [0u8; 512];
+    let read = std::io::Read::read(&mut file, &mut header).unwrap_or(0);
+    image::guess_format(&header[..read]).is_ok()
 }
 
 /// Removes files that match the given pattern.
@@ -46,8 +52,13 @@ pub fn remove_files(pattern: &str) -> Result<(), Error> {
         }
     }
     let format_option_binary_two_nospace = FormatSizeOptions::from(BINARY)
-        .decimal_places(2).decimal_zeroes(2).space_after_value(false);
-    println!("Deleted {}.", format_size(total_deleted_bytes, format_option_binary_two_nospace));
+        .decimal_places(2)
+        .decimal_zeroes(2)
+        .space_after_value(false);
+    println!(
+        "Deleted {}.",
+        format_size(total_deleted_bytes, format_option_binary_two_nospace)
+    );
 
     Ok(())
 }

@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "gui"]
+resolver = "2"
+
 [package]
 name = "byteshaver"
 version = "0.0.0-git"
@@ -24,6 +28,34 @@ include = [
 ]
 default-run = "byteshaver"
 
+[features]
+default = ["opt-oxipng", "exif", "jxl", "anim-webp", "anim-apng", "logs"]
+# Optional oxipng-based PNG re-optimization target (kept optional so
+# `--no-default-features` builds stay slim); intentionally excludes the
+# `parallel` and `binary` features of oxipng to avoid thread-pool
+# oversubscription and duplicate CLI dependencies.
+opt-oxipng = ["dep:oxipng"]
+# EXIF/metadata handling (kamadak-exif); without it, all EXIF is stripped
+exif = ["dep:kamadak-exif"]
+# Optional HEIC/HEIF/AVIF input decoding via libheif (opt-in because it needs
+# the native libheif + codec libraries, e.g. libde265/libaom, at build time);
+# without it, HEIC/HEIF/AVIF inputs report a per-file error and the batch
+# continues. Kept out of `default` so musl/windows release binaries stay
+# self-contained (see README + docs/plans/01-heic-heif-decoding.md).
+dec-heif = ["dep:libheif-rs"]
+# JPEG XL source decoding (jxl-oxide) and target encoding (in-tree FFI
+# bindings to libjxl, built by jpegxl-src). Requires cmake + a C++
+# compiler + nasm at build time. Decode-only without cmake: the encode
+# path needs the vendored libjxl build.
+jxl = ["dep:jxl-oxide", "dep:jpegxl-src", "dep:moxcms"]
+# Animated WebP target (and decode-independent still targets) via webp-animation
+anim-webp = ["dep:webp-animation"]
+# Animated PNG (APNG) target via the png crate (already a direct dependency)
+anim-apng = []
+# JSON-lines event logging (`JsonlReporter`, `--json-log`); serde itself is a
+# non-optional dependency (config types are always serializable)
+logs = ["dep:serde_json"]
+
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] } # 4.5.41 changes parser ordering; makes command ugly...
 glob = "0.3.4"
@@ -38,9 +70,31 @@ indicatif = {version = "0.18.6", features = ["rayon"]}
 mozjpeg = "0.10.13"
 jpeg-decoder = "0.3.2"
 humansize = "2.1.3"
+oxipng = { version = "10.2", optional = true, default-features = false, features = ["zopfli"] }
+png = "0.18.1"
+kamadak-exif = { version = "0.6", optional = true }
+# native HEIC/HEIF/AVIF input decoder (libheif bindings); `v1_20` is the
+# minimum-version gate (not a pin), `default-features = false` avoids its
+# `image`-integration feature (decoding is wired manually)
+libheif-rs = { version = "3", optional = true, default-features = false, features = ["v1_20"] }
+jxl-oxide = { version = "0.12", default-features = false, features = ["rayon", "moxcms", "image"], optional = true }
+moxcms = { version = "0.8", optional = true }
+jpegxl-src = { version = "0.12", optional = true }
+# `static` forces libwebp-sys2 to always build its bundled libwebp instead of
+# linking a system libwebp found via pkg-config — required for static musl
+# builds and reproducible release artifacts (a system libwebp pulled in
+# transitively, e.g. by libheif-dev, would otherwise break static linking)
+webp-animation = { version = "0.10", optional = true, features = ["static"] }
+# headless job API: config/result serialization (always on) and the JSON-lines
+# reporter (`logs` feature)
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", optional = true }
 
 [build-dependencies]
 cargo_metadata = "0.23.1"
+# build-deps cannot be optional; the build script only calls it when the
+# `jxl` feature is active (detected via the CARGO_FEATURE_JXL env var).
+jpegxl-src = "0.12"
 
 [profile.dev]
 opt-level = 2
