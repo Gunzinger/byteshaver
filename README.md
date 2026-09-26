@@ -130,7 +130,7 @@ The `jxl` target mirrors the `cjxl` option surface:
 - Building requires `cmake`, a C++ compiler and `nasm` (the vendored libjxl is compiled once
   during the cargo build).
 
-### Animations 🎞️
+## Animations 🎞️
 
 Animated inputs (`gif`, animated `webp`, `APNG`) are decoded with frame timing and
 loop count preserved, and can be re-encoded to animated targets:
@@ -154,7 +154,78 @@ with a notice. Use `--animated-input error` to fail such files instead
 `--max-animation-memory <MiB>` (default 4096) to bound the memory used by
 decoded frame buffers.
 
-### JSON logs
+## EXIF metadata 📸
+
+EXIF handling is controlled by global flags that work with every conversion
+command:
+
+```bash
+# strip all EXIF (this is the default) - orientation is baked into the pixels
+byteshaver "photos/**/*.jpg" webp
+
+# keep EXIF verbatim and embed it into the output
+byteshaver "photos/**/*.jpg" webp --exif keep
+
+# keep everything except location and camera orientation
+byteshaver "photos/**/*.jpg" webp --exif filter --exif-except gps,GPSInfo,Orientation
+
+# keep only a whitelist of tags
+byteshaver "photos/**/*.jpg" webp --exif filter --exif-only DateTimeOriginal,Make,Model
+
+# print all recognized tag names (also IFD wildcards: ifd0, exif, gps, ...)
+byteshaver --exif-list-tags
+```
+
+Policies:
+
+- `strip` (default): removes all EXIF from outputs. Privacy-safe: before the
+  pixels are re-encoded, the `Orientation` tag is applied to the image data, so
+  photos never appear rotated/sideways in software that ignores EXIF.
+- `keep`: copies EXIF verbatim into outputs where the container supports it;
+  pixels are left untouched (viewers rotate using the Orientation tag).
+- `filter`: keep all tags except `--exif-except <TAGS>`, or keep only
+  `--exif-only <TAGS>` (mutually exclusive). Tag lists accept comma-separated
+  tag names (see `--exif-list-tags`), IFD wildcards (`ifd0`, `exif`, `gps`,
+  `interop`) and numeric tags (`0x8825`). Unknown names abort with the
+  recognized set.
+
+Where EXIF ends up per target:
+
+| target | EXIF embedding |
+|--------|----------------|
+| `jpeg` | APP1 segment |
+| `png`, `apng` | `eXIf` chunk |
+| `oxipng` | `eXIf` chunk; under `keep`/`filter` metadata stripping is forced off, under `strip` an unset `--strip` is bumped to `safe` |
+| `webp`, `webp-image`, `webp-anim` | `EXIF` RIFF chunk |
+| `jxl` | `Exif` metadata box (Brotli-compressed) |
+| `avif`, `gif` | not supported — a warning is printed per file and the count appears in the run summary |
+
+Notes:
+- inputs without EXIF simply produce outputs without EXIF, regardless of policy
+  (no synthetic metadata is created),
+- when a `filter` result cannot be re-serialized, the verbatim EXIF is kept and
+  a warning is printed (EXIF is never silently lost),
+- ICC profiles are carried over where supported (e.g. `jxl`); a dedicated ICC
+  policy flag may arrive later.
+
+## Overwrite & collision behavior ♻️
+
+By default an existing output file is never touched (the file is reported as
+skipped). This can be tuned:
+
+- `--overwrite-if-smaller`: replace an existing output when the new encode is
+  smaller (keeps the best result of multiple runs),
+- `--overwrite-existing`: always replace existing outputs,
+- `--discard-if-larger-than-input`: don't write the output at all when the
+  encode is bigger than the input file (useful when re-optimizing
+  already-compressed directories).
+
+Collisions (e.g. `a.jpg` and `a.png` in one batch both map to `a.webp`): the
+first conversion wins, later ones are reported as skipped with a notice.
+Exception: multi-image HEIF expansion (`--heif-image-policy all`) always uses
+distinct names (`stem.ext`, `stem_1.ext`, ...).
+
+## JSON logs
 
 Every conversion command accepts the global `--json-log <PATH>` flag (enabled
 in default builds): alongside the regular terminal output, one JSON object per
@@ -169,7 +240,7 @@ runs; events include `Started`, `FileStarted`, `FileFinished` (with the
 per-file outcome), `ProgressStats` (running byte/count totals), `Notice`
 (warnings) and `Finished`.
 
-### GUI (desktop) 🖱️
+## GUI (desktop) 🖱️
 
 `byteshaver` ships a desktop GUI as a separate workspace crate
 (`gui/` = `byteshaver-gui`, egui/eframe): a queue-centric single window where
@@ -205,7 +276,7 @@ Notes:
   [Installation](#using-published-binaries--)); Linux builds use the X11
   windowing backend. See [gui/README.md](gui/README.md) for build details.
 
-### Requests
+## Requests
 
 If this does not cover your needs,
  please feel free to open an issue to request additional input and/or output formats.
@@ -279,6 +350,26 @@ byteshaver "examples/**/*" webp
 
 ```bash
 byteshaver "examples/**/*" webp -o output_images
+```
+
+### Common recipes 🍳
+
+```bash
+# re-optimize existing PNGs in place (bit-exact, never grows)
+byteshaver "static/**/*.png" oxipng --level 4 --overwrite-if-smaller
+
+# shrink a photo library to jpeg-xl at explicit quality
+byteshaver "photos/**/*.jpg" jxl --quality 85
+
+# convert a folder of gifs to animated webp (timing + loop count preserved)
+byteshaver "gifs/**/*.gif" webp-anim --quality 80
+
+# strip location data from everything that gets re-encoded,
+# keep all other EXIF where the target supports it
+byteshaver "camera/**/*" avif --exif filter --exif-except gps,GPSInfo
+
+# pipeline-friendly run: fail on dropped animations, log every event
+byteshaver "site/**/*" avif --animated-input error --json-log run.jsonl
 ```
 
 ### Cleaning up generated files 🧹
