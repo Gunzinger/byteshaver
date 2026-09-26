@@ -63,8 +63,6 @@ jobs:
       matrix:
         cpu_target: ${{ fromJSON(needs.matrix_prep.outputs.cpu_targets) }}
     name: Build binaries for ${{ matrix.cpu_target }}
-    env:
-      RUSTFLAGS: "-C target-cpu=${{ matrix.cpu_target }}"
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -103,6 +101,8 @@ jobs:
         run: cargo publish --allow-dirty
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
+          # host (gnu) build for verification; v3 is safe on all runner CPUs
+          RUSTFLAGS: "-C target-cpu=${{ env.BASE_CPU }}"
 
       # ---------------------------------------------------------------
       # Linux (musl, static-pie) — CLI and GUI
@@ -120,27 +120,42 @@ jobs:
       # its windows backend; the wayland feature is not target-gated
       # and must stay off for non-linux targets).
       # ---------------------------------------------------------------
+      # ---------------------------------------------------------------
+      # Linux (musl, static-pie) — CLI and GUI
+      #
+      # Target-cpu tuning is passed via CARGO_TARGET_*_RUSTFLAGS **and**
+      # the build uses an explicit --target: on a native build cargo
+      # applies rustflags to the whole graph (host units included), which
+      # compiles build scripts/proc macros with e.g. AVX-512 targeting
+      # and SIGILLs on runners without those instructions (observed with
+      # num-traits on x86-64-v4). With an explicit --target, host units
+      # (build scripts, proc macros) stay at baseline codegen while the
+      # final binaries receive the full target-cpu tuning (validated:
+      # static-pie binary contains AVX-512 instructions, all build
+      # scripts ran on a non-AVX-512 machine).
+      # ---------------------------------------------------------------
       - name: Build linux binaries (musl, in alpine container)
         shell: bash
         run: |
           echo "Building for CPU: ${{ matrix.cpu_target }} (alpine/musl)"
           docker run --rm -v "$PWD":/src -w /src \
-            -e RUSTFLAGS="${{ env.RUSTFLAGS }}" \
+            -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-cpu=${{ matrix.cpu_target }}" \
             rust:1-alpine sh -c '
               set -e
+              unset RUSTFLAGS
               apk add --no-cache nasm musl-dev gcc g++ make cmake upx file >/dev/null
               # CLI: full default features (opt-oxipng, exif, jxl, anim-webp, anim-apng, logs)
-              cargo build --release -p byteshaver
+              cargo build --release --target x86_64-unknown-linux-musl -p byteshaver
               # GUI: static, x11-only windowing
-              cargo build --release -p byteshaver-gui --no-default-features --features x11
-              upx --best target/release/byteshaver target/release/byteshaver-gui
-              file target/release/byteshaver target/release/byteshaver-gui | grep -q "static-pie" \
+              cargo build --release --target x86_64-unknown-linux-musl -p byteshaver-gui --no-default-features --features x11
+              upx --best target/x86_64-unknown-linux-musl/release/byteshaver target/x86_64-unknown-linux-musl/release/byteshaver-gui
+              file target/x86_64-unknown-linux-musl/release/byteshaver target/x86_64-unknown-linux-musl/release/byteshaver-gui | grep -q "static-pie" \
                 || (echo "ERROR: binaries are not static-pie" && exit 1)
             '
           mkdir -p current_release
           if [ "${{ matrix.cpu_target }}" == "${{ env.BASE_CPU }}" ]; then SUFFIX=""; else SUFFIX="-${{ matrix.cpu_target }}"; fi
-          cp target/release/byteshaver "current_release/byteshaver-${{ env.VERSION }}${SUFFIX}"
-          cp target/release/byteshaver-gui "current_release/byteshaver-gui-${{ env.VERSION }}${SUFFIX}"
+          cp target/x86_64-unknown-linux-musl/release/byteshaver "current_release/byteshaver-${{ env.VERSION }}${SUFFIX}"
+          cp target/x86_64-unknown-linux-musl/release/byteshaver-gui "current_release/byteshaver-gui-${{ env.VERSION }}${SUFFIX}"
           ( cd current_release && sha256sum "byteshaver-${{ env.VERSION }}${SUFFIX}" > "byteshaver-${{ env.VERSION }}${SUFFIX}.sha256" && \
             sha256sum "byteshaver-gui-${{ env.VERSION }}${SUFFIX}" > "byteshaver-gui-${{ env.VERSION }}${SUFFIX}.sha256" )
 
@@ -159,6 +174,11 @@ jobs:
           CC_x86_64_pc_windows_gnu: x86_64-w64-mingw32-gcc
           CXX_x86_64_pc_windows_gnu: x86_64-w64-mingw32-g++
           AR_x86_64_pc_windows_gnu: x86_64-w64-mingw32-ar
+          # target-scoped tuning: this is a genuine cross compile, so host
+          # units (build scripts, proc macros) use plain RUSTFLAGS (unset =>
+          # baseline codegen, safe on any runner CPU) and only windows-gnu
+          # target units receive the target-cpu flag
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS: "-C target-cpu=${{ matrix.cpu_target }}"
         run: |
           echo "Building for CPU: ${{ matrix.cpu_target }} (windows-gnu)"
           cargo build --release --target x86_64-pc-windows-gnu -p byteshaver
