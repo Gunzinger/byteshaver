@@ -4,6 +4,9 @@
 
 /// This module provides avif conversion via the ravif crate
 pub mod avif;
+/// This module provides jpeg-xl conversion via in-tree libjxl FFI bindings (WS2)
+#[cfg(feature = "jxl")]
+pub mod jxl;
 /// This module provides optimized jpeg conversion via the mozjpeg crate
 pub mod mozjpeg;
 /// This module provides optimal png conversion via the oxipng crate

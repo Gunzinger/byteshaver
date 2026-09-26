@@ -10,6 +10,8 @@ use crate::metadata::policy::{ExifPolicy, parse_tag_list};
 use clap::ValueEnum;
 
 pub use crate::converter::avif::{AlphaColorMode, AvifOptions, BitDepth, ColorModel};
+#[cfg(feature = "jxl")]
+pub use crate::converter::jxl::{JxlBitDepthChoice, JxlColorEncodingChoice, JxlOptions};
 #[cfg(feature = "opt-oxipng")]
 pub use crate::converter::oxipng::{
     OxipngFilter, OxipngInterlace, OxipngLevel, OxipngOptions, OxipngReduction, OxipngStrip,
@@ -172,6 +174,10 @@ pub enum EncoderConfig {
     Png(PngOptions),
     /// optimized jpeg encoder of the mozjpeg crate
     Jpeg,
+    /// jpeg-xl encoder of the vendored libjxl (requires the `jxl`
+    /// feature, on by default)
+    #[cfg(feature = "jxl")]
+    Jxl(JxlOptions),
     /// png re-optimization / transcoding encoder of the oxipng crate
     /// (requires the `opt-oxipng` feature, on by default)
     #[cfg(feature = "opt-oxipng")]
@@ -213,6 +219,54 @@ impl EncoderConfig {
                 filter_type: *filter_type,
             })),
             Command::Jpeg {} => Some(EncoderConfig::Jpeg),
+            #[cfg(feature = "jxl")]
+            Command::Jxl {
+                quality,
+                distance,
+                lossless,
+                effort,
+                container,
+                original_profile,
+                decoding_speed,
+                intensity_target,
+                bit_depth,
+                color_encoding,
+                settings,
+            } => {
+                if let Some(quality) = quality
+                    && !(0.0..=100.0).contains(quality)
+                {
+                    jxl_config_error("--quality must be between 0 and 100");
+                }
+                if let Some(distance) = distance
+                    && !(0.0..=25.0).contains(distance)
+                {
+                    jxl_config_error("--distance must be between 0.0 and 25.0");
+                }
+                let bit_depth = bit_depth.map(|depth| match depth {
+                    8 => JxlBitDepthChoice::Eight,
+                    16 => JxlBitDepthChoice::Sixteen,
+                    other => {
+                        jxl_config_error(&format!("--bit-depth must be 8 or 16 (got {other})"));
+                    }
+                });
+                let advanced = parse_jxl_settings(settings);
+                Some(EncoderConfig::Jxl(JxlOptions {
+                    lossless: lossless.unwrap_or_default(),
+                    quality: *quality,
+                    distance: *distance,
+                    effort: effort.unwrap_or(7),
+                    container: container.unwrap_or_default(),
+                    original_profile: original_profile.unwrap_or_default(),
+                    decoding_speed: decoding_speed.unwrap_or(0),
+                    intensity_target: *intensity_target,
+                    bit_depth,
+                    color_encoding: *color_encoding,
+                    advanced,
+                    #[cfg(feature = "exif")]
+                    exif_policy: Default::default(),
+                }))
+            }
             #[cfg(feature = "opt-oxipng")]
             Command::Oxipng {
                 level,
@@ -245,4 +299,35 @@ impl EncoderConfig {
             Command::Clean {} => None,
         }
     }
+}
+
+/// Prints a jxl configuration error and terminates with exit code 2.
+#[cfg(feature = "jxl")]
+fn jxl_config_error(message: &str) -> ! {
+    eprintln!("Error: {message}");
+    std::process::exit(2);
+}
+
+/// Parses `--setting ID=VALUE` passthrough entries into `(id, value)`
+/// pairs (WS2). The id stays unresolved here; unknown ids are reported
+/// as per-file errors listing the available set (see
+/// `converter::jxl::resolve_setting_id`).
+#[cfg(feature = "jxl")]
+fn parse_jxl_settings(settings: &[String]) -> Vec<(String, i64)> {
+    let mut parsed = Vec::with_capacity(settings.len());
+    for setting in settings {
+        let Some((id, value)) = setting.split_once('=') else {
+            jxl_config_error(&format!(
+                "invalid --setting {setting:?}; expected ID=VALUE (e.g. --setting brotli_effort=9)"
+            ));
+        };
+        let value = match value.trim().parse::<i64>() {
+            Ok(value) => value,
+            Err(_) => jxl_config_error(&format!(
+                "invalid --setting value {value:?} for id {id:?}; expected an integer"
+            )),
+        };
+        parsed.push((id.trim().to_string(), value));
+    }
+    parsed
 }

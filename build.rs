@@ -12,6 +12,14 @@ macro_rules! p {
 }
 
 fn main() {
+    // WS2: build the vendored static libjxl when the `jxl` feature is active.
+    // Build-dependencies cannot be optional, so jpegxl-src is always present
+    // here; its use is guarded by the feature environment variable instead.
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_JXL");
+    if std::env::var_os("CARGO_FEATURE_JXL").is_some() {
+        jpegxl_src::build();
+    }
+
     // Run `cargo metadata` to gather project metadata
     let metadata = MetadataCommand::new()
         .exec()

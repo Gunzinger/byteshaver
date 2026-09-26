@@ -6,6 +6,8 @@ use image::DynamicImage;
 use crate::Error;
 use crate::config::EncoderConfig;
 use crate::converter::avif::AvifEncoder;
+#[cfg(feature = "jxl")]
+use crate::converter::jxl::JxlEncoder;
 use crate::converter::mozjpeg::MozjpegEncoder;
 #[cfg(feature = "opt-oxipng")]
 use crate::converter::oxipng::OxipngEncoder;
@@ -150,6 +152,8 @@ impl EncoderRegistry {
             EncoderConfig::Avif(options) => Box::new(AvifEncoder::new(*options)),
             EncoderConfig::Png(options) => Box::new(PngEncoder::new(*options)),
             EncoderConfig::Jpeg => Box::new(MozjpegEncoder::new()),
+            #[cfg(feature = "jxl")]
+            EncoderConfig::Jxl(options) => Box::new(JxlEncoder::new(options.clone())),
             #[cfg(feature = "opt-oxipng")]
             EncoderConfig::Oxipng(options) => Box::new(OxipngEncoder::new(options.clone())),
         };

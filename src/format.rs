@@ -50,6 +50,11 @@ pub enum ImageFormat {
     /// Joint Photographic Experts Group, an image compression standard that supports lossy and lossless compression.
     Jpeg,
 
+    /// JPEG XL, a modern image compression standard supporting lossy and
+    /// lossless encoding, animation and alpha (requires the `jxl` feature;
+    /// input and output).
+    Jxl,
+
     /// OpenEXR, a high dynamic range raster file format.
     Exr,
 
@@ -90,6 +95,7 @@ impl ImageFormat {
             ImageFormat::Heif => "heif",
             ImageFormat::Ico => "ico",
             ImageFormat::Jpeg => "jpeg",
+            ImageFormat::Jxl => "jxl",
             ImageFormat::Exr => "exr",
             ImageFormat::Png => "png",
             ImageFormat::Pnm => "pnm",
@@ -147,7 +153,9 @@ impl ImageFormat {
             ImageFormat::Tga => Some(image::ImageFormat::Tga),
             ImageFormat::Tiff => Some(image::ImageFormat::Tiff),
             ImageFormat::Webp => Some(image::ImageFormat::WebP),
-            ImageFormat::WebpImage | ImageFormat::Unknown => None,
+            // jxl is decoded by jxl-oxide (not the image crate); handled
+            // by the dedicated input module
+            ImageFormat::Jxl | ImageFormat::WebpImage | ImageFormat::Unknown => None,
         }
     }
 
@@ -164,6 +172,7 @@ impl ImageFormat {
             "hdr" => ImageFormat::Hdr,
             "ico" => ImageFormat::Ico,
             "jpeg" | "jpg" | "pjpeg" => ImageFormat::Jpeg,
+            "jxl" => ImageFormat::Jxl,
             "exr" => ImageFormat::Exr,
             "png" | "x-png" => ImageFormat::Png,
             "pnm" => ImageFormat::Pnm,

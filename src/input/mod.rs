@@ -7,6 +7,9 @@
 pub mod animation;
 #[cfg(feature = "dec-heif")]
 mod heif;
+/// JPEG XL source decoding via jxl-oxide (WS2).
+#[cfg(feature = "jxl")]
+pub mod jxl;
 
 use std::fs;
 use std::io::BufReader;
@@ -92,6 +95,18 @@ pub fn load_source_with_index(
     path: &Path,
     image_index: Option<usize>,
 ) -> Result<SourceImage, Error> {
+    // JPEG XL is not known to the image crate; route it to the dedicated
+    // jxl-oxide decoder before the generic format detection kicks in.
+    if ImageFormat::from(path) == ImageFormat::Jxl {
+        #[cfg(feature = "jxl")]
+        return jxl::load_source_jxl(path);
+        #[cfg(not(feature = "jxl"))]
+        return Err(Error::from_string(format!(
+            "JPEG XL support is not compiled in (feature \"jxl\" disabled): {}",
+            path.display()
+        )));
+    }
+
     // HEIC/HEIF/HIF/AVIF containers are decoded by libheif, not the image
     // crate; without the `dec-heif` feature they report a per-file error and
     // the batch continues

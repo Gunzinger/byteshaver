@@ -171,6 +171,58 @@ pub enum Command {
     /// Convert images to optimized jpeg format (using mozjpeg crate)
     Jpeg {},
 
+    /// Convert images to jpeg-xl format (using libjxl)
+    #[cfg(feature = "jxl")]
+    Jxl {
+        /// JPEG-style quality 0-100 (higher = better). Mutually exclusive with --distance.
+        #[clap(short, long, group = "jxl-quality-group")]
+        quality: Option<f32>,
+
+        /// Maximum Butteraugli distance 0.0-25.0 (0.0 = mathematically lossless,
+        /// 1.0 = visually lossless, libjxl default 1.0). Mutually exclusive with --quality.
+        #[clap(long, group = "jxl-quality-group")]
+        distance: Option<f32>,
+
+        /// Lossless mode. Overrides quality/distance.
+        #[clap(long, action = Some(ArgAction::SetTrue))]
+        lossless: Option<bool>,
+
+        /// Encoding effort 1 (fastest) - 10 (slowest/best). Defaults to 7.
+        #[clap(short, long, value_parser = clap::value_parser!(u8).range(1..=10))]
+        effort: Option<u8>,
+
+        /// Force the box-based container format (required for manual Exif/XMP embedding;
+        /// auto-enabled when EXIF is embedded).
+        #[clap(long, action = Some(ArgAction::SetTrue))]
+        container: Option<bool>,
+
+        /// Keep the original color profile (do not convert to internal XYB); needed for lossless.
+        #[clap(long, action = Some(ArgAction::SetTrue))]
+        original_profile: Option<bool>,
+
+        /// Target decode speed tier 0-4 (higher = faster decode, larger file). Defaults to 0.
+        #[clap(long, value_parser = clap::value_parser!(u8).range(0..=4))]
+        decoding_speed: Option<u8>,
+
+        /// Photometric target intensity in nits (HDR). Defaults to libjxl's 255.
+        #[clap(long)]
+        intensity_target: Option<f32>,
+
+        /// Force output bit depth: 8 or 16 (default: follow the input).
+        #[clap(long, value_parser = clap::value_parser!(u8).range(8..=16))]
+        bit_depth: Option<u8>,
+
+        /// Color encoding: srgb | linear-srgb | srgb-luma | linear-srgb-luma | icc-passthrough.
+        /// Defaults to srgb.
+        #[clap(long, value_enum)]
+        color_encoding: Option<crate::config::JxlColorEncodingChoice>,
+
+        /// Advanced: repeatable libjxl frame-setting passthrough, e.g. --setting brotli_effort=9
+        /// (ids are resolved case-insensitively; unknown ids list the available set).
+        #[clap(long = "setting", value_name = "ID=VALUE")]
+        settings: Vec<String>,
+    },
+
     /// Convert images to optimally compressed png format (using oxipng)
     #[cfg(feature = "opt-oxipng")]
     Oxipng {

@@ -628,10 +628,18 @@ fn exif_list_tags_output_stable() {
 }
 
 /// The JXL box payload convention (offset prefix + TIFF stream).
+///
+/// WS2 correction: the offset is big-endian and measured from behind the
+/// 4-byte offset field (libjxl reads the TIFF header at
+/// `box_payload[4 + offset]`); with the four alignment padding bytes the
+/// offset value is `4`, so the TIFF header sits 8 bytes into the payload.
 #[test]
 fn exif_for_jxl_uses_offset_prefix() {
     let payload = metadata::exif_for_jxl(b"II*\0");
-    assert_eq!(payload, vec![8, 0, 0, 0, 0, 0, 0, 0, b'I', b'I', b'*', 0]);
+    assert_eq!(payload, vec![0, 0, 0, 4, 0, 0, 0, 0, b'I', b'I', b'*', 0]);
+    // a reader following the offset must land exactly on the TIFF header
+    let offset = u32::from_be_bytes(payload[..4].try_into().expect("4 bytes")) as usize;
+    assert_eq!(&payload[4 + offset..], b"II*\0");
 }
 
 /// Extraction normalizes payloads for every spliced container type.

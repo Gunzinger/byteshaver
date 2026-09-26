@@ -55,18 +55,21 @@ pub fn normalize_exif_payload(raw: Vec<u8>) -> Option<Vec<u8>> {
     }
 }
 
-/// Builds the Exif box payload for JPEG XL (WS2): a 4-byte little-endian
-/// TIFF-header offset prefix followed by the TIFF stream.
+/// Builds the Exif box payload for JPEG XL (WS2): a 4-byte TIFF-header
+/// offset prefix followed by four padding bytes and the TIFF stream.
 ///
-/// Following the libjxl convention the offset is `8`: four bytes for the
-/// offset field plus four padding bytes keep the TIFF header 8-byte aligned
-/// inside the box.
+/// The offset is a **big-endian** `u32`; both libjxl (`LoadBE32`, TIFF
+/// header at `box_payload[4 + offset]`) and jxl-oxide (`tiff_header_offset`,
+/// TIFF header at `payload()[offset]` = `box_payload[4 + offset]`) measure
+/// it from *behind* the 4-byte offset field. With the four padding bytes
+/// used here (keeping the TIFF header 8-byte aligned inside the box) the
+/// correct offset value is `4`.
 ///
 /// Plain bytes helper, deliberately available without the `exif` feature.
 #[must_use]
 pub fn exif_for_jxl(tiff_payload: &[u8]) -> Vec<u8> {
     let mut payload = Vec::with_capacity(8 + tiff_payload.len());
-    payload.extend_from_slice(&8u32.to_le_bytes());
+    payload.extend_from_slice(&4u32.to_be_bytes());
     payload.extend_from_slice(&[0, 0, 0, 0]);
     payload.extend_from_slice(tiff_payload);
     payload
@@ -103,10 +106,9 @@ pub fn resolve(_policy: &policy::ExifPolicy, _meta: &ImageMetadata) -> Option<Ve
 /// [`ImageMetadata::exif`] (normalized to raw TIFF) and set
 /// `exif_applied_orientation` per whether the decoder baked the transform in.
 ///
-/// TODO(WS2 JXL): extraction uses `aux_boxes().first_exif()` minus the
-/// 4-byte `tiff_header_offset()` prefix once the jxl-oxide input module
-/// exists; the box payload convention is documented in
-/// [`exif_for_jxl`].
+/// WS2 JXL: extraction is implemented in `input::jxl` via
+/// `aux_boxes().first_exif()` minus the offset prefix; the box payload
+/// convention is documented in [`exif_for_jxl`].
 #[cfg(feature = "exif")]
 #[must_use]
 pub fn extract_exif_fallback(
@@ -167,8 +169,14 @@ mod tests {
     fn jxl_payload_uses_offset_prefix_convention() {
         let tiff = b"II*\0\x08\0\0\0";
         let payload = exif_for_jxl(tiff);
-        assert_eq!(&payload[..4], &8u32.to_le_bytes());
+        // the offset is big-endian and measured from behind the offset
+        // field (libjxl `box_payload[4 + offset]`, jxl-oxide convention);
+        // with the 4 padding bytes the TIFF header sits at payload byte 8
+        assert_eq!(&payload[..4], &4u32.to_be_bytes());
         assert_eq!(&payload[4..8], &[0, 0, 0, 0]);
         assert_eq!(&payload[8..], tiff);
+        // a reader following the offset must land exactly on the TIFF header
+        let offset = u32::from_be_bytes(payload[..4].try_into().expect("4 bytes")) as usize;
+        assert_eq!(&payload[4 + offset..], tiff);
     }
 }

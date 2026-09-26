@@ -48,7 +48,7 @@ Compression ratio: 54.95%
 
 ### Input formats 🖼️
 
-To keep it simple: `JPEG`, `PNG`, `GIF`, `WebP`, `BMP`, `DDS`, `Farbfeld`, `HDR`, `ICO`, `EXR`, `PNM`, `QOI`, `TGA`, `TIFF`
+To keep it simple: `JPEG`, `PNG`, `GIF`, `WebP`, `JPEG XL`, `BMP`, `DDS`, `Farbfeld`, `HDR`, `ICO`, `EXR`, `PNM`, `QOI`, `TGA`, `TIFF`
 
 Input images are decoded using the `image` crate,
  please see [their documentation for supported image formats](https://docs.rs/image/0.25.6/image/codecs/index.html#supported-formats).
@@ -68,6 +68,10 @@ rest of the batch keeps converting. Please note that the **release musl and wind
 binaries are built without** `dec-heif` (the native libheif + codec libraries cannot be
 bundled there yet), while the **docker images include it**.
 
+`JPEG XL` (`.jxl`) inputs are decoded with [`jxl-oxide`](https://crates.io/crates/jxl-oxide)
+ (still images and animations, 8/16-bit, EXIF/XMP boxes and ICC profiles).
+ Requires the `jxl` feature (enabled by default).
+
 ### Output formats 📤
 
 - `webp`, webp encoder using the `webp` crate (libwebp bindings) - offers lossy and lossless encoding
@@ -75,6 +79,10 @@ bundled there yet), while the **docker images include it**.
 - `avif`, avif encoder using the `ravif` crate - offers lossy and lossless encoding
 - `png`, png encoder using the `image` crate - offers lossless encoding
 - `jpeg`, jpeg optimizer using the `mozjpeg` crate - only optimizes images
+- `jxl`, jpeg-xl encoder using in-tree FFI bindings to `libjxl` (vendored static build via `jpegxl-src`) - offers
+  lossy and lossless encoding, real animated output (frame durations), EXIF embedding and the full
+  `JxlEncoderFrameSettingId` surface via repeatable `--setting ID=VALUE` flags. Requires the `jxl` feature
+  (enabled by default) and `cmake`, a C++ compiler and `nasm` at build time.
 
 #### Output format notes 📝
 
@@ -85,6 +93,25 @@ In particular:
   [Baseline Profile](https://aomediacodec.github.io/av1-avif/#baseline-profile)
   and [Advanced Profile](https://aomediacodec.github.io/av1-avif/#advanced-profile)
   limits if you want to be friendly to consuming hardware decoders. :)
+- `jxl`: maximum dimension of [262144x262144px](https://docs.rs/libjxl/latest/jxl/schema.html) (level 5 codestream);
+  animation frame delays are stored in millisecond ticks (sub-millisecond remainders are truncated)
+
+### JPEG XL notes 📝
+
+The `jxl` target mirrors the `cjxl` option surface:
+
+- `--quality` (JPEG-style 0-100) and `--distance` (Butteraugli 0.0-25.0) are mutually exclusive;
+  the mapping between them follows libjxl's own `JxlEncoderDistanceFromQuality`.
+- `--lossless` enables true bit-exact encoding (implies `--original-profile`).
+- `--effort 1..=10` (default 7), `--decoding-speed 0..=4` (default 0).
+- `--color-encoding` selects sRGB/linear sRGB (grayscale flavors for gray inputs) or
+  `--color-encoding icc-passthrough` to embed the source ICC profile verbatim.
+- EXIF metadata follows the global `--exif` policy and is embedded as a (Brotli-compressed)
+  `Exif` metadata box, which automatically enables the box-based container.
+- Advanced libjxl frame settings can be passed through verbatim, e.g. `--setting brotli_effort=9`
+  or `--setting modular=1` (ids resolve case-insensitively; unknown ids print the full list).
+- Building requires `cmake`, a C++ compiler and `nasm` (the vendored libjxl is compiled once
+  during the cargo build).
 
 ### Requests
 
@@ -170,6 +197,7 @@ Commands:
   avif        Convert images to avif format (using ravif crate)
   png         Convert images to png format (using image crate)
   jpeg        Convert images to optimized jpeg format (using mozjpeg crate)
+  jxl         Convert images to jpeg-xl format (using libjxl)
   clean       Remove files matching a glob pattern
   help        Print this message or the help of the given subcommand(s)
 
@@ -325,6 +353,36 @@ Options:
   -h, --help                          Print help
 ```
 
+For the `jxl` command:
+
+```bash
+❯ byteshaver jxl --help
+Convert images to jpeg-xl format (using libjxl)
+
+Usage: byteshaver <PATTERN> jxl [OPTIONS]
+
+Options:
+  -q, --quality <QUALITY>             JPEG-style quality 0-100 (higher = better). Mutually exclusive with --distance
+      --distance <DISTANCE>           Maximum Butteraugli distance 0.0-25.0 (0.0 = mathematically lossless, 1.0 = visually lossless, libjxl default 1.0). Mutually exclusive with --quality
+      --lossless                      Lossless mode. Overrides quality/distance
+  -e, --effort <EFFORT>               Encoding effort 1 (fastest) - 10 (slowest/best). Defaults to 7
+      --container                     Force the box-based container format (required for manual Exif/XMP embedding; auto-enabled when EXIF is embedded)
+      --original-profile              Keep the original color profile (do not convert to internal XYB); needed for lossless
+      --decoding-speed <DECODING_SPEED>  Target decode speed tier 0-4 (higher = faster decode, larger file). Defaults to 0
+      --intensity-target <INTENSITY_TARGET>  Photometric target intensity in nits (HDR). Defaults to libjxl's 255
+      --bit-depth <BIT_DEPTH>         Force output bit depth: 8 or 16 (default: follow the input)
+      --color-encoding <COLOR_ENCODING>  Color encoding: srgb | linear-srgb | srgb-luma | linear-srgb-luma | icc-passthrough. Defaults to srgb
+      --setting <ID=VALUE>            Advanced: repeatable libjxl frame-setting passthrough, e.g. --setting brotli_effort=9 (ids are resolved case-insensitively; unknown ids list the available set)
+  -o, --output <OUTPUT>               Output directory (flat) of processed images. Defaults to the same location as the original images with the new file extension. If set, replaces the fixed base of the pattern directory structure of the input pattern. (before any * in the glob pattern)
+      --reverse-processing-order      By default, byteshaver will process input files in lexicographical order after expanding the pattern. Setting this starts the process from the back
+      --overwrite-if-smaller          Overwrite the existing output file if the current conversion resulted in a smaller file
+      --overwrite-existing            Overwrite existing output files regardless of size
+      --discard-if-larger-than-input  Discards the encoding result if it is larger than the input file (does not create an output file)
+      --discard-input-alpha-channel   Discards the alpha channel of the input image(s) if it is present. (this does not make loading faster, but it can improve the encoding result)
+  -h, --help                          Print help
+
+```
+
 For the `clean` command:
 
 ```bash
@@ -383,6 +441,9 @@ Example of clean command:
 - Ensure you have the latest stable version of `Rust` and `Cargo` installed on your system.
 - [Nasm](https://www.nasm.us/) is needed for building `rav1e`.
   Install via `apt install nasm` / `apk add nasm` / `choco install nasm`.
+- `cmake`, a C++ compiler and `nasm` are needed for building the vendored `libjxl`
+  (jpeg-xl support; enabled by default via the `jxl` feature).
+  Install via `apt install cmake g++ nasm` / `apk add cmake g++ nasm`.
 
 ### Installation Guide
 

@@ -25,7 +25,7 @@ include = [
 default-run = "byteshaver"
 
 [features]
-default = ["opt-oxipng", "exif"]
+default = ["opt-oxipng", "exif", "jxl"]
 # Optional oxipng-based PNG re-optimization target (kept optional so
 # `--no-default-features` builds stay slim); intentionally excludes the
 # `parallel` and `binary` features of oxipng to avoid thread-pool
@@ -39,6 +39,11 @@ exif = ["dep:kamadak-exif"]
 # continues. Kept out of `default` so musl/windows release binaries stay
 # self-contained (see README + docs/plans/01-heic-heif-decoding.md).
 dec-heif = ["dep:libheif-rs"]
+# JPEG XL source decoding (jxl-oxide) and target encoding (in-tree FFI
+# bindings to libjxl, built by jpegxl-src). Requires cmake + a C++
+# compiler + nasm at build time. Decode-only without cmake: the encode
+# path needs the vendored libjxl build.
+jxl = ["dep:jxl-oxide", "dep:jpegxl-src", "dep:moxcms"]
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] } # 4.5.41 changes parser ordering; makes command ugly...
@@ -61,9 +66,15 @@ kamadak-exif = { version = "0.6", optional = true }
 # minimum-version gate (not a pin), `default-features = false` avoids its
 # `image`-integration feature (decoding is wired manually)
 libheif-rs = { version = "3", optional = true, default-features = false, features = ["v1_20"] }
+jxl-oxide = { version = "0.12", default-features = false, features = ["rayon", "moxcms", "image"], optional = true }
+moxcms = { version = "0.8", optional = true }
+jpegxl-src = { version = "0.12", optional = true }
 
 [build-dependencies]
 cargo_metadata = "0.23.1"
+# build-deps cannot be optional; the build script only calls it when the
+# `jxl` feature is active (detected via the CARGO_FEATURE_JXL env var).
+jpegxl-src = "0.12"
 
 [profile.dev]
 opt-level = 2
