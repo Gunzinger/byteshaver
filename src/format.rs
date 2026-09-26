@@ -93,6 +93,53 @@ impl ImageFormat {
         }
     }
 
+    /// Map a format of the `image` crate to the internal representation.
+    pub fn from_image_format(format: image::ImageFormat) -> Self {
+        match format {
+            image::ImageFormat::Avif => ImageFormat::Avif,
+            image::ImageFormat::Bmp => ImageFormat::Bmp,
+            image::ImageFormat::Dds => ImageFormat::Dds,
+            image::ImageFormat::Farbfeld => ImageFormat::Farbfeld,
+            image::ImageFormat::Gif => ImageFormat::Gif,
+            image::ImageFormat::Hdr => ImageFormat::Hdr,
+            image::ImageFormat::Ico => ImageFormat::Ico,
+            image::ImageFormat::Jpeg => ImageFormat::Jpeg,
+            image::ImageFormat::OpenExr => ImageFormat::Exr,
+            image::ImageFormat::Png => ImageFormat::Png,
+            image::ImageFormat::Pnm => ImageFormat::Pnm,
+            image::ImageFormat::Qoi => ImageFormat::Qoi,
+            image::ImageFormat::Tga => ImageFormat::Tga,
+            image::ImageFormat::Tiff => ImageFormat::Tiff,
+            image::ImageFormat::WebP => ImageFormat::Webp,
+            // the image crate may grow formats this crate does not know yet
+            _ => ImageFormat::Unknown,
+        }
+    }
+
+    /// Map to the corresponding format of the `image` crate.
+    ///
+    /// Returns `None` for pseudo formats that the `image` crate does not know.
+    pub fn to_image_format(&self) -> Option<image::ImageFormat> {
+        match self {
+            ImageFormat::Avif => Some(image::ImageFormat::Avif),
+            ImageFormat::Bmp => Some(image::ImageFormat::Bmp),
+            ImageFormat::Dds => Some(image::ImageFormat::Dds),
+            ImageFormat::Farbfeld => Some(image::ImageFormat::Farbfeld),
+            ImageFormat::Gif => Some(image::ImageFormat::Gif),
+            ImageFormat::Hdr => Some(image::ImageFormat::Hdr),
+            ImageFormat::Ico => Some(image::ImageFormat::Ico),
+            ImageFormat::Jpeg => Some(image::ImageFormat::Jpeg),
+            ImageFormat::Exr => Some(image::ImageFormat::OpenExr),
+            ImageFormat::Png => Some(image::ImageFormat::Png),
+            ImageFormat::Pnm => Some(image::ImageFormat::Pnm),
+            ImageFormat::Qoi => Some(image::ImageFormat::Qoi),
+            ImageFormat::Tga => Some(image::ImageFormat::Tga),
+            ImageFormat::Tiff => Some(image::ImageFormat::Tiff),
+            ImageFormat::Webp => Some(image::ImageFormat::WebP),
+            ImageFormat::WebpImage | ImageFormat::Unknown => None,
+        }
+    }
+
     /// Determine the image format based on the file extension
     pub fn from_extension(ext: &str) -> Self {
         match ext.to_ascii_lowercase().as_str() {

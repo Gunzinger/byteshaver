@@ -1,26 +1,55 @@
-use crate::Error;
-use image::{DynamicImage, ImageEncoder};
-use crate::converter::DEPENDENCIES;
+//! This module provides png conversion via the image crate
 
-macro_rules! copy_enum_variants {
-    ($name:ident, $($variant:ident),*) => {
-        #[allow(missing_docs)]
-        #[derive(clap::ValueEnum, Clone, Copy, PartialEq, Eq, Debug)]
-        pub enum $name {
-            $($variant),*
-        }
-    };
+use crate::Error;
+use crate::converter::DEPENDENCIES;
+use crate::format::ImageFormat;
+use clap::ValueEnum;
+use image::{DynamicImage, ImageEncoder as _};
+
+/// Compression type of the png encoder from the image crate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum CompressionType {
+    /// Default compression level.
+    Default,
+    /// High compression level, low performance.
+    Best,
+    /// Low compression level, high performance.
+    Fast,
 }
 
-// re-imported enums from the image crates png encoder (so that they are usable in cli arguments)
-copy_enum_variants!(CompressionType, Default, Fast, Best);
-copy_enum_variants!(FilterType, NoFilter, Sub, Up, Avg, Paeth, Adaptive);
+/// Filter type of the png encoder from the image crate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum FilterType {
+    /// No filtering applied.
+    NoFilter,
+    /// Subtractive filtering.
+    Sub,
+    /// Upwards filtering.
+    Up,
+    /// Average filtering.
+    Avg,
+    /// Paeth filtering.
+    Paeth,
+    /// Adaptive filtering per scanline.
+    Adaptive,
+}
 
-fn convert_compression_type_to_ext(compression_type: Option<CompressionType>) -> image::codecs::png::CompressionType {
+/// Options of the image-crate png encoder.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PngOptions {
+    /// PNG compression type. Defaults to the encoder default.
+    pub compression_type: Option<CompressionType>,
+    /// PNG filter type. Defaults to the encoder default.
+    pub filter_type: Option<FilterType>,
+}
+
+fn convert_compression_type_to_ext(
+    compression_type: Option<CompressionType>,
+) -> image::codecs::png::CompressionType {
     match compression_type.unwrap_or(CompressionType::Default) {
         CompressionType::Default => image::codecs::png::CompressionType::Default,
         CompressionType::Fast => image::codecs::png::CompressionType::Fast,
-        CompressionType::Best => image::codecs::png::CompressionType::Best
+        CompressionType::Best => image::codecs::png::CompressionType::Best,
     }
 }
 fn convert_filter_type_to_ext(filter_type: Option<FilterType>) -> image::codecs::png::FilterType {
@@ -34,8 +63,43 @@ fn convert_filter_type_to_ext(filter_type: Option<FilterType>) -> image::codecs:
     }
 }
 
+/// Encoder for png format using the image crate.
+pub struct PngEncoder {
+    /// Encoding options.
+    pub options: PngOptions,
+}
+
+impl PngEncoder {
+    /// Creates an encoder with the given options.
+    pub fn new(options: PngOptions) -> Self {
+        PngEncoder { options }
+    }
+}
+
+impl super::ImageEncoder for PngEncoder {
+    fn format(&self) -> ImageFormat {
+        ImageFormat::Png
+    }
+
+    fn extension(&self) -> &'static str {
+        "png"
+    }
+
+    fn describe(&self) -> String {
+        encoder_info()
+    }
+
+    fn encode_still_image(&self, image: &DynamicImage) -> Result<Vec<u8>, Error> {
+        encode_png(
+            image,
+            self.options.compression_type,
+            self.options.filter_type,
+        )
+    }
+}
+
 /// Provides encoder information
-pub fn encoder_info() -> String {
+fn encoder_info() -> String {
     // we might have multiple versions of the package, use rfind to find the newest one
     let mut image_version = "";
     match DEPENDENCIES.iter().rfind(|&&(name, _)| name == "image") {
@@ -43,42 +107,50 @@ pub fn encoder_info() -> String {
             image_version = version;
         }
         None => {
-            println!("Package '{}' not found", "image");
+            println!("Package 'image' not found");
         }
     };
 
-    format!(
-        "Using \"png (from image crate)\" ({})",
-        image_version
-    )
+    format!("Using \"png (from image crate)\" ({})", image_version)
 }
 
-
-/// Encodes a `DynamicImage` to bytes of webp format
-pub fn encode_png(image: &DynamicImage, compression_type: Option<CompressionType>, filter_type: Option<FilterType>) -> Result<Vec<u8>, Error> {
+/// Encodes a `DynamicImage` to bytes of png format
+fn encode_png(
+    image: &DynamicImage,
+    compression_type: Option<CompressionType>,
+    filter_type: Option<FilterType>,
+) -> Result<Vec<u8>, Error> {
     let mut output = Vec::new();
-    let ext_compression_type = convert_compression_type_to_ext(compression_type);// default is fast
+    let ext_compression_type = convert_compression_type_to_ext(compression_type); // default is fast
     let ext_filter_type = convert_filter_type_to_ext(filter_type); // default is adaptive
     if image.color().has_alpha() {
         let source_image = image.to_rgba8();
-        image::codecs::png::PngEncoder::new_with_quality(&mut output, ext_compression_type, ext_filter_type)
-            .write_image(
-                source_image.as_ref(),
-                image.width(),
-                image.height(),
-                image::ExtendedColorType::Rgba8,
-            )
-            .map_err(|e| Error::from_string(format!("png encoding failed: {:?}", e)))?;
+        image::codecs::png::PngEncoder::new_with_quality(
+            &mut output,
+            ext_compression_type,
+            ext_filter_type,
+        )
+        .write_image(
+            source_image.as_ref(),
+            image.width(),
+            image.height(),
+            image::ExtendedColorType::Rgba8,
+        )
+        .map_err(|e| Error::from_string(format!("png encoding failed: {:?}", e)))?;
     } else {
         let source_image = image.to_rgb8();
-        image::codecs::png::PngEncoder::new_with_quality(&mut output, ext_compression_type, ext_filter_type)
-            .write_image(
-                source_image.as_ref(),
-                image.width(),
-                image.height(),
-                image::ExtendedColorType::Rgb8,
-            )
-            .map_err(|e| Error::from_string(format!("png encoding failed: {:?}", e)))?;
+        image::codecs::png::PngEncoder::new_with_quality(
+            &mut output,
+            ext_compression_type,
+            ext_filter_type,
+        )
+        .write_image(
+            source_image.as_ref(),
+            image.width(),
+            image.height(),
+            image::ExtendedColorType::Rgb8,
+        )
+        .map_err(|e| Error::from_string(format!("png encoding failed: {:?}", e)))?;
     }
     Ok(output)
 }
