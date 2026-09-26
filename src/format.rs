@@ -36,6 +36,14 @@ pub enum ImageFormat {
     /// High Dynamic Range Image File Format, a raster graphics file format for high dynamic range images.
     Hdr,
 
+    /// HEIF container family (HEIC/HEIF/HIF still images and AVIF stills),
+    /// decoded via libheif when the `dec-heif` feature is enabled.
+    ///
+    /// Input-only: this crate never encodes into the HEIF container, so
+    /// [`ImageFormat::extension`] reports `"heif"` and no encoder accepts it
+    /// as a target format.
+    Heif,
+
     /// Icon, a bitmap image format used for icons in Microsoft Windows.
     Ico,
 
@@ -79,6 +87,7 @@ impl ImageFormat {
             ImageFormat::Farbfeld => "ff",
             ImageFormat::Gif => "gif",
             ImageFormat::Hdr => "hdr",
+            ImageFormat::Heif => "heif",
             ImageFormat::Ico => "ico",
             ImageFormat::Jpeg => "jpeg",
             ImageFormat::Exr => "exr",
@@ -127,6 +136,8 @@ impl ImageFormat {
             ImageFormat::Farbfeld => Some(image::ImageFormat::Farbfeld),
             ImageFormat::Gif => Some(image::ImageFormat::Gif),
             ImageFormat::Hdr => Some(image::ImageFormat::Hdr),
+            // HEIF/HEIC/AVIF input is decoded by libheif (input-only format)
+            ImageFormat::Heif => None,
             ImageFormat::Ico => Some(image::ImageFormat::Ico),
             ImageFormat::Jpeg => Some(image::ImageFormat::Jpeg),
             ImageFormat::Exr => Some(image::ImageFormat::OpenExr),
@@ -143,7 +154,9 @@ impl ImageFormat {
     /// Determine the image format based on the file extension
     pub fn from_extension(ext: &str) -> Self {
         match ext.to_ascii_lowercase().as_str() {
-            "avif" => ImageFormat::Avif,
+            // avif stills live in the HEIF container family (input decoding
+            // via libheif); the `Avif` variant is output-only (ravif encoder)
+            "heif" | "heic" | "hif" | "avif" => ImageFormat::Heif,
             "bmp" => ImageFormat::Bmp,
             "dds" => ImageFormat::Dds,
             "ff" | "farbfeld" => ImageFormat::Farbfeld,
@@ -169,5 +182,48 @@ impl From<&Path> for ImageFormat {
             Some(ext) => ImageFormat::from_extension(ext),
             None => ImageFormat::Unknown,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn heif_extension_family_maps_to_heif() {
+        assert_eq!(ImageFormat::from_extension("heif"), ImageFormat::Heif);
+        assert_eq!(ImageFormat::from_extension("heic"), ImageFormat::Heif);
+        assert_eq!(ImageFormat::from_extension("hif"), ImageFormat::Heif);
+        // avif stills are decoded through the HEIF container path
+        assert_eq!(ImageFormat::from_extension("avif"), ImageFormat::Heif);
+        // case-insensitive matching
+        assert_eq!(ImageFormat::from_extension("HEIC"), ImageFormat::Heif);
+        assert_eq!(ImageFormat::from_extension("jxl"), ImageFormat::Unknown);
+        assert_eq!(
+            ImageFormat::from(Path::new("photos/img.heic")),
+            ImageFormat::Heif
+        );
+        assert_eq!(
+            ImageFormat::from(Path::new("photos/no_ext")),
+            ImageFormat::Unknown
+        );
+    }
+
+    #[test]
+    fn heif_is_input_only() {
+        // reports a container extension, never a target extension
+        assert_eq!(ImageFormat::Heif.extension(), "heif");
+        // the image crate cannot be asked to decode/encode HEIF containers
+        assert_eq!(ImageFormat::Heif.to_image_format(), None);
+    }
+
+    #[test]
+    fn avif_remains_the_output_format_of_the_ravif_encoder() {
+        assert_eq!(ImageFormat::Avif.extension(), "avif");
+        assert_eq!(
+            ImageFormat::from_extension("png"),
+            ImageFormat::Png,
+            "non-heif extension mapping is untouched"
+        );
     }
 }

@@ -263,6 +263,75 @@ fn claim_output(claimed_outputs: &ClaimedOutputs, output_path: &Path) -> bool {
         .insert(output_path.to_path_buf())
 }
 
+/// A single work item of the processing queue: a plain input file, or one
+/// image of a multi-image HEIC/HEIF container (`--heif-image-policy all`,
+/// `dec-heif` feature).
+#[derive(Clone, Debug)]
+enum WorkItem {
+    /// One file maps to one output.
+    Single(PathBuf),
+    /// The `index`-th image (0-based) of a HEIF container holding multiple
+    /// master images; outputs get `stem_N.ext` suffixes for index > 0.
+    #[cfg_attr(not(feature = "dec-heif"), allow(dead_code))]
+    HeifMulti { path: PathBuf, index: usize },
+}
+
+impl WorkItem {
+    fn path(&self) -> &Path {
+        match self {
+            WorkItem::Single(path) | WorkItem::HeifMulti { path, .. } => path,
+        }
+    }
+}
+
+/// Expands a discovered input path into its work items: plain files stay
+/// single items; HEIF containers are expanded to one item per image when the
+/// `all` policy is active (`dec-heif` feature).
+///
+/// A container that cannot be probed stays a single item so the actual
+/// error surfaces per-file in the conversion worker.
+#[cfg(feature = "dec-heif")]
+fn expand_work_item(path: PathBuf, heif_policy: crate::config::HeifImagePolicy) -> Vec<WorkItem> {
+    if heif_policy == crate::config::HeifImagePolicy::All
+        && ImageFormat::from(path.as_path()) == ImageFormat::Heif
+        && let Ok(total) = input::heif_probe(&path)
+        && total > 1
+    {
+        return (0..total)
+            .map(|index| WorkItem::HeifMulti {
+                path: path.clone(),
+                index,
+            })
+            .collect();
+    }
+    vec![WorkItem::Single(path)]
+}
+
+/// Feature-less fallback of [`expand_work_item`]: every file stays a single
+/// work item (HEIF input fails per-file at load time).
+#[cfg(not(feature = "dec-heif"))]
+fn expand_work_item(path: PathBuf, _heif_policy: crate::config::HeifImagePolicy) -> Vec<WorkItem> {
+    vec![WorkItem::Single(path)]
+}
+
+/// Output file path for the `index`-th image of a multi-image container:
+/// the base output path for the first image (index 0), `stem_1.ext`,
+/// `stem_2.ext`, ... for the following ones (the suffix style of the
+/// reserved `CollisionPolicy::Suffix` variant, applied deterministically
+/// per index).
+fn suffixed_image_path(output_path: &Path, index: usize) -> PathBuf {
+    if index == 0 {
+        return output_path.to_path_buf();
+    }
+    let mut file_name = output_path.file_stem().unwrap_or_default().to_os_string();
+    file_name.push(format!("_{index}"));
+    if let Some(extension) = output_path.extension() {
+        file_name.push(".");
+        file_name.push(extension);
+    }
+    output_path.with_file_name(file_name)
+}
+
 fn base_from_pattern(pattern: &str) -> String {
     let mut base = PathBuf::new();
 
@@ -344,6 +413,15 @@ fn source_buffer_size_bytes(source: &SourceImage) -> u64 {
     }
 }
 
+/// Image index for the source loader: multi-image HEIF work items decode
+/// their indexed image, everything else the primary image.
+fn heif_image_index(item: &WorkItem) -> Option<usize> {
+    match item {
+        WorkItem::Single(_) => None,
+        WorkItem::HeifMulti { index, .. } => Some(*index),
+    }
+}
+
 /// Resolves the EXIF policy for a loaded source image (WS4):
 ///
 /// 1. computes the payload to embed via `metadata::resolve`,
@@ -407,17 +485,24 @@ fn apply_exif_policy_to_source(
     false
 }
 
-/// Converts a single input file and returns the resulting [`Outcome`].
+/// Converts a single work item (file, or one image of a multi-image HEIF
+/// container) and returns the resulting [`Outcome`].
 fn convert_file(
-    input_path: &Path,
+    item: &WorkItem,
     encoder: &dyn ImageEncoder,
     conf: &ConversionConfig,
     policy: CollisionPolicy,
     pattern_base: &str,
     claimed_outputs: &ClaimedOutputs,
 ) -> Outcome {
+    let input_path = item.path();
     let extension = encoder.extension();
-    let output_path = output_path_for(input_path, extension, &conf.output, pattern_base);
+    let mut output_path = output_path_for(input_path, extension, &conf.output, pattern_base);
+    // multi-image HEIF expansion: the first image keeps the base name, the
+    // following ones get a deterministic `_N` suffix
+    if let WorkItem::HeifMulti { index, .. } = item {
+        output_path = suffixed_image_path(&output_path, *index);
+    }
 
     // collision detection: the first input wins, subsequent ones are reported
     if !claim_output(claimed_outputs, &output_path) {
@@ -461,7 +546,7 @@ fn convert_file(
         return Outcome::Error(err.to_string());
     }
 
-    let mut source = match input::load_source(input_path) {
+    let mut source = match input::load_source_with_index(input_path, heif_image_index(item)) {
         Ok(source) => source,
         Err(err) => return Outcome::Error(err.to_string()),
     };
@@ -578,10 +663,7 @@ fn install_ctrlc_handler() -> &'static AtomicBool {
 pub fn run(conf: ConversionConfig, enc: EncoderConfig) -> Result<RunStats, Error> {
     let mut paths: Vec<PathBuf> = glob::glob(&conf.pattern)?
         .filter_map(|entry| entry.ok())
-        .filter(|path| {
-            let format = ImageFormat::from(path.as_path());
-            format != ImageFormat::Unknown && format != ImageFormat::Avif // disable reading avif (FIXME: re-enable with reliable build+integration for reader)
-        })
+        .filter(|path| ImageFormat::from(path.as_path()) != ImageFormat::Unknown)
         .collect();
     // sort paths lexicographically, not only filenames
     paths.sort_by(|a, b| {
@@ -626,12 +708,18 @@ pub fn run(conf: ConversionConfig, enc: EncoderConfig) -> Result<RunStats, Error
 
     let stop_signal = install_ctrlc_handler();
 
-    let (tx, rx) = mpsc::channel::<PathBuf>();
-    let input_file_count = paths.len() as u64;
-    // producer thread: feed paths in lexicographic order
+    let (tx, rx) = mpsc::channel::<WorkItem>();
+    // multi-image HEIF files are expanded before queueing, so the statistics
+    // and the progress bar count images, not files
+    let items: Vec<WorkItem> = paths
+        .into_iter()
+        .flat_map(|path| expand_work_item(path, conf.heif_image_policy))
+        .collect();
+    let input_file_count = items.len() as u64;
+    // producer thread: feed work items in lexicographic order
     std::thread::spawn(move || {
-        for path in paths {
-            if tx.send(path).is_err() {
+        for item in items {
+            if tx.send(item).is_err() {
                 break; // consumer dropped, exit
             }
         }
@@ -649,12 +737,12 @@ pub fn run(conf: ConversionConfig, enc: EncoderConfig) -> Result<RunStats, Error
         .decimal_zeroes(2)
         .space_after_value(false);
 
-    rx.into_iter().par_bridge().for_each(|path| {
+    rx.into_iter().par_bridge().for_each(|item| {
         let outcome = if stop_signal.load(Ordering::Relaxed) {
             Outcome::Aborted
         } else {
             convert_file(
-                &path,
+                &item,
                 &*encoder,
                 &conf,
                 policy,
@@ -666,7 +754,7 @@ pub fn run(conf: ConversionConfig, enc: EncoderConfig) -> Result<RunStats, Error
             // carriage return and clear line contents (do not spam screen content with logger bar states)
             println!(
                 "\r\x1b[2KFile {}: could not be converted, error: {}",
-                path.display(),
+                item.path().display(),
                 err
             );
         }
@@ -978,6 +1066,62 @@ mod tests {
         assert_eq!(path, Path::new("out/a.webp"));
     }
 
+    #[test]
+    fn multi_image_heif_outputs_get_deterministic_suffixes() {
+        // --heif-image-policy all: stem.ext, stem_1.ext, stem_2.ext, ...
+        let base = output_path_for(Path::new("photos/burst.heic"), "webp", "", "photos");
+        assert_eq!(base, Path::new("photos/burst.webp"));
+        assert_eq!(
+            suffixed_image_path(&base, 0),
+            Path::new("photos/burst.webp"),
+            "the first image keeps the base name"
+        );
+        assert_eq!(
+            suffixed_image_path(&base, 1),
+            Path::new("photos/burst_1.webp")
+        );
+        assert_eq!(
+            suffixed_image_path(&base, 10),
+            Path::new("photos/burst_10.webp")
+        );
+
+        // with an output directory the suffix is kept in the relocated name
+        let relocated = output_path_for(
+            Path::new("photos/sub/burst.heic"),
+            "avif",
+            "/tmp/out",
+            "photos",
+        );
+        assert_eq!(
+            suffixed_image_path(&relocated, 2),
+            Path::new("/tmp/out/sub/burst_2.avif")
+        );
+
+        // pathological names do not panic
+        assert_eq!(
+            suffixed_image_path(Path::new("weird.name.with.dots.png"), 3),
+            Path::new("weird.name.with.dots_3.png")
+        );
+        assert_eq!(
+            suffixed_image_path(Path::new("noext"), 1),
+            Path::new("noext_1")
+        );
+    }
+
+    #[test]
+    fn heif_multi_work_items_carry_their_image_index() {
+        let path = PathBuf::from("x/burst.heic");
+        assert_eq!(WorkItem::Single(path.clone()).path(), path.as_path());
+        assert_eq!(heif_image_index(&WorkItem::Single(path.clone())), None);
+
+        let multi = WorkItem::HeifMulti {
+            path: path.clone(),
+            index: 2,
+        };
+        assert_eq!(multi.path(), path.as_path());
+        assert_eq!(heif_image_index(&multi), Some(2));
+    }
+
     // ---- Collision detection & policies ----------------------------------
 
     #[test]
@@ -1033,7 +1177,7 @@ mod tests {
         let claimed: ClaimedOutputs = Arc::new(Mutex::new(HashSet::new()));
 
         let outcome_a = convert_file(
-            &input_a,
+            &WorkItem::Single(input_a),
             &*encoder,
             &conf,
             CollisionPolicy::KeepExisting,
@@ -1041,7 +1185,7 @@ mod tests {
             &claimed,
         );
         let outcome_b = convert_file(
-            &input_b,
+            &WorkItem::Single(input_b),
             &*encoder,
             &conf,
             CollisionPolicy::KeepExisting,

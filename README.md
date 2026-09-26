@@ -53,6 +53,21 @@ To keep it simple: `JPEG`, `PNG`, `GIF`, `WebP`, `BMP`, `DDS`, `Farbfeld`, `HDR`
 Input images are decoded using the `image` crate,
  please see [their documentation for supported image formats](https://docs.rs/image/0.25.6/image/codecs/index.html#supported-formats).
 
+Additionally, `HEIC`, `HEIF`, `HIF` and `AVIF` (still images) are decoded through `libheif`
+when the `dec-heif` feature is compiled in:
+
+- multi-image files (e.g. iPhone bursts) can be expanded into one output per image
+  via `--heif-image-policy all` (outputs are then named `stem.ext`, `stem_1.ext`, ...);
+  by default only the primary image is converted
+- EXIF metadata is extracted (with the rotation already baked in by the decoder), XMP
+  and ICC profiles are carried over where the target format supports them
+- 10/12-bit (HDR) sources are down-converted to 8-bit with a printed warning
+
+Without the feature, HEIC/HEIF/AVIF inputs fail per-file with a clear message while the
+rest of the batch keeps converting. Please note that the **release musl and windows
+binaries are built without** `dec-heif` (the native libheif + codec libraries cannot be
+bundled there yet), while the **docker images include it**.
+
 ### Output formats 📤
 
 - `webp`, webp encoder using the `webp` crate (libwebp bindings) - offers lossy and lossless encoding
@@ -412,7 +427,7 @@ cargo uninstall byteshaver
   - [x] `png`
   - [ ] `jpeg` (WIP)
   - [ ] `png` (via `oxipng` crate)
-  - [ ] `heic/heif`
+  - [x] `heic/heif` (input, via libheif / `dec-heif` feature; enabled in docker images, stubbed in musl/windows release binaries for now)
   - [ ] `jxl/jpeg-xl`
   - [ ] incoming wishes
 - [ ] Expand support for additional export formats by including more encoding libraries

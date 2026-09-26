@@ -7,6 +7,7 @@
 
 use crate::cli::Command;
 use crate::metadata::policy::{ExifPolicy, parse_tag_list};
+use clap::ValueEnum;
 
 pub use crate::converter::avif::{AlphaColorMode, AvifOptions, BitDepth, ColorModel};
 #[cfg(feature = "opt-oxipng")]
@@ -15,6 +16,20 @@ pub use crate::converter::oxipng::{
 };
 pub use crate::converter::png::{CompressionType, FilterType, PngOptions};
 pub use crate::converter::webp::WebpOptions;
+
+/// How to treat HEIC/HEIF files that contain more than one image.
+///
+/// Only relevant when the `dec-heif` feature is enabled; without it, HEIF
+/// input fails per-file regardless of this setting.
+#[derive(Clone, Copy, Debug, Default, ValueEnum, PartialEq, Eq)]
+pub enum HeifImagePolicy {
+    /// Decode only the primary image of each file (default).
+    #[default]
+    Primary,
+    /// Decode every image of a file; outputs are named
+    /// `stem.ext`, `stem_1.ext`, `stem_2.ext`, ...
+    All,
+}
 
 /// Configuration parameters shared across all encoders.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -52,6 +67,11 @@ pub struct ConversionConfig {
     /// Defaults to strip: metadata is removed and orientation transforms
     /// are baked into the pixels.
     pub exif: ExifPolicy,
+
+    /// How HEIC/HEIF files with multiple images are treated
+    /// (`dec-heif` feature): only the primary image, or every image with
+    /// suffixed output names. Defaults to [`HeifImagePolicy::Primary`].
+    pub heif_image_policy: HeifImagePolicy,
 }
 
 impl ConversionConfig {
@@ -73,8 +93,24 @@ impl ConversionConfig {
             discard_if_larger_than_input: args.discard_if_larger_than_input.unwrap_or_default(),
             discard_input_alpha_channel: args.discard_input_alpha_channel.unwrap_or_default(),
             exif: exif_policy_from_args(args),
+            heif_image_policy: heif_image_policy_from_args(args),
         }
     }
+}
+
+/// Resolves the HEIF multi-image policy from the CLI flags.
+///
+/// The flag only exists in builds with the `dec-heif` feature; other builds
+/// always use the default (primary image only).
+#[cfg(feature = "dec-heif")]
+fn heif_image_policy_from_args(args: &crate::cli::CliArgs) -> HeifImagePolicy {
+    args.heif_image_policy.unwrap_or_default()
+}
+
+/// Feature-less fallback of [`heif_image_policy_from_args`].
+#[cfg(not(feature = "dec-heif"))]
+fn heif_image_policy_from_args(_args: &crate::cli::CliArgs) -> HeifImagePolicy {
+    HeifImagePolicy::default()
 }
 
 /// Resolves the EXIF policy from the CLI flags.

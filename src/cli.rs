@@ -94,6 +94,14 @@ pub struct CliArgs {
     /// Print recognized EXIF tag names and exit.
     #[clap(long, action = Some(ArgAction::SetTrue))]
     pub exif_list_tags: Option<bool>,
+
+    /// How to treat HEIC/HEIF files containing more than one image
+    /// (requires a build with the `dec-heif` feature):
+    /// primary: decode only the primary image (default).
+    /// all: decode every image; outputs are named stem.ext, stem_1.ext, ...
+    #[cfg(feature = "dec-heif")]
+    #[clap(long, value_enum, value_name = "primary|all", global = true)]
+    pub heif_image_policy: Option<crate::config::HeifImagePolicy>,
 }
 
 /// Image converter actions

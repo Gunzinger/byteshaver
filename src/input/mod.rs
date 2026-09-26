@@ -5,6 +5,8 @@
 //! animated GIF inputs are decoded into [`AnimationData`].
 
 pub mod animation;
+#[cfg(feature = "dec-heif")]
+mod heif;
 
 use std::fs;
 use std::io::BufReader;
@@ -76,8 +78,27 @@ impl SourceImage {
     }
 }
 
-/// Loads and decodes the image at `path` into a [`SourceImage`].
+/// Loads and decodes the image at `path` into a [`SourceImage`]
+/// (the primary image for multi-image HEIC/HEIF containers).
 pub fn load_source(path: &Path) -> Result<SourceImage, Error> {
+    load_source_with_index(path, None)
+}
+
+/// Like [`load_source`], but `Some(index)` decodes the `index`-th image of a
+/// multi-image HEIC/HEIF container (`--heif-image-policy all`).
+///
+/// The index is ignored for formats that cannot contain multiple images.
+pub fn load_source_with_index(
+    path: &Path,
+    image_index: Option<usize>,
+) -> Result<SourceImage, Error> {
+    // HEIC/HEIF/HIF/AVIF containers are decoded by libheif, not the image
+    // crate; without the `dec-heif` feature they report a per-file error and
+    // the batch continues
+    if ImageFormat::from(path) == ImageFormat::Heif {
+        return load_heif_source(path, image_index);
+    }
+
     let reader = open_reader(path)?;
     // detect the format once from the file header; keep the reader pinned to it
     let reader = match reader.with_guessed_format() {
@@ -120,6 +141,31 @@ pub fn load_source(path: &Path) -> Result<SourceImage, Error> {
         source_format,
         source_path: path.to_path_buf(),
     })
+}
+
+/// Decodes a HEIC/HEIF/AVIF container via libheif (feature `dec-heif`).
+#[cfg(feature = "dec-heif")]
+fn load_heif_source(path: &Path, image_index: Option<usize>) -> Result<SourceImage, Error> {
+    heif::load_source(path, image_index)
+}
+
+/// Counts the decodable master images of a HEIC/HEIF container without
+/// decoding pixels (feature `dec-heif`); used by the pipeline's
+/// `--heif-image-policy all` expansion.
+#[cfg(feature = "dec-heif")]
+pub(crate) fn heif_probe(path: &Path) -> Result<usize, Error> {
+    heif::probe(path)
+}
+
+/// Feature-off stub: HEIC/HEIF/AVIF input needs the native libheif, so these
+/// files fail per-file (surfacing as `Outcome::Error` in the pipeline) while
+/// the rest of the batch keeps converting.
+#[cfg(not(feature = "dec-heif"))]
+fn load_heif_source(_path: &Path, _image_index: Option<usize>) -> Result<SourceImage, Error> {
+    // io::Error::other keeps the displayed message clean (no error-type prefix)
+    Err(Error::new(std::io::Error::other(
+        "HEIC/HEIF input requires a build with the dec-heif feature",
+    )))
 }
 
 /// Decodes an animated GIF into [`AnimationData`] (proves the plumbing; WS5 extends this).
