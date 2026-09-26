@@ -152,6 +152,39 @@ runs; events include `Started`, `FileStarted`, `FileFinished` (with the
 per-file outcome), `ProgressStats` (running byte/count totals), `Notice`
 (warnings) and `Finished`.
 
+### GUI (desktop) 🖱️
+
+`byteshaver` ships a desktop GUI as a separate workspace crate
+(`gui/` = `byteshaver-gui`, egui/eframe): a queue-centric single window where
+the **entire window is a drag-and-drop target** — drop files *or folders*
+anywhere (folders are expanded recursively by the core), or use the native
+file picker. One global target format with its full option surface, EXIF /
+collision / animation policies, live per-file progress, cancel, and a report
+panel with JSONL export. Conversions run through the same headless core the
+CLI uses, so outputs are byte-identical.
+
+![byteshaver-gui screenshot](docs/gui-screenshot.png) <!-- placeholder: window with drop banner, queue table, options panel, footer -->
+
+Build it from source:
+
+```bash
+cargo build --release -p byteshaver-gui
+# binary: target/release/byteshaver-gui
+```
+
+Notes:
+
+- Linux: needs GL at runtime (X11 or Wayland); file dialogs use the
+  xdg-desktop-portal service. No GTK development packages are required to
+  compile.
+- The encoder list reflects the build: encoders compiled out (e.g. a build
+  without `jxl`) are shown grayed-out with the reason, and HEIC/HEIF/AVIF
+  input is only offered when the core was built with the `dec-heif` feature.
+- Settings (output dir, encoder + options, policies, window size) persist in
+  the OS config dir under `byteshaver-gui/settings.json`.
+- Docker images and the release pipeline remain CLI-only; see
+  [gui/README.md](gui/README.md) for the (not yet wired) CI additions.
+
 ### Requests
 
 If this does not cover your needs,

@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "gui"]
+resolver = "2"
+
 [package]
 name = "byteshaver"
 version = "0.0.0-git"
