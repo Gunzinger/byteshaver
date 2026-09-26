@@ -22,6 +22,8 @@ mod error;
 pub mod format;
 /// Decode layer producing source images from files.
 pub mod input;
+/// Headless job API: job specs, reporters, capabilities (plan WS7).
+pub mod job;
 /// Metadata containers decoded from input images.
 pub mod metadata;
 /// Conversion pipeline (naming, collisions, statistics, entry point).
@@ -32,5 +34,9 @@ pub mod utils;
 
 pub use config::{ConversionConfig, EncoderConfig, HeifImagePolicy};
 pub use error::Error;
+pub use job::{
+    Capabilities, EncoderInfo, InputSelection, JobEvent, JobHandle, JobSpec, Reporter, RunReport,
+    Session, StopFlag,
+};
 pub use metadata::policy::{ExifPolicy, TagSelector};
-pub use pipeline::{CollisionPolicy, Outcome, RunStats, run};
+pub use pipeline::{CollisionPolicy, FileResult, Outcome, RunStats, run};

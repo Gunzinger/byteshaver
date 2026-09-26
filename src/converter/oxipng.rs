@@ -39,7 +39,9 @@ use crate::metadata::policy::ExifPolicy;
 /// Higher levels try more filter strategies and stronger DEFLATE settings
 /// (much slower, potentially smaller). `Max` maps to
 /// `oxipng::Options::max_compression()`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize,
+)]
 pub enum OxipngLevel {
     /// Preset 0: fastest, experimental (basic filters only).
     Zero,
@@ -78,7 +80,9 @@ impl OxipngLevel {
 }
 
 /// Interlacing handling of the optimized output.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize,
+)]
 pub enum OxipngInterlace {
     /// Leave the interlace state of the input unchanged.
     Keep,
@@ -93,7 +97,9 @@ pub enum OxipngInterlace {
 ///
 /// Standalone for now; a later merge couples this to the EXIF policy
 /// (see plan WS4).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize,
+)]
 pub enum OxipngStrip {
     /// Keep all ancillary chunks (default).
     #[default]
@@ -108,7 +114,7 @@ pub enum OxipngStrip {
 ///
 /// Explicitly configured filters replace the filter set of the chosen
 /// [`OxipngLevel`] preset.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
 pub enum OxipngFilter {
     /// Same (no) filter for every row.
     None,
@@ -133,7 +139,7 @@ pub enum OxipngFilter {
 }
 
 /// Lossless reductions that can be disabled individually.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
 pub enum OxipngReduction {
     /// Bit-depth reduction (only ever performed when losslessly possible).
     BitDepth,
@@ -149,7 +155,7 @@ pub enum OxipngReduction {
 ///
 /// Explicitly configured flags are applied on top of the chosen
 /// [`OxipngLevel`] preset (preset first, explicit overrides second).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OxipngOptions {
     /// Optimization level preset. Default [`OxipngLevel::Two`].
     pub level: OxipngLevel,

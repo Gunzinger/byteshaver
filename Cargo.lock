@@ -265,6 +265,8 @@ dependencies = [
  "ravif",
  "rayon",
  "rgb",
+ "serde",
+ "serde_json",
  "webp",
  "webp-animation",
 ]

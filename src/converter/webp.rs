@@ -7,7 +7,7 @@ use image::DynamicImage;
 use webp::Encoder;
 
 /// Options of the webp-crate webp encoder.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WebpOptions {
     /// Use lossless encoding mode. Defaults to false.
     pub lossless: bool,

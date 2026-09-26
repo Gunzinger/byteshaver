@@ -1,5 +1,15 @@
 # WS6 — Animated AVIF (experimental)
 
+> **SPIKE VERDICT (recorded 2026-09-26, during implementation round 1):**
+> **BLOCKED IN THIS ENVIRONMENT — DEFERRED.** The spike requires a libheif ≥ 1.20
+> build with an AV1 encoder (libaom/SVT-AV1) to validate the sequence encode path.
+> The development environment has no libheif/pkg-config at all, so neither the
+> capability probe nor a runtime validation is possible. Per the plan's own gate
+> ("spike verdict before any non-FFI code"), no FFI code was written.
+> Revisit when a CI job with a full libheif+AV1-encoder stack is available.
+> WS5's `--animated-input` behavior already degrades gracefully (first-frame
+> encode with notice).
+
 **Depends on:** WS5 merged (AnimationData consumers exist). Independent from WS1's
 *decode* work but **reuses the libheif dependency family**; coordinate `Cargo.toml`
 features so both can coexist.

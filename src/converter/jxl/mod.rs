@@ -40,7 +40,9 @@ use crate::input::{AnimationData, ImageContent, SourceImage};
 use crate::metadata::exif_for_jxl;
 
 /// Target bit depth of the encoded JXL (8 or 16 bits per channel).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, serde::Serialize, serde::Deserialize,
+)]
 pub enum JxlBitDepthChoice {
     /// 8 bits per channel.
     Eight,
@@ -49,7 +51,17 @@ pub enum JxlBitDepthChoice {
 }
 
 /// Color encoding selection of the encoded JXL (mirrors `cjxl` choices).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    clap::ValueEnum,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum JxlColorEncodingChoice {
     /// Non-linear sRGB (default; matches the libjxl assumption for integer
     /// pixel buffers when no color encoding is set).
@@ -76,7 +88,7 @@ impl JxlColorEncodingChoice {
 }
 
 /// Options of the libjxl-based jpeg-xl encoder with CLI defaults resolved.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct JxlOptions {
     /// True lossless mode. Overrides quality/distance and implies
     /// `original_profile`. Default false.

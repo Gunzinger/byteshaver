@@ -16,7 +16,7 @@ use std::borrow::Cow;
 use std::io::Write;
 
 /// Compression type of the png encoder (surface of the image-crate encoder).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
 pub enum CompressionType {
     /// Default compression level.
     Default,
@@ -27,7 +27,7 @@ pub enum CompressionType {
 }
 
 /// Filter type of the png encoder (surface of the image-crate encoder).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
 pub enum FilterType {
     /// No filtering applied.
     NoFilter,
@@ -44,7 +44,7 @@ pub enum FilterType {
 }
 
 /// Options of the png encoder.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PngOptions {
     /// PNG compression type. Defaults to the encoder default.
     pub compression_type: Option<CompressionType>,

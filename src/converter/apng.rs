@@ -24,7 +24,7 @@ use std::time::Duration;
 const STILL_FRAME_DELAY_MS: u32 = 100;
 
 /// Options of the APNG (animated png) encoder.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ApngOptions {
     /// PNG compression type. Defaults to the encoder default (Fast is a good
     /// pairing with a following oxipng post-optimization pass).

@@ -127,6 +127,13 @@ pub struct CliArgs {
     /// Defaults to 4096.
     #[clap(long, value_name = "MIB", global = true)]
     pub max_animation_memory: Option<u64>,
+
+    /// Write one JSON object per progress event to this file (JSON lines)
+    /// in addition to the regular stdout output (requires the `logs`
+    /// feature, on by default).
+    #[cfg(feature = "logs")]
+    #[clap(long, global = true, value_name = "PATH")]
+    pub json_log: Option<std::path::PathBuf>,
 }
 
 /// Image converter actions

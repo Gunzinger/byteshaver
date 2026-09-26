@@ -137,6 +137,21 @@ with a notice. Use `--animated-input error` to fail such files instead
 `--max-animation-memory <MiB>` (default 4096) to bound the memory used by
 decoded frame buffers.
 
+### JSON logs
+
+Every conversion command accepts the global `--json-log <PATH>` flag (enabled
+in default builds): alongside the regular terminal output, one JSON object per
+progress event is appended per line (JSON lines), e.g.
+
+```
+byteshaver "images/**/*.jpg" webp -o out --json-log run.jsonl
+```
+
+Each line is flushed immediately, so the log can be tailed while a batch
+runs; events include `Started`, `FileStarted`, `FileFinished` (with the
+per-file outcome), `ProgressStats` (running byte/count totals), `Notice`
+(warnings) and `Finished`.
+
 ### Requests
 
 If this does not cover your needs,

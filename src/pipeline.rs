@@ -1,16 +1,23 @@
 //! Conversion pipeline: file discovery, per-file conversion flow (output
-//! naming, overwrite logic, collision detection), statistics, progress and
-//! the library entry point [`run`].
+//! naming, overwrite logic, collision detection), statistics and the
+//! library entry point [`run`].
+//!
+//! All reporting flows through the [`Reporter`][crate::job::Reporter] event
+//! sink and cancelation through the
+//! [`StopFlag`][crate::job::StopFlag] — the pipeline itself never touches
+//! stdout, the progress bar or signals (plan WS7). The classic CLI output
+//! lives in [`StdoutReporter`][crate::job::StdoutReporter].
 
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use humansize::{BINARY, FormatSizeOptions, format_size};
-use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
 use crate::Error;
@@ -18,10 +25,13 @@ use crate::config::{AnimatedInputPolicy, ConversionConfig, EncoderConfig};
 use crate::converter::{EncoderRegistry, ImageEncoder, ThreadBudget};
 use crate::format::ImageFormat;
 use crate::input::{self, ImageContent, SourceImage};
+use crate::job::StopFlag;
+use crate::job::reporter::{JobEvent, Reporter, StdoutReporter};
+use crate::job::{InputSelection, JobSpec};
 
 /// Result of a single file conversion, replacing the former
 /// `(isize, usize, usize)` magic-number status tuples.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Outcome {
     /// File encoded and written to disk.
     Encoded {
@@ -72,7 +82,7 @@ pub enum Outcome {
 
 /// Policy deciding how to behave when an output file already exists or
 /// multiple inputs map to the same output name.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CollisionPolicy {
     /// Never overwrite existing outputs (default).
     #[default]
@@ -103,8 +113,19 @@ impl CollisionPolicy {
     }
 }
 
+/// Result of one work item (file, or one image of a multi-image HEIF
+/// container) in a finished run.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FileResult {
+    /// Input path of the work item (multi-image HEIF items share the
+    /// container path; their outputs differ by the `_N` suffix).
+    pub path: PathBuf,
+    /// Conversion result of the item.
+    pub outcome: Outcome,
+}
+
 /// Statistics of a [`run`], mirroring the printed "Encode statistics".
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RunStats {
     /// Number of input files discovered from the glob pattern.
     pub input_files: u64,
@@ -127,6 +148,10 @@ pub struct RunStats {
     pub input_size: u64,
     /// Total size of all counted outputs in bytes.
     pub output_size: u64,
+    /// Per-item results in queue order (the deterministic input order, not
+    /// completion order).
+    #[serde(default)]
+    pub results: Vec<FileResult>,
     /// Wall time of the whole run.
     pub elapsed: Duration,
 }
@@ -428,7 +453,7 @@ fn heif_image_index(item: &WorkItem) -> Option<usize> {
 /// 2. when the resolution drops the Orientation tag while the source pixels
 ///    are not upright yet, bakes the orientation transform into the pixels,
 /// 3. clears the payload when the target encoder cannot carry EXIF at all,
-///    printing one warning line per file.
+///    emitting one notice per file.
 ///
 /// Returns whether metadata was dropped because of the target format.
 #[cfg(feature = "exif")]
@@ -436,6 +461,8 @@ fn apply_exif_policy_to_source(
     source: &mut SourceImage,
     policy: &crate::metadata::policy::ExifPolicy,
     encoder: &dyn ImageEncoder,
+    reporter: &dyn Reporter,
+    input_path: &Path,
 ) -> bool {
     let source_orientation = source
         .metadata
@@ -463,10 +490,13 @@ fn apply_exif_policy_to_source(
     source.metadata.exif = resolved;
 
     if source.metadata.exif.is_some() && !encoder.supports_metadata() {
-        println!(
-            "Warning: {} target does not support EXIF embedding; metadata dropped",
-            encoder.extension()
-        );
+        reporter.on_event(JobEvent::Notice {
+            path: Some(input_path.to_path_buf()),
+            message: format!(
+                "Warning: {} target does not support EXIF embedding; metadata dropped",
+                encoder.extension()
+            ),
+        });
         source.metadata.exif = None;
         return true;
     }
@@ -481,12 +511,17 @@ fn apply_exif_policy_to_source(
     _source: &mut SourceImage,
     _policy: &crate::metadata::policy::ExifPolicy,
     _encoder: &dyn ImageEncoder,
+    _reporter: &dyn Reporter,
+    _input_path: &Path,
 ) -> bool {
     false
 }
 
 /// Converts a single work item (file, or one image of a multi-image HEIF
 /// container) and returns the resulting [`Outcome`].
+///
+/// Ad-hoc messages (collisions, huge-image warnings) are emitted as
+/// [`JobEvent::Notice`]s; the caller emits the per-file error notice.
 fn convert_file(
     item: &WorkItem,
     encoder: &dyn ImageEncoder,
@@ -494,6 +529,7 @@ fn convert_file(
     policy: CollisionPolicy,
     pattern_base: &str,
     claimed_outputs: &ClaimedOutputs,
+    reporter: &dyn Reporter,
 ) -> Outcome {
     let input_path = item.path();
     let extension = encoder.extension();
@@ -507,11 +543,14 @@ fn convert_file(
     // collision detection: the first input wins, subsequent ones are reported
     if !claim_output(claimed_outputs, &output_path) {
         let input_size = fs::metadata(input_path).map_or(0, |meta| meta.len());
-        println!(
-            "\r\x1b[2KFile {}: skipped because another input maps to the same output path {}",
-            input_path.display(),
-            output_path.display()
-        );
+        reporter.on_event(JobEvent::Notice {
+            path: Some(input_path.to_path_buf()),
+            message: format!(
+                "File {}: skipped because another input maps to the same output path {}",
+                input_path.display(),
+                output_path.display()
+            ),
+        });
         return Outcome::SkippedCollision {
             input_size,
             output_path,
@@ -582,7 +621,8 @@ fn convert_file(
 
     // WS4: resolve the EXIF policy, bake the orientation into the pixels if
     // the Orientation tag would be lost, and warn about unembeddable targets.
-    let metadata_dropped = apply_exif_policy_to_source(&mut source, &conf.exif, encoder);
+    let metadata_dropped =
+        apply_exif_policy_to_source(&mut source, &conf.exif, encoder, reporter, input_path);
 
     const HUGE_IMAGE_DIMENSION_LIMIT: u32 = 8192;
     let (width, height) = source_dimensions(&source);
@@ -591,19 +631,25 @@ fn convert_file(
             .decimal_places(2)
             .decimal_zeroes(2)
             .space_after_value(false);
-        println!(
-            "Trying to encode huge image \"{}\" (filesize: {}, dimensions: {}x{}px, decoded buffer: {})...",
-            input_path.display(),
-            format_size(input_size, format_option_binary_two_nospace),
-            width,
-            height,
-            format_size(
-                source_buffer_size_bytes(&source),
-                format_option_binary_two_nospace
-            )
-        );
+        reporter.on_event(JobEvent::Notice {
+            path: Some(input_path.to_path_buf()),
+            message: format!(
+                "Trying to encode huge image \"{}\" (filesize: {}, dimensions: {}x{}px, decoded buffer: {})...",
+                input_path.display(),
+                format_size(input_size, format_option_binary_two_nospace),
+                width,
+                height,
+                format_size(
+                    source_buffer_size_bytes(&source),
+                    format_option_binary_two_nospace
+                )
+            ),
+        });
         if let Some(hint) = encoder.huge_image_hint() {
-            println!("{hint}");
+            reporter.on_event(JobEvent::Notice {
+                path: Some(input_path.to_path_buf()),
+                message: hint.to_string(),
+            });
         }
     }
 
@@ -645,53 +691,9 @@ fn convert_file(
     }
 }
 
-/// Process-global stop flag shared with the Ctrl+C handler.
-static GLOBAL_STOP: AtomicBool = AtomicBool::new(false);
-/// Installs the process-wide Ctrl+C handler exactly once (`run` may be
-/// called repeatedly, but only one handler can exist per process).
-static CTRL_C_INSTALL: std::sync::Once = std::sync::Once::new();
-/// Number of Ctrl+C presses, feeding the repeated-press notice.
-static CTRLC_PRESSES: AtomicU64 = AtomicU64::new(0);
-
-/// Resets the stop flag and ensures the Ctrl+C handler is installed.
-///
-/// Returns the stop flag the pipeline polls between files.
-fn install_ctrlc_handler() -> &'static AtomicBool {
-    GLOBAL_STOP.store(false, Ordering::Relaxed);
-    CTRL_C_INSTALL.call_once(|| {
-        ctrlc::set_handler(|| {
-            let presses = CTRLC_PRESSES.fetch_add(1, Ordering::Relaxed);
-            if !GLOBAL_STOP.load(Ordering::Relaxed) {
-                println!("received Ctrl+C, stopping further queue processing!");
-                GLOBAL_STOP.store(true, Ordering::Relaxed);
-            } else {
-                println!(
-                    "an encoding task is still active!{} processing will end afterwards.",
-                    str::repeat("!", presses as usize)
-                );
-            }
-        })
-        .expect("Error setting Ctrl-C handler");
-    });
-    &GLOBAL_STOP
-}
-
-/// Processes and encodes images matching the glob pattern of `conf` to the
-/// target format described by `enc`.
-///
-/// This is the single library entry point of `byteshaver`; it prints the
-/// conversion progress and the encode statistics, and returns the summary.
-///
-/// # Errors
-///
-/// Returns an [`Error`] if the glob pattern is invalid or the output
-/// directory cannot be inspected.
-pub fn run(conf: ConversionConfig, enc: EncoderConfig) -> Result<RunStats, Error> {
-    let mut paths: Vec<PathBuf> = glob::glob(&conf.pattern)?
-        .filter_map(|entry| entry.ok())
-        .filter(|path| ImageFormat::from(path.as_path()) != ImageFormat::Unknown)
-        .collect();
-    // sort paths lexicographically, not only filenames
+/// Sorts discovered input paths lexicographically (directories before the
+/// files they contain, then file names), optionally reversed.
+fn sort_paths(paths: &mut [PathBuf], reverse: bool) {
     paths.sort_by(|a, b| {
         let dir_cmp = a.parent().cmp(&b.parent());
         let cmp = if dir_cmp != std::cmp::Ordering::Equal {
@@ -700,17 +702,108 @@ pub fn run(conf: ConversionConfig, enc: EncoderConfig) -> Result<RunStats, Error
             a.file_name().cmp(&b.file_name())
         };
 
-        if conf.reverse_processing_order {
-            cmp.reverse()
-        } else {
-            cmp
-        }
+        if reverse { cmp.reverse() } else { cmp }
     });
-    let pattern_base = base_from_pattern(&conf.pattern);
+}
+
+/// Collects supported image files below `dir` recursively (the same
+/// extension-based format filter the glob discovery applies to its
+/// results). Unreadable directories are skipped.
+fn collect_directory(dir: &Path, paths: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_directory(&path, paths);
+        } else if ImageFormat::from(path.as_path()) != ImageFormat::Unknown {
+            paths.push(path);
+        }
+    }
+}
+
+/// Expands `InputSelection::Files` into input paths: existing directories
+/// are walked recursively (supported formats only), everything else is kept
+/// as-is so nonexistent paths surface as per-file errors during conversion.
+fn discover_files(selection: &[PathBuf], reverse: bool) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for entry in selection {
+        if entry.is_dir() {
+            collect_directory(entry, &mut paths);
+        } else {
+            paths.push(entry.clone());
+        }
+    }
+    sort_paths(&mut paths, reverse);
+    paths
+}
+
+/// Computes the longest common directory prefix of all input paths; used
+/// as the relocation base when `InputSelection::Files` meets an output
+/// directory (mirrors the pattern base of glob discovery).
+fn common_directory_base(paths: &[PathBuf]) -> String {
+    let Some(first) = paths.first() else {
+        return String::new();
+    };
+    let mut base = PathBuf::new();
+    for component in first.parent().unwrap_or_else(|| Path::new("")).components() {
+        let candidate = base.join(component);
+        if paths.iter().all(|path| path.starts_with(&candidate)) {
+            base = candidate;
+        } else {
+            break;
+        }
+    }
+    base.to_string_lossy().to_string()
+}
+
+/// Processes and encodes the images selected by `spec` to the target format
+/// described by `spec.encoder`, streaming every event to `reporter` and
+/// checking `stop` once per queued work item.
+///
+/// This is the engine behind both [`JobHandle`][crate::job::JobHandle] and
+/// the legacy [`run`] entry point.
+///
+/// # Errors
+///
+/// Returns an [`Error`] if the glob pattern is invalid or the output
+/// directory cannot be created.
+pub fn execute(
+    spec: &JobSpec,
+    reporter: Arc<dyn Reporter>,
+    stop: &StopFlag,
+    budget: ThreadBudget,
+) -> Result<RunStats, Error> {
+    // the spec's output directory overrides the common configuration's
+    let mut conf = spec.common.clone();
+    if let Some(output) = &spec.output {
+        conf.output = output.to_string_lossy().to_string();
+    }
+
+    let (paths, pattern_base) = match &spec.inputs {
+        InputSelection::Pattern(pattern) => {
+            let mut paths: Vec<PathBuf> = glob::glob(pattern)?
+                .filter_map(|entry| entry.ok())
+                .filter(|path| ImageFormat::from(path.as_path()) != ImageFormat::Unknown)
+                .collect();
+            sort_paths(&mut paths, conf.reverse_processing_order);
+            (paths, base_from_pattern(pattern))
+        }
+        InputSelection::Files(files) => {
+            let paths = discover_files(files, conf.reverse_processing_order);
+            let base = common_directory_base(&paths);
+            (paths, base)
+        }
+    };
     let policy = CollisionPolicy::from_flags(conf.overwrite_if_smaller, conf.overwrite_existing);
 
     if paths.is_empty() {
-        println!("No images to convert, check input glob pattern and supported input formats.");
+        reporter.on_event(JobEvent::Notice {
+            path: None,
+            message: "No images to convert, check input glob pattern and supported input formats."
+                .to_string(),
+        });
         return Ok(RunStats::default());
     }
 
@@ -718,23 +811,33 @@ pub fn run(conf: ConversionConfig, enc: EncoderConfig) -> Result<RunStats, Error
     if !conf.output.is_empty() {
         let output_directory = Path::new(&conf.output);
         if !fs::exists(output_directory)? {
-            // is it possible to warn in docker if the target output directory is not host mounted?
-            println!("Creating output directory {:?}", output_directory);
-            fs::create_dir_all(output_directory).unwrap_or_else(|err| {
-                eprintln!("Error creating the output directory: {err}");
-                std::process::exit(1);
+            reporter.on_event(JobEvent::Notice {
+                path: None,
+                message: format!("Creating output directory {output_directory:?}"),
             });
+            if let Err(err) = fs::create_dir_all(output_directory) {
+                let message = format!("Error creating the output directory: {err}");
+                reporter.on_event(JobEvent::Notice {
+                    path: None,
+                    message: message.clone(),
+                });
+                return Err(Error::from_string(message));
+            }
         }
     }
     // IDEA: create output filename from configurable regex
 
-    println!("Converting {} files...", paths.len());
-    let encoder = EncoderRegistry::build(&enc, ThreadBudget::global());
-    println!("{}", encoder.describe());
+    reporter.on_event(JobEvent::Notice {
+        path: None,
+        message: format!("Converting {} files...", paths.len()),
+    });
+    let encoder = EncoderRegistry::build(&spec.encoder, budget);
+    reporter.on_event(JobEvent::Notice {
+        path: None,
+        message: encoder.describe(),
+    });
 
-    let stop_signal = install_ctrlc_handler();
-
-    let (tx, rx) = mpsc::channel::<WorkItem>();
+    let (tx, rx) = mpsc::channel::<(u64, WorkItem)>();
     // multi-image HEIF files are expanded before queueing, so the statistics
     // and the progress bar count images, not files
     let items: Vec<WorkItem> = paths
@@ -744,8 +847,8 @@ pub fn run(conf: ConversionConfig, enc: EncoderConfig) -> Result<RunStats, Error
     let input_file_count = items.len() as u64;
     // producer thread: feed work items in lexicographic order
     std::thread::spawn(move || {
-        for item in items {
-            if tx.send(item).is_err() {
+        for (index, item) in items.into_iter().enumerate() {
+            if tx.send((index as u64, item)).is_err() {
                 break; // consumer dropped, exit
             }
         }
@@ -753,20 +856,25 @@ pub fn run(conf: ConversionConfig, enc: EncoderConfig) -> Result<RunStats, Error
         drop(tx);
     });
 
-    let pb = ProgressBar::new(input_file_count);
-    let style = ProgressStyle::with_template("[{elapsed_precise}/~{duration_precise} ({eta_precise} rem.)] {wide_bar:.cyan/blue} {pos:>7}/{len:7} | {msg}").unwrap();
-    pb.set_style(style);
+    reporter.on_event(JobEvent::Started {
+        total_files: input_file_count,
+    });
+
+    let started = Instant::now();
     let counters = Arc::new(StatCounters::default());
     let claimed_outputs: ClaimedOutputs = Arc::new(Mutex::new(HashSet::new()));
-    let format_option_binary_two_nospace = FormatSizeOptions::from(BINARY)
-        .decimal_places(2)
-        .decimal_zeroes(2)
-        .space_after_value(false);
+    let results: Mutex<Vec<(u64, FileResult)>> =
+        Mutex::new(Vec::with_capacity(input_file_count.try_into().unwrap_or(0)));
 
-    rx.into_iter().par_bridge().for_each(|item| {
-        let outcome = if stop_signal.load(Ordering::Relaxed) {
+    rx.into_iter().par_bridge().for_each(|(index, item)| {
+        let input_path = item.path().to_path_buf();
+        let outcome = if stop.raised() {
             Outcome::Aborted
         } else {
+            reporter.on_event(JobEvent::FileStarted {
+                index,
+                path: input_path.clone(),
+            });
             convert_file(
                 &item,
                 &*encoder,
@@ -774,52 +882,49 @@ pub fn run(conf: ConversionConfig, enc: EncoderConfig) -> Result<RunStats, Error
                 policy,
                 &pattern_base,
                 &claimed_outputs,
+                reporter.as_ref(),
             )
         };
         if let Outcome::Error(err) = &outcome {
-            // carriage return and clear line contents (do not spam screen content with logger bar states)
-            println!(
-                "\r\x1b[2KFile {}: could not be converted, error: {}",
-                item.path().display(),
-                err
-            );
+            reporter.on_event(JobEvent::Notice {
+                path: Some(input_path.clone()),
+                message: format!(
+                    "File {}: could not be converted, error: {}",
+                    input_path.display(),
+                    err
+                ),
+            });
         }
         counters.add(&buckets_for(&outcome));
-        pb.inc(1); // increment progress bar counter
-        let (input_total, output_total) = (
-            counters.get(&counters.input_size),
-            counters.get(&counters.output_size),
-        );
-        let (input_preexisting, output_preexisting) = (
-            counters.get(&counters.preexisting_input_size),
-            counters.get(&counters.preexisting_output_size),
-        );
-        pb.set_message(if input_preexisting > 0 {
-            format!(
-                "{} ➜ {} ({} ➜ {} preexisting) | ✔ {} — {} ✖ {}",
-                format_size(input_total, format_option_binary_two_nospace),
-                format_size(output_total, format_option_binary_two_nospace),
-                format_size(input_preexisting, format_option_binary_two_nospace),
-                format_size(output_preexisting, format_option_binary_two_nospace),
-                counters.get(&counters.successful),
-                counters.get(&counters.skipped),
-                counters.get(&counters.errors)
-            )
-        } else {
-            format!(
-                "{} ➜ {} | ✔ {} — {} ✖ {}",
-                format_size(input_total, format_option_binary_two_nospace),
-                format_size(output_total, format_option_binary_two_nospace),
-                counters.get(&counters.successful),
-                counters.get(&counters.skipped),
-                counters.get(&counters.errors)
-            )
+        results.lock().expect("results mutex poisoned").push((
+            index,
+            FileResult {
+                path: input_path.clone(),
+                outcome: outcome.clone(),
+            },
+        ));
+        reporter.on_event(JobEvent::FileFinished {
+            index,
+            path: input_path,
+            outcome: outcome.clone(),
+        });
+        reporter.on_event(JobEvent::ProgressStats {
+            input_bytes: counters.get(&counters.input_size),
+            output_bytes: counters.get(&counters.output_size),
+            ok: counters.get(&counters.successful),
+            skipped: counters.get(&counters.skipped),
+            errors: counters.get(&counters.errors),
         });
     });
+    let elapsed = started.elapsed();
 
-    // use a return carriage feed to clear the remnants of the progress bar off the screen
-    pb.finish_with_message("finished!");
-    // \r\x1b[2K is the sequence to clear the current row content (if manual way is intended)
+    reporter.on_event(JobEvent::Finished);
+
+    let mut results = results.into_inner().expect("results mutex poisoned");
+    // completion order is nondeterministic; report in queue order
+    results.sort_by_key(|(index, _)| *index);
+    let results = results.into_iter().map(|(_, result)| result).collect();
+
     let (successful, skipped) = (
         counters.get(&counters.successful),
         counters.get(&counters.skipped),
@@ -834,99 +939,7 @@ pub fn run(conf: ConversionConfig, enc: EncoderConfig) -> Result<RunStats, Error
     );
     let input_total = counters.get(&counters.input_size);
     let output_total = counters.get(&counters.output_size);
-    let input_preexisting = counters.get(&counters.preexisting_input_size);
-    let output_preexisting = counters.get(&counters.preexisting_output_size);
-    let input_discarded = counters.get(&counters.discarded_input_size);
-    let output_discarded = counters.get(&counters.discarded_output_size);
     let metadata_dropped = counters.get(&counters.metadata_dropped);
-    let elapsed = pb.elapsed();
-
-    println!("Encode statistics:");
-    println!("Time taken:  {}", HumanDuration(elapsed));
-    println!("Input files: {}", input_file_count);
-    println!("Successful:  {}", successful);
-    println!("Skipped:     {}", skipped);
-    if collisions > 0 {
-        println!(
-            "Collisions:  {} (skipped, the output path was already produced by another input)",
-            collisions
-        );
-    }
-    println!("Errors:      {}", errors);
-    if metadata_dropped > 0 {
-        println!(
-            "Metadata:    {} outputs could not carry EXIF metadata (target format has no support)",
-            metadata_dropped
-        );
-    }
-    if conf.discard_if_larger_than_input && discarded > 0 {
-        println!(
-            "Discarded:   {} (due to the encode being larger than the input; {} ➜ {})",
-            discarded,
-            format_size(input_discarded, format_option_binary_two_nospace),
-            format_size(output_discarded, format_option_binary_two_nospace)
-        );
-        println!(
-            "Please note that discarded in- and outputs do not count into the total in-/output statistics below."
-        );
-    }
-    if input_total > 0 && output_total > 0 {
-        // show total stats
-        println!(
-            "Total input size:  {}",
-            format_size(input_total, format_option_binary_two_nospace)
-        );
-        println!(
-            "Total output size: {}",
-            format_size(output_total, format_option_binary_two_nospace)
-        );
-        println!(
-            "Total comp. ratio: {:.02}%",
-            output_total as f64 / input_total as f64 * 100.0
-        );
-        if input_preexisting > 0 && output_preexisting > 0 {
-            if input_total - input_preexisting > 0 {
-                // if we have new encodes and preexisting images, first show the stats for the new encodes, then for the preexisting ones
-                println!(
-                    "New encodes input size:  {}",
-                    format_size(
-                        input_total - input_preexisting,
-                        format_option_binary_two_nospace
-                    )
-                );
-                println!(
-                    "New encodes output size: {}",
-                    format_size(
-                        output_total - output_preexisting,
-                        format_option_binary_two_nospace
-                    )
-                );
-                println!(
-                    "New encodes comp. ratio: {:.02}%",
-                    output_preexisting as f64 / input_preexisting as f64 * 100.0
-                );
-            }
-            // if we have preexisting images, show these stats
-            println!(
-                "Preexisting input size:  {}",
-                format_size(input_preexisting, format_option_binary_two_nospace)
-            );
-            println!(
-                "Preexisting output size: {}",
-                format_size(output_preexisting, format_option_binary_two_nospace)
-            );
-            println!(
-                "Preexisting comp. ratio: {:.02}%",
-                output_preexisting as f64 / input_preexisting as f64 * 100.0
-            );
-        }
-    } else {
-        if (successful + skipped + errors) > 1 {
-            println!(
-                "Input and output size could not be determined, please try using OS-native binaries."
-            );
-        }
-    }
 
     Ok(RunStats {
         input_files: input_file_count,
@@ -939,8 +952,36 @@ pub fn run(conf: ConversionConfig, enc: EncoderConfig) -> Result<RunStats, Error
         metadata_dropped,
         input_size: input_total,
         output_size: output_total,
+        results,
         elapsed,
     })
+}
+
+/// Processes and encodes images matching the glob pattern of `conf` to the
+/// target format described by `enc`, rendering the classic CLI output
+/// (progress bar and encode statistics) via
+/// [`StdoutReporter`].
+///
+/// This is a thin compatibility wrapper over the job API:
+/// [`JobSpec::from_conversion`] + a fresh [`StopFlag`] +
+/// [`crate::job::Session::new`] + [`StdoutReporter`]. Library front-ends
+/// should use [`crate::job::JobHandle::start`] directly (injectable
+/// reporters and cancelation).
+///
+/// # Errors
+///
+/// Returns an [`Error`] if the glob pattern is invalid or the output
+/// directory cannot be created.
+pub fn run(conf: ConversionConfig, enc: EncoderConfig) -> Result<RunStats, Error> {
+    let spec = JobSpec::from_conversion(conf, enc);
+    let session = crate::job::Session::new();
+    let handle = crate::job::JobHandle::start(
+        spec,
+        Box::new(StdoutReporter::new()),
+        StopFlag::new(),
+        &session,
+    );
+    handle.join().into_stats()
 }
 
 #[cfg(test)]
@@ -1201,6 +1242,7 @@ mod tests {
         };
         let encoder = EncoderRegistry::build(&EncoderConfig::Jpeg, ThreadBudget::global());
         let claimed: ClaimedOutputs = Arc::new(Mutex::new(HashSet::new()));
+        let reporter = crate::job::reporter::NullReporter::new();
 
         let outcome_a = convert_file(
             &WorkItem::Single(input_a),
@@ -1209,6 +1251,7 @@ mod tests {
             CollisionPolicy::KeepExisting,
             "does-not-matter",
             &claimed,
+            &reporter,
         );
         let outcome_b = convert_file(
             &WorkItem::Single(input_b),
@@ -1217,6 +1260,7 @@ mod tests {
             CollisionPolicy::KeepExisting,
             "does-not-matter",
             &claimed,
+            &reporter,
         );
 
         // both inputs map to the same output file (for inputs outside the

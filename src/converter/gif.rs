@@ -22,7 +22,7 @@ use std::time::Duration;
 const STILL_FRAME_DELAY_MS: u32 = 100;
 
 /// Options of the animated GIF encoder.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GifOptions {
     /// Quantization speed of the palette encoder (1 = best quality, 30 =
     /// fastest; see `gif::Frame::from_rgba_speed`). Defaults to 10.

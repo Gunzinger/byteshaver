@@ -25,7 +25,7 @@ include = [
 default-run = "byteshaver"
 
 [features]
-default = ["opt-oxipng", "exif", "jxl", "anim-webp", "anim-apng"]
+default = ["opt-oxipng", "exif", "jxl", "anim-webp", "anim-apng", "logs"]
 # Optional oxipng-based PNG re-optimization target (kept optional so
 # `--no-default-features` builds stay slim); intentionally excludes the
 # `parallel` and `binary` features of oxipng to avoid thread-pool
@@ -48,6 +48,9 @@ jxl = ["dep:jxl-oxide", "dep:jpegxl-src", "dep:moxcms"]
 anim-webp = ["dep:webp-animation"]
 # Animated PNG (APNG) target via the png crate (already a direct dependency)
 anim-apng = []
+# JSON-lines event logging (`JsonlReporter`, `--json-log`); serde itself is a
+# non-optional dependency (config types are always serializable)
+logs = ["dep:serde_json"]
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] } # 4.5.41 changes parser ordering; makes command ugly...
@@ -74,6 +77,10 @@ jxl-oxide = { version = "0.12", default-features = false, features = ["rayon", "
 moxcms = { version = "0.8", optional = true }
 jpegxl-src = { version = "0.12", optional = true }
 webp-animation = { version = "0.10", optional = true }
+# headless job API: config/result serialization (always on) and the JSON-lines
+# reporter (`logs` feature)
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", optional = true }
 
 [build-dependencies]
 cargo_metadata = "0.23.1"

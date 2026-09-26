@@ -10,7 +10,7 @@ use ravif_new::*;
 use rgb::FromSlice;
 
 /// Internal bit depth of a generated avif file.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
 pub enum BitDepth {
     /// Encode with 8 bits per channel.
     Eight,
@@ -21,7 +21,7 @@ pub enum BitDepth {
 }
 
 /// Internal color model of a generated avif file.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
 pub enum ColorModel {
     /// YCbCr color model (smaller files for photographic content).
     YCbCr,
@@ -30,7 +30,7 @@ pub enum ColorModel {
 }
 
 /// Internal alpha color mode of a generated avif file.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
 pub enum AlphaColorMode {
     /// Unassociated dirty alpha.
     UnassociatedDirty,
@@ -41,7 +41,7 @@ pub enum AlphaColorMode {
 }
 
 /// Options of the ravif-based avif encoder.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AvifOptions {
     /// Target quality (0 - 100, lower is worse but results in smaller files). Defaults to 90.0.
     pub quality: f32,

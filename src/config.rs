@@ -26,7 +26,7 @@ pub use crate::converter::webp_anim::WebpAnimOptions;
 
 /// How to treat animated input when the target encoder cannot encode
 /// animations (WS5 global flag `--animated-input`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AnimatedInputPolicy {
     /// Encode the first frame only, printing a notice (default).
     #[default]
@@ -39,7 +39,9 @@ pub enum AnimatedInputPolicy {
 ///
 /// Only relevant when the `dec-heif` feature is enabled; without it, HEIF
 /// input fails per-file regardless of this setting.
-#[derive(Clone, Copy, Debug, Default, ValueEnum, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Debug, Default, ValueEnum, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
 pub enum HeifImagePolicy {
     /// Decode only the primary image of each file (default).
     #[default]
@@ -50,7 +52,7 @@ pub enum HeifImagePolicy {
 }
 
 /// Configuration parameters shared across all encoders.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ConversionConfig {
     /// Glob pattern to match images to convert.
     /// Example: `images/**/*.png`
@@ -213,7 +215,7 @@ fn exit_with_exif_error(message: &str) -> ! {
 ///
 /// Constructed from the CLI subcommand (see [`EncoderConfig::from_args`]);
 /// cheap to clone and `Send + Sync`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum EncoderConfig {
     /// webp encoder of the webp crate
     Webp(WebpOptions),

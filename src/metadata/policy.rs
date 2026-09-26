@@ -11,7 +11,7 @@ use std::fmt;
 ///
 /// Maps onto the tag *context* and the top-level IFD number of the
 /// EXIF/TIFF structure.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Ifd {
     /// TIFF attributes of the primary image (IFD0).
     Primary,
@@ -66,7 +66,7 @@ impl fmt::Display for Ifd {
 }
 
 /// Selector for a single EXIF tag (or tag group) in `--exif-only`/`--exif-except` lists.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TagSelector {
     /// A named tag, resolved via the table of common tags
     /// (e.g. `GPSInfo`, `DateTimeOriginal`, `Orientation`).
@@ -91,7 +91,7 @@ impl fmt::Display for TagSelector {
 ///
 /// The default is [`ExifPolicy::Strip`] (privacy-safe: no metadata leaks
 /// into outputs unless explicitly requested).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExifPolicy {
     /// Remove all EXIF from outputs (DEFAULT); any orientation transform is
     /// baked into the pixels so outputs never appear sideways.

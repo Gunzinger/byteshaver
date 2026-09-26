@@ -17,7 +17,7 @@ use webp_animation::{
 };
 
 /// Options of the webp-animation animated webp encoder.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WebpAnimOptions {
     /// Target quality (0 - 100, lower is worse but results in smaller files).
     /// In lossless mode this is the compression effort. Defaults to 90.0.
