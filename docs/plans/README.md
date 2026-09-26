@@ -1,5 +1,13 @@
 # byteshaver Feature Expansion — Implementation Plan Suite
 
+> **STATUS: implemented** on branch `feat/feature-expansion` (WS0–WS5, WS7 and WS8
+> done; WS6 spike recorded as blocked upstream, see
+> [06-animated-avif-experimental.md](06-animated-avif-experimental.md)). Deviations
+> that landed differently than specced are noted inline in each plan file (e.g.
+> `dec-heif` is opt-in rather than default-on; GUI ships musl/windows binaries per
+> the 08 §5.5 addendum; `webp-animation` uses its `static` feature for reproducible
+> static linking). The plans are kept as historical specification + decision records.
+
 This directory contains parallelizable implementation plans for five feature workstreams
 plus a blocking architecture refactor. Each plan is written so a single subagent can
 implement it without re-doing ecosystem research.

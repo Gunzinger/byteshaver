@@ -7,6 +7,12 @@
 `byteshaver` simplifies the process of batch converting images,
  optimizing for both performance and storage efficiency.
 
+The crate is also a library: use [`job::JobSpec`] / [`job::JobHandle`] with a
+[`job::Reporter`] implementation to run conversions from other software without any
+terminal output, or call [`pipeline::run`] for the simplest entry point. The
+desktop GUI lives in the separate `byteshaver-gui` crate (workspace member `gui/`)
+and consumes the same job API, so its conversions are byte-identical to the CLI.
+
 */
 
 #![deny(missing_docs)]

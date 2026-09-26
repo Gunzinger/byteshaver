@@ -17,7 +17,7 @@
 ```bash
 > docker run -v ./examples/:/targets/ -it gunzinger/byteshaver:latest byteshaver "**/*.*" avif
 Converting 16 files...
-Using "ravif" (0.12.0) with options (quality: 90, speed: 3, bit depth: Eight, color model: RGB)
+Using "ravif" (0.13.0) with options (quality: 90, speed: 3, bit depth: Eight, color model: RGB)
 Encode statistics:
 Successful: 15
 Skipped:    0
@@ -32,13 +32,22 @@ Compression ratio: 54.95%
 ## Key Features 🧰
 
 - **Broad Format Support**: 
- Works with many [supported image formats](#supported-formats).
+ Works with many [supported image formats](#supported-formats) — including JPEG XL and
+ HEIC/HEIF/AVIF input, and modern targets like AVIF, JPEG XL and optimized PNG (oxipng).
+- **EXIF control**: strip (default), keep, or filter specific tags — with orientation
+  baked into the pixels when the tag is dropped.
+- **Animation support**: re-encode animated GIF/WebP/APNG input to animated WebP, APNG or GIF
+  with frame timing and loop count preserved.
+- **Desktop GUI**: drag-and-drop files or folders onto a queue-centric window
+  ([gui/README.md](gui/README.md)); conversions are byte-identical to the CLI.
 - **Works with huge images**:
   Can optimize very large images (~1GiB input image size, ~32Kx~16K px dimensions).
 - **Speedy Processing**:
   Written in Rust to keep overhead to a minimum, we also take advantage of `rayon` for parallel processing.
 - **Input selection using Glob Patterns**:
   Target selection is made intuitive for cli enthusiasts via glob patterns.
+- **Scriptable**: machine-readable JSON-lines event logs via `--json-log`, typed job API
+  (`byteshaver::job`) for embedding the converter in other Rust software.
 - **Custom Output**:
  Choose where your converted images are saved.
 
@@ -48,7 +57,7 @@ Compression ratio: 54.95%
 
 ### Input formats 🖼️
 
-To keep it simple: `JPEG`, `PNG`, `GIF`, `WebP`, `JPEG XL`, `BMP`, `DDS`, `Farbfeld`, `HDR`, `ICO`, `EXR`, `PNM`, `QOI`, `TGA`, `TIFF`
+To keep it simple: `JPEG`, `PNG` (incl. APNG), `GIF`, `WebP` (incl. animated), `JPEG XL`, `BMP`, `DDS`, `Farbfeld`, `HDR`, `ICO`, `EXR`, `PNM`, `QOI`, `TGA`, `TIFF`
 
 Input images are decoded using the `image` crate,
  please see [their documentation for supported image formats](https://docs.rs/image/0.25.6/image/codecs/index.html#supported-formats).
@@ -77,12 +86,20 @@ while the **docker images include it** and are validated end-to-end by CI.
 - `webp`, webp encoder using the `webp` crate (libwebp bindings) - offers lossy and lossless encoding
 - `webp-image`, webp encoder using the `image` crate - offers lossless encoding
 - `avif`, avif encoder using the `ravif` crate - offers lossy and lossless encoding
-- `png`, png encoder using the `image` crate - offers lossless encoding
-- `jpeg`, jpeg optimizer using the `mozjpeg` crate - only optimizes images
+- `png`, png encoder using the `png` crate - offers lossless encoding (with optional eXIf embedding)
+- `jpeg`, jpeg optimizer using the `mozjpeg` crate - only optimizes images (with optional EXIF embedding)
 - `jxl`, jpeg-xl encoder using in-tree FFI bindings to `libjxl` (vendored static build via `jpegxl-src`) - offers
   lossy and lossless encoding, real animated output (frame durations), EXIF embedding and the full
   `JxlEncoderFrameSettingId` surface via repeatable `--setting ID=VALUE` flags. Requires the `jxl` feature
   (enabled by default) and `cmake`, a C++ compiler and `nasm` at build time.
+- `oxipng`, optimal lossless PNG compression using the `oxipng` crate - PNG→PNG inputs are re-optimized
+  byte-level passthrough (bit-exact, preserves palette/tRNS/APNG chunks); other inputs are transcoded
+  first. Requires the `opt-oxipng` feature (enabled by default).
+- `webp-anim`, animated webp encoder using the `webp-animation` crate - animated input
+  (gif/animated webp/APNG) with frame timing + loop count preserved. Requires `anim-webp` (default).
+- `apng`, animated PNG encoder using the `png` crate - animated input with millisecond-exact
+  delays and loop count preserved. Requires `anim-apng` (default).
+- `gif`, (animated) gif encoder using the `image` crate - delays rounded to the GIF-standard 10 ms.
 
 #### Output format notes 📝
 
@@ -163,7 +180,9 @@ collision / animation policies, live per-file progress, cancel, and a report
 panel with JSONL export. Conversions run through the same headless core the
 CLI uses, so outputs are byte-identical.
 
-![byteshaver-gui screenshot](docs/gui-screenshot.png) <!-- placeholder: window with drop banner, queue table, options panel, footer -->
+<!-- TODO: replace with a real screenshot
+![byteshaver-gui screenshot](docs/gui-screenshot.png)
+-->
 
 Build it from source:
 
@@ -182,8 +201,9 @@ Notes:
   input is only offered when the core was built with the `dec-heif` feature.
 - Settings (output dir, encoder + options, policies, window size) persist in
   the OS config dir under `byteshaver-gui/settings.json`.
-- Docker images and the release pipeline remain CLI-only; see
-  [gui/README.md](gui/README.md) for the (not yet wired) CI additions.
+- GUI binaries are published for every release alongside the CLI (see
+  [Installation](#using-published-binaries--)); Linux builds use the X11
+  windowing backend. See [gui/README.md](gui/README.md) for build details.
 
 ### Requests
 
@@ -277,220 +297,103 @@ For detailed command usage, see all arguments with `--help` or `-h`:
 
 ```bash
 ❯ byteshaver --help
-A configurable and efficient batch image converter written in Rust.
+  A configurable and efficient batch image converter written in Rust.
+  
+  Usage: byteshaver [OPTIONS] <PATTERN> <COMMAND>
+  
+  Commands:
+    webp        Convert images to webp format (using webp crate)
+    webp-image  Convert images to webp format (using image crate)
+    avif        Convert images to avif format (using ravif crate)
+    png         Convert images to png format (using image crate)
+    jpeg        Convert images to optimized jpeg format (using mozjpeg crate)
+    jxl         Convert images to jpeg-xl format (using libjxl)
+    oxipng      Convert images to optimally compressed png format (using oxipng)
+    webp-anim   Convert images to animated webp format (using webp-animation crate). Supports animated input (gif, animated webp, APNG); the source loop count is preserved. Still input becomes a 1-frame animation
+    apng        Convert images to animated png format (APNG, using png crate). Supports animated input (gif, animated webp, APNG); the source loop count is preserved. Still input becomes a 1-frame animation. The default image stays readable by non-APNG-aware viewers
+    gif         Convert images to (animated) gif format (using image crate). Supports animated input; the source loop count is preserved. Note: frame delays are rounded to the GIF-standard 10 ms granularity
+    clean       Remove files matching a glob pattern
+    help        Print this message or the help of the given subcommand(s)
+  
+  Arguments:
+    <PATTERN>
+            Glob pattern to match images to convert. Example: `images/**/*.png`
+  
+  Options:
+    -o, --output <OUTPUT>
+            Output directory (flat) of processed images. Defaults to the same location as the original images with the new file extension. If set, replaces the fixed base of the pattern directory structure of the input pattern. (before any * in the glob pattern)
+  
+        --reverse-processing-order
+            By default, byteshaver will process input files in lexicographical order after expanding the pattern. Setting this starts the process from the back
+  
+        --overwrite-if-smaller
+            Overwrite the existing output file if the current conversion resulted in a smaller file
+  
+        --overwrite-existing
+            Overwrite existing output files regardless of size
+  
+        --discard-if-larger-than-input
+            Discards the encoding result if it is larger than the input file (does not create an output file)
+  
+        --discard-input-alpha-channel
+            Discards the alpha channel of the input image(s) if it is present. (this does not make loading faster, but it can improve the encoding result)
+  
+        --exif <keep|strip|filter>
+            EXIF metadata handling policy (global). strip: remove all EXIF and bake the orientation into the pixels (default, privacy-safe). keep: copy EXIF verbatim into outputs where the container supports it. filter: keep all tags except --exif-except <TAGS>, or only --exif-only <TAGS>
+  
+            Possible values:
+            - keep:   Copy EXIF verbatim into outputs that support it
+            - strip:  Remove all EXIF from outputs (default)
+            - filter: Keep all but `--exif-except <TAGS>`, or only `--exif-only <TAGS>`
+  
+        --exif-except <TAGS>
+            Comma-separated EXIF tags/IFDs to drop when using --exif filter (e.g. --exif-except gps,GPSInfo,Orientation; names from --exif-list-tags, IFD wildcards ifd0/ifd1/exif/gps/interop, or numeric tags like 0x8825). Mutually exclusive with --exif-only; requires --exif filter
+  
+        --exif-only <TAGS>
+            Comma-separated EXIF tags/IFDs to keep when using --exif filter (same syntax as --exif-except). Mutually exclusive with --exif-except; requires --exif filter
+  
+        --exif-list-tags
+            Print recognized EXIF tag names and exit
+  
+        --animated-input <first-frame|error>
+            How to treat animated input (gif / animated webp / APNG) when the selected target cannot encode animations. first-frame: encode the first frame only, with a notice (default). error: fail the file with an error instead of silently dropping the animation (for pipelines that must never drop frames)
+  
+            Possible values:
+            - first-frame: Encode the first frame only, printing a notice (default)
+            - error:       Fail the file with an error instead of silently dropping animation
+  
+        --max-animation-memory <MIB>
+            Hard cap for decoded animation memory in MiB (frames are RGBA: width x height x 4 x frames). Files whose projected frame buffers exceed the cap fail with an error instead of risking an OOM. Defaults to 4096
+  
+        --json-log <PATH>
+            Write one JSON object per progress event to this file (JSON lines) in addition to the regular stdout output (requires the `logs` feature, on by default)
+  
+    -h, --help
+            Print help (see a summary with '-h')
+  
+    -V, --version
+            Print version
 
-Usage: byteshaver [OPTIONS] <PATTERN> <COMMAND>
-
-Commands:
-  webp        Convert images to webp format (using webp crate)
-  webp-image  Convert images to webp format (using image crate)
-  avif        Convert images to avif format (using ravif crate)
-  png         Convert images to png format (using image crate)
-  jpeg        Convert images to optimized jpeg format (using mozjpeg crate)
-  jxl         Convert images to jpeg-xl format (using libjxl)
-  clean       Remove files matching a glob pattern
-  help        Print this message or the help of the given subcommand(s)
-
-Arguments:
-  <PATTERN>  Glob pattern to match images to convert. Example: `images/**/*.png`
-
-Options:
-  -o, --output <OUTPUT>               Output directory (flat) of processed images. Defaults to the same location as the original images with the new file extension. If set, replaces the fixed base of the pattern directory structure of the input pattern. (before any * in the glob pattern)
-      --reverse-processing-order      By default, byteshaver will process input files in lexicographical order after expanding the pattern. Setting this starts the process from the back
-      --overwrite-if-smaller          Overwrite the existing output file if the current conversion resulted in a smaller file
-      --overwrite-existing            Overwrite existing output files regardless of size
-      --discard-if-larger-than-input  Discards the encoding result if it is larger than the input file (does not create an output file)
-      --discard-input-alpha-channel   Discards the alpha channel of the input image(s) if it is present. (this does not make loading faster, but it can improve the encoding result)
-  -h, --help                          Print help
-  -V, --version                       Print version
+> Note: HEIC/HEIF-enabled builds (`dec-heif` feature, docker images) additionally
+> expose the global `--heif-image-policy <primary|all>` flag.
 ```
 
-For the `webp` command:
+Command-specific options (every command also accepts all global options shown above —
+run `byteshaver <command> --help` for the full list with descriptions):
 
-```bash
-❯ byteshaver webp --help
-Convert images to webp format (using webp crate)
-
-Usage: byteshaver <PATTERN> webp [OPTIONS]
-
-Options:
-      --lossless                      Use lossless encoding mode. Defaults to false
-  -q, --quality <QUALITY>             Control target quality (0 - 100, lower is worse but results in smaller files). Defaults to 90.0
-  -o, --output <OUTPUT>               Output directory (flat) of processed images. Defaults to the same location as the original images with the new file extension. If set, replaces the fixed base of the pattern directory structure of the input pattern. (before any * in the glob pattern)
-      --reverse-processing-order      By default, byteshaver will process input files in lexicographical order after expanding the pattern. Setting this starts the process from the back
-      --overwrite-if-smaller          Overwrite the existing output file if the current conversion resulted in a smaller file
-      --overwrite-existing            Overwrite existing output files regardless of size
-      --discard-if-larger-than-input  Discards the encoding result if it is larger than the input file (does not create an output file)
-      --discard-input-alpha-channel   Discards the alpha channel of the input image(s) if it is present. (this does not make loading faster, but it can improve the encoding result)
-  -h, --help                          Print help
-```
-
-For the `webp-image` command:
-
-```bash
-❯ byteshaver webp-image --help
-Convert images to webp format (using image crate)
-
-Usage: byteshaver <PATTERN> webp-image [OPTIONS]
-
-Options:
-  -o, --output <OUTPUT>               Output directory (flat) of processed images. Defaults to the same location as the original images with the new file extension. If set, replaces the fixed base of the pattern directory structure of the input pattern. (before any * in the glob pattern)
-      --reverse-processing-order      By default, byteshaver will process input files in lexicographical order after expanding the pattern. Setting this starts the process from the back
-      --overwrite-if-smaller          Overwrite the existing output file if the current conversion resulted in a smaller file
-      --overwrite-existing            Overwrite existing output files regardless of size
-      --discard-if-larger-than-input  Discards the encoding result if it is larger than the input file (does not create an output file)
-      --discard-input-alpha-channel   Discards the alpha channel of the input image(s) if it is present. (this does not make loading faster, but it can improve the encoding result)
-  -h, --help                          Print help
-```
-
-For the `avif` command:
-
-```bash
-❯ byteshaver avif --help
-Convert images to avif format (using ravif crate)
-
-Usage: byteshaver <PATTERN> avif [OPTIONS]
-
-Options:
-  -q, --quality <QUALITY>
-          Control target quality (0 - 100, lower is worse but results in smaller files). Defaults to 90.0
-  -s, --speed <SPEED>
-          Control encoding speed (1 - 10, lower is much slower but has a better quality and lower filesize). Defaults to 3
-      --bit-depth <BIT_DEPTH>
-          Choose internal bit depth. (in the generated avif file, nothing to do with the input file) [possible values: eight, ten, auto]
-      --color-model <COLOR_MODEL>
-          Choose internal color model. (in the generated avif file, nothing to do with the input file) [possible values: y-cb-cr, rgb]
-      --alpha-color-mode <ALPHA_COLOR_MODE>
-          Choose internal alpha color mode. (in the generated avif file, nothing to do with the input file) Irrelevant for images without transparency [possible values: unassociated-dirty, unassociated-clean, premultiplied]
-  -a, --alpha-quality <ALPHA_QUALITY>
-          Control target alpha quality (0 - 100, lower is worse). Defaults to 90.0
-  -o, --output <OUTPUT>
-          Output directory (flat) of processed images. Defaults to the same location as the original images with the new file extension. If set, replaces the fixed base of the pattern directory structure of the input pattern. (before any * in the glob pattern)
-      --reverse-processing-order
-          By default, byteshaver will process input files in lexicographical order after expanding the pattern. Setting this starts the process from the back
-      --overwrite-if-smaller
-          Overwrite the existing output file if the current conversion resulted in a smaller file
-      --overwrite-existing
-          Overwrite existing output files regardless of size
-      --discard-if-larger-than-input
-          Discards the encoding result if it is larger than the input file (does not create an output file)
-      --discard-input-alpha-channel
-          Discards the alpha channel of the input image(s) if it is present. (this does not make loading faster, but it can improve the encoding result)
-  -h, --help
-          Print help
-```
-
-For the `png` command:
-
-```bash
-❯ byteshaver png --help
-Convert images to png format (using image crate)
-
-Usage: byteshaver <PATTERN> png [OPTIONS]
-
-Options:
-      --compression-type <COMPRESSION_TYPE>
-          Choose the png compression type
-          
-          See: https://docs.rs/image/latest/image/codecs/png/enum.CompressionType.html
-          
-          [possible values: default, fast, best]
-
-      --filter-type <FILTER_TYPE>
-          Choose the png filter type
-          
-          See: https://docs.rs/image/latest/image/codecs/png/enum.CompressionType.html
-          
-          [possible values: no-filter, sub, up, avg, paeth, adaptive]
-
-  -o, --output <OUTPUT>
-          Output directory (flat) of processed images. Defaults to the same location as the original images with the new file extension. If set, replaces the fixed base of the pattern directory structure of the input pattern. (before any * in the glob pattern)
-
-      --reverse-processing-order
-          By default, byteshaver will process input files in lexicographical order after expanding the pattern. Setting this starts the process from the back
-
-      --overwrite-if-smaller
-          Overwrite the existing output file if the current conversion resulted in a smaller file
-
-      --overwrite-existing
-          Overwrite existing output files regardless of size
-
-      --discard-if-larger-than-input
-          Discards the encoding result if it is larger than the input file (does not create an output file)
-
-      --discard-input-alpha-channel
-          Discards the alpha channel of the input image(s) if it is present. (this does not make loading faster, but it can improve the encoding result)
-
-  -h, --help
-          Print help (see a summary with '-h')
-```
-
-For the `jpeg` command (unstable; likes to crash! this is a work in progress!):
-
-```bash
-❯ byteshaver jpeg --help
-Convert images to optimized jpeg format (using mozjpeg crate)
-
-Usage: byteshaver <PATTERN> jpeg [OPTIONS]
-
-Options:
-  -o, --output <OUTPUT>               Output directory (flat) of processed images. Defaults to the same location as the original images with the new file extension. If set, replaces the fixed base of the pattern directory structure of the input pattern. (before any * in the glob pattern)
-      --reverse-processing-order      By default, byteshaver will process input files in lexicographical order after expanding the pattern. Setting this starts the process from the back
-      --overwrite-if-smaller          Overwrite the existing output file if the current conversion resulted in a smaller file
-      --overwrite-existing            Overwrite existing output files regardless of size
-      --discard-if-larger-than-input  Discards the encoding result if it is larger than the input file (does not create an output file)
-      --discard-input-alpha-channel   Discards the alpha channel of the input image(s) if it is present. (this does not make loading faster, but it can improve the encoding result)
-  -h, --help                          Print help
-```
-
-For the `jxl` command:
-
-```bash
-❯ byteshaver jxl --help
-Convert images to jpeg-xl format (using libjxl)
-
-Usage: byteshaver <PATTERN> jxl [OPTIONS]
-
-Options:
-  -q, --quality <QUALITY>             JPEG-style quality 0-100 (higher = better). Mutually exclusive with --distance
-      --distance <DISTANCE>           Maximum Butteraugli distance 0.0-25.0 (0.0 = mathematically lossless, 1.0 = visually lossless, libjxl default 1.0). Mutually exclusive with --quality
-      --lossless                      Lossless mode. Overrides quality/distance
-  -e, --effort <EFFORT>               Encoding effort 1 (fastest) - 10 (slowest/best). Defaults to 7
-      --container                     Force the box-based container format (required for manual Exif/XMP embedding; auto-enabled when EXIF is embedded)
-      --original-profile              Keep the original color profile (do not convert to internal XYB); needed for lossless
-      --decoding-speed <DECODING_SPEED>  Target decode speed tier 0-4 (higher = faster decode, larger file). Defaults to 0
-      --intensity-target <INTENSITY_TARGET>  Photometric target intensity in nits (HDR). Defaults to libjxl's 255
-      --bit-depth <BIT_DEPTH>         Force output bit depth: 8 or 16 (default: follow the input)
-      --color-encoding <COLOR_ENCODING>  Color encoding: srgb | linear-srgb | srgb-luma | linear-srgb-luma | icc-passthrough. Defaults to srgb
-      --setting <ID=VALUE>            Advanced: repeatable libjxl frame-setting passthrough, e.g. --setting brotli_effort=9 (ids are resolved case-insensitively; unknown ids list the available set)
-  -o, --output <OUTPUT>               Output directory (flat) of processed images. Defaults to the same location as the original images with the new file extension. If set, replaces the fixed base of the pattern directory structure of the input pattern. (before any * in the glob pattern)
-      --reverse-processing-order      By default, byteshaver will process input files in lexicographical order after expanding the pattern. Setting this starts the process from the back
-      --overwrite-if-smaller          Overwrite the existing output file if the current conversion resulted in a smaller file
-      --overwrite-existing            Overwrite existing output files regardless of size
-      --discard-if-larger-than-input  Discards the encoding result if it is larger than the input file (does not create an output file)
-      --discard-input-alpha-channel   Discards the alpha channel of the input image(s) if it is present. (this does not make loading faster, but it can improve the encoding result)
-  -h, --help                          Print help
-
-```
-
-For the `clean` command:
-
-```bash
-❯ byteshaver clean --help
-Remove files matching a glob pattern
-
-Usage: byteshaver <PATTERN> clean [OPTIONS]
-
-Options:
-  -o, --output <OUTPUT>               Output directory (flat) of processed images. Defaults to the same location as the original images with the new file extension. If set, replaces the fixed base of the pattern directory structure of the input pattern. (before any * in the glob pattern)
-      --reverse-processing-order      By default, byteshaver will process input files in lexicographical order after expanding the pattern. Setting this starts the process from the back
-      --overwrite-if-smaller          Overwrite the existing output file if the current conversion resulted in a smaller file
-      --overwrite-existing            Overwrite existing output files regardless of size
-      --discard-if-larger-than-input  Discards the encoding result if it is larger than the input file (does not create an output file)
-      --discard-input-alpha-channel   Discards the alpha channel of the input image(s) if it is present. (this does not make loading faster, but it can improve the encoding result)
-  -h, --help                          Print help
-
-```
+| command | command-specific options |
+|---------|--------------------------|
+| `webp` | `--lossless` · `-q, --quality <0-100>` (default 90) |
+| `webp-image` | — |
+| `avif` | `-q, --quality <0-100>` (default 90) · `-s, --speed <1-10>` (default 3) · `--bit-depth eight\|ten\|auto` · `--color-model y-cb-cr\|rgb` · `--alpha-color-mode unassociated-dirty\|unassociated-clean\|premultiplied` · `-a, --alpha-quality <0-100>` |
+| `png` | `--compression-type default\|fast\|best` · `--filter-type no-filter\|sub\|up\|avg\|paeth\|adaptive` |
+| `jpeg` | — |
+| `jxl` | `-q, --quality <0-100>` · `--distance <0-25>` (mutually exclusive with `--quality`) · `--lossless` · `-e, --effort <1-10>` (default 7) · `--container` · `--original-profile` · `--decoding-speed <0-4>` · `--intensity-target <nits>` · `--bit-depth 8\|16` · `--color-encoding srgb\|linear-srgb\|srgb-luma\|linear-srgb-luma\|icc-passthrough` · `--setting <ID=VALUE>` (repeatable) |
+| `oxipng` | `-l, --level <0-6\|max>` (default 2) · `--zopfli` · `--zopfli-iterations <n>` (default 15) · `--interlace keep\|none\|adam7` · `--strip none\|safe\|all` · `--filters <list>` · `--optimize-alpha` · `--no-reduction <list>` · `--scale-16` · `--fix-errors` · `--timeout-secs <s>` |
+| `webp-anim` | `--lossless` · `-q, --quality <0-100>` (default 90) · `--kmin <n>` · `--kmax <n>` · `--minimize-size` · `--allow-mixed` · `--method <0-6>` |
+| `apng` | `--compression-type default\|fast\|best` · `--filter-type no-filter\|sub\|up\|avg\|paeth\|adaptive` |
+| `gif` | `-s, --speed <1-10>` |
+| `clean` | — |
 
 ---
 
@@ -553,7 +456,7 @@ git clone https://github.com/Gunzinger/byteshaver.git
 cd byteshaver
 # 2. Build the project:
 cargo build --release
-3. Install locally
+# 3. Install locally
 cargo install --path .
 ```
 
@@ -569,24 +472,29 @@ cargo uninstall byteshaver
 
 ## What's Next
 
-- [ ] Testing
-- [x] Publishing automation (binaries, docker)
+- [x] Testing (unit + integration suite; `cargo test --workspace`)
+- [x] Publishing automation (binaries for CLI + GUI, docker incl. libheif validation)
 - [ ] Introduce advanced options for image transformations (resize, rotate)
 - [x] Progress bar for encoding
 - [ ] Expand support for additional input formats 
-  - [x] `avif`
+  - [x] `avif` (via libheif)
   - [x] `png`
-  - [ ] `jpeg` (WIP)
-  - [ ] `png` (via `oxipng` crate)
+  - [x] `jpeg` (incl. progressive/pjpeg fallback decoding)
   - [x] `heic/heif` (input, via libheif / `dec-heif` feature; enabled in docker images, stubbed in musl/windows release binaries for now)
-  - [ ] `jxl/jpeg-xl`
+  - [x] `jxl/jpeg-xl` (via jxl-oxide; stills + animation + metadata)
+  - [ ] `heic` in static release binaries (needs a statically linkable libheif + codec stack in CI)
+  - [ ] animated `avif` input
   - [ ] incoming wishes
-- [ ] Expand support for additional export formats by including more encoding libraries
-- [ ] Image metadata handling (EXIF data preservation/stripping)
-- [ ] Expand support for animated images/video encoding (to webp/avif/apng)
-- [ ] Output logs (to enable usage in automations static directory optimizations by link-rewriting)
+- [x] Expand support for additional export formats by including more encoding libraries
+  - [x] `jxl` (libjxl, full option surface)
+  - [x] `oxipng` (lossless PNG re-optimization)
+  - [x] animated `webp` / `apng` / `gif`
+  - [ ] animated `avif` (blocked upstream: needs libheif ≥ 1.20 with an AV1 encoder; see `docs/plans/06-*`)
+- [x] Image metadata handling (EXIF data preservation/stripping/filtering)
+- [x] Output logs (JSON-lines event log via `--json-log`)
 - [ ] `winresource` integration (application icon and .exe metadata for Windows binaries)
-- [ ] GUI
+- [x] GUI (egui/eframe desktop front-end; drag-and-drop queue; see `gui/`)
+  - [ ] GUI packaging polish (AppImage/.app/NSIS installers, icons, file associations)
 
 ---
 
