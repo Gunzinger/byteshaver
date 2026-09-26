@@ -1,4 +1,15 @@
-use clap::{ArgAction, Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
+
+/// EXIF metadata policy values of the `--exif` flag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum ExifPolicyArg {
+    /// Copy EXIF verbatim into outputs that support it.
+    Keep,
+    /// Remove all EXIF from outputs (default).
+    Strip,
+    /// Keep all but `--exif-except <TAGS>`, or only `--exif-only <TAGS>`.
+    Filter,
+}
 
 /// Image converter CLI
 #[derive(Parser, Debug)]
@@ -46,6 +57,43 @@ pub struct CliArgs {
     ///  (this does not make loading faster, but it can improve the encoding result)
     #[clap(long, global = true, action = Some(ArgAction::SetTrue))]
     pub discard_input_alpha_channel: Option<bool>,
+
+    /// EXIF metadata handling policy (global).
+    /// strip: remove all EXIF and bake the orientation into the pixels (default, privacy-safe).
+    /// keep: copy EXIF verbatim into outputs where the container supports it.
+    /// filter: keep all tags except --exif-except <TAGS>, or only --exif-only <TAGS>.
+    #[clap(long, value_enum, value_name = "keep|strip|filter", global = true)]
+    pub exif: Option<ExifPolicyArg>,
+
+    /// Comma-separated EXIF tags/IFDs to drop when using --exif filter
+    /// (e.g. --exif-except gps,GPSInfo,Orientation; names from --exif-list-tags,
+    /// IFD wildcards ifd0/ifd1/exif/gps/interop, or numeric tags like 0x8825).
+    /// Mutually exclusive with --exif-only; requires --exif filter.
+    #[clap(
+        long,
+        value_delimiter = ',',
+        value_name = "TAGS",
+        global = true,
+        requires = "exif"
+    )]
+    pub exif_except: Option<Vec<String>>,
+
+    /// Comma-separated EXIF tags/IFDs to keep when using --exif filter
+    /// (same syntax as --exif-except).
+    /// Mutually exclusive with --exif-except; requires --exif filter.
+    #[clap(
+        long,
+        value_delimiter = ',',
+        value_name = "TAGS",
+        global = true,
+        conflicts_with = "exif_except",
+        requires = "exif"
+    )]
+    pub exif_only: Option<Vec<String>>,
+
+    /// Print recognized EXIF tag names and exit.
+    #[clap(long, action = Some(ArgAction::SetTrue))]
+    pub exif_list_tags: Option<bool>,
 }
 
 /// Image converter actions

@@ -29,6 +29,9 @@ pub enum Outcome {
         input_size: u64,
         /// Size of the encoded output in bytes.
         output_size: u64,
+        /// EXIF metadata existed and was requested, but the target format
+        /// cannot carry it (e.g. AVIF) — counted for the summary.
+        metadata_dropped: bool,
     },
     /// Skipped because an output file already exists (no overwrite policy
     /// active, or the overwrite-if-smaller policy found no improvement).
@@ -117,6 +120,9 @@ pub struct RunStats {
     pub errors: u64,
     /// Number of files not processed due to Ctrl+C.
     pub aborted: u64,
+    /// Number of outputs that could not carry EXIF metadata although the
+    /// policy wanted it embedded (target format has no metadata support).
+    pub metadata_dropped: u64,
     /// Total size of all counted input files in bytes.
     pub input_size: u64,
     /// Total size of all counted outputs in bytes.
@@ -134,6 +140,7 @@ struct StatBuckets {
     collisions: u64,
     errors: u64,
     aborted: u64,
+    metadata_dropped: u64,
     input_size: u64,
     output_size: u64,
     preexisting_input_size: u64,
@@ -148,8 +155,10 @@ fn buckets_for(outcome: &Outcome) -> StatBuckets {
         Outcome::Encoded {
             input_size,
             output_size,
+            metadata_dropped,
         } => StatBuckets {
             successful: 1,
+            metadata_dropped: u64::from(*metadata_dropped),
             input_size: *input_size,
             output_size: *output_size,
             ..StatBuckets::default()
@@ -202,6 +211,7 @@ struct StatCounters {
     collisions: AtomicU64,
     errors: AtomicU64,
     aborted: AtomicU64,
+    metadata_dropped: AtomicU64,
     input_size: AtomicU64,
     output_size: AtomicU64,
     preexisting_input_size: AtomicU64,
@@ -221,6 +231,8 @@ impl StatCounters {
             .fetch_add(buckets.collisions, Ordering::SeqCst);
         self.errors.fetch_add(buckets.errors, Ordering::SeqCst);
         self.aborted.fetch_add(buckets.aborted, Ordering::SeqCst);
+        self.metadata_dropped
+            .fetch_add(buckets.metadata_dropped, Ordering::SeqCst);
         self.input_size
             .fetch_add(buckets.input_size, Ordering::SeqCst);
         self.output_size
@@ -332,6 +344,69 @@ fn source_buffer_size_bytes(source: &SourceImage) -> u64 {
     }
 }
 
+/// Resolves the EXIF policy for a loaded source image (WS4):
+///
+/// 1. computes the payload to embed via `metadata::resolve`,
+/// 2. when the resolution drops the Orientation tag while the source pixels
+///    are not upright yet, bakes the orientation transform into the pixels,
+/// 3. clears the payload when the target encoder cannot carry EXIF at all,
+///    printing one warning line per file.
+///
+/// Returns whether metadata was dropped because of the target format.
+#[cfg(feature = "exif")]
+fn apply_exif_policy_to_source(
+    source: &mut SourceImage,
+    policy: &crate::metadata::policy::ExifPolicy,
+    encoder: &dyn ImageEncoder,
+) -> bool {
+    let source_orientation = source
+        .metadata
+        .exif
+        .as_deref()
+        .and_then(crate::metadata::exif::orientation_from_payload);
+
+    let resolved = crate::metadata::resolve(policy, &source.metadata);
+    let resolved_keeps_orientation = resolved
+        .as_deref()
+        .and_then(crate::metadata::exif::orientation_from_payload);
+
+    // the Orientation tag is lost (policy stripped/filtered it): rotate the
+    // pixels upright so the output never appears sideways — but only when
+    // the decoder has not already applied the transform
+    if resolved_keeps_orientation.is_none()
+        && let Some(orientation) = source_orientation
+        && orientation != 1
+        && !source.metadata.exif_applied_orientation
+        && let ImageContent::Still(image) = &mut source.content
+    {
+        *image = crate::metadata::orientation::apply_orientation(image, orientation);
+    }
+
+    source.metadata.exif = resolved;
+
+    if source.metadata.exif.is_some() && !encoder.supports_metadata() {
+        println!(
+            "Warning: {} target does not support EXIF embedding; metadata dropped",
+            encoder.extension()
+        );
+        source.metadata.exif = None;
+        return true;
+    }
+    false
+}
+
+/// Feature-less fallback: without the `exif` feature there is no EXIF
+/// handling, so nothing is resolved, nothing is dropped, and no orientation
+/// transform can be derived.
+#[cfg(not(feature = "exif"))]
+fn apply_exif_policy_to_source(
+    _source: &mut SourceImage,
+    _policy: &crate::metadata::policy::ExifPolicy,
+    _encoder: &dyn ImageEncoder,
+) -> bool {
+    false
+}
+
 /// Converts a single input file and returns the resulting [`Outcome`].
 fn convert_file(
     input_path: &Path,
@@ -394,6 +469,10 @@ fn convert_file(
         source = source.into_without_alpha();
     }
 
+    // WS4: resolve the EXIF policy, bake the orientation into the pixels if
+    // the Orientation tag would be lost, and warn about unembeddable targets.
+    let metadata_dropped = apply_exif_policy_to_source(&mut source, &conf.exif, encoder);
+
     const HUGE_IMAGE_DIMENSION_LIMIT: u32 = 8192;
     let (width, height) = source_dimensions(&source);
     if width > HUGE_IMAGE_DIMENSION_LIMIT || height > HUGE_IMAGE_DIMENSION_LIMIT {
@@ -445,6 +524,7 @@ fn convert_file(
             Outcome::Encoded {
                 input_size,
                 output_size,
+                metadata_dropped,
             }
         }
         Err(err) => Outcome::Error(format!("Image encoding failed: {:?}", err)),
@@ -641,6 +721,7 @@ pub fn run(conf: ConversionConfig, enc: EncoderConfig) -> Result<RunStats, Error
     let output_preexisting = counters.get(&counters.preexisting_output_size);
     let input_discarded = counters.get(&counters.discarded_input_size);
     let output_discarded = counters.get(&counters.discarded_output_size);
+    let metadata_dropped = counters.get(&counters.metadata_dropped);
     let elapsed = pb.elapsed();
 
     println!("Encode statistics:");
@@ -655,6 +736,12 @@ pub fn run(conf: ConversionConfig, enc: EncoderConfig) -> Result<RunStats, Error
         );
     }
     println!("Errors:      {}", errors);
+    if metadata_dropped > 0 {
+        println!(
+            "Metadata:    {} outputs could not carry EXIF metadata (target format has no support)",
+            metadata_dropped
+        );
+    }
     if conf.discard_if_larger_than_input && discarded > 0 {
         println!(
             "Discarded:   {} (due to the encode being larger than the input; {} ➜ {})",
@@ -732,6 +819,7 @@ pub fn run(conf: ConversionConfig, enc: EncoderConfig) -> Result<RunStats, Error
         collisions,
         errors,
         aborted,
+        metadata_dropped,
         input_size: input_total,
         output_size: output_total,
         elapsed,
@@ -750,6 +838,7 @@ mod tests {
         let encoded = buckets_for(&Outcome::Encoded {
             input_size: 100,
             output_size: 50,
+            metadata_dropped: false,
         });
         assert_eq!(
             (
@@ -762,6 +851,15 @@ mod tests {
         );
         assert_eq!((encoded.input_size, encoded.output_size), (100, 50));
         assert_eq!(encoded.preexisting_input_size, 0);
+        assert_eq!(encoded.metadata_dropped, 0);
+
+        let encoded_dropped = buckets_for(&Outcome::Encoded {
+            input_size: 100,
+            output_size: 50,
+            metadata_dropped: true,
+        });
+        assert_eq!(encoded_dropped.metadata_dropped, 1);
+        assert_eq!(encoded_dropped.successful, 1);
 
         let skipped = buckets_for(&Outcome::SkippedExisting {
             input_size: 100,
@@ -830,6 +928,7 @@ mod tests {
         counters.add(&buckets_for(&Outcome::Encoded {
             input_size: 10,
             output_size: 5,
+            metadata_dropped: true,
         }));
         counters.add(&buckets_for(&Outcome::SkippedExisting {
             input_size: 20,
@@ -844,6 +943,7 @@ mod tests {
         assert_eq!(counters.get(&counters.skipped), 1);
         assert_eq!(counters.get(&counters.errors), 1);
         assert_eq!(counters.get(&counters.discarded), 1);
+        assert_eq!(counters.get(&counters.metadata_dropped), 1);
         // totals include encoded + skipped, but not discarded files
         assert_eq!(counters.get(&counters.input_size), 30);
         assert_eq!(counters.get(&counters.output_size), 13);

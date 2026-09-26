@@ -98,7 +98,12 @@ pub fn load_source(path: &Path) -> Result<SourceImage, Error> {
     }
 
     let mut decoder = reader.into_decoder()?;
-    let metadata = collect_metadata(&mut decoder)?;
+    let mut metadata = collect_metadata(&mut decoder)?;
+    // WS4: formats whose decoder does not surface the raw payload get an
+    // extraction fallback (WebP RIFF scan, TIFF container scan)
+    if metadata.exif.is_none() {
+        metadata.exif = crate::metadata::extract_exif_fallback(path, &source_format);
+    }
     let image = match DynamicImage::from_decoder(decoder) {
         Ok(image) => image,
         Err(err) => fallback_retry_read_image(path, Error::new(err))?,
@@ -150,7 +155,13 @@ fn open_reader(path: &Path) -> Result<ImageReader<BufReader<fs::File>>, Error> {
 }
 
 fn collect_metadata(decoder: &mut impl ImageDecoder) -> Result<ImageMetadata, Error> {
-    let exif = decoder.exif_metadata().map_err(Error::new)?;
+    // WS4: payloads are normalized to the raw TIFF convention here —
+    // decoders may include the b"Exif\0\0" marker prefix (e.g. the WebP
+    // EXIF chunk body); the pipeline and encoders only ever see raw TIFF.
+    let exif = decoder
+        .exif_metadata()
+        .map_err(Error::new)?
+        .and_then(crate::metadata::normalize_exif_payload);
     let icc = decoder.icc_profile().map_err(Error::new)?;
     let orientation: Orientation = decoder.orientation().map_err(Error::new)?;
     // decoders do not apply the EXIF orientation; applying it is WS4 territory

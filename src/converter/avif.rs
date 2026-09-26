@@ -133,6 +133,12 @@ impl super::ImageEncoder for AvifEncoder {
         false
     }
 
+    /// ravif has no metadata API, so EXIF cannot be embedded into avif
+    /// outputs (the pipeline warns and counts these files).
+    fn supports_metadata(&self) -> bool {
+        false
+    }
+
     fn adjust_threading(&mut self, budget: ThreadBudget) {
         self.num_threads = budget.threads_per_encoder;
     }

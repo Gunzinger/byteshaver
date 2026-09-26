@@ -65,6 +65,21 @@ pub trait ImageEncoder: Send + Sync {
     /// Encodes a still image into the encoder's target format.
     fn encode_still_image(&self, image: &DynamicImage) -> Result<Vec<u8>, Error>;
 
+    /// Encodes a still image, embedding the metadata the target format
+    /// supports (WS4: EXIF via `metadata.exif`, already resolved by the
+    /// pipeline policy hook).
+    ///
+    /// The default ignores the metadata and behaves like
+    /// [`ImageEncoder::encode_still_image`]; embedding encoders override it.
+    fn encode_still_image_with_metadata(
+        &self,
+        image: &DynamicImage,
+        metadata: &crate::metadata::ImageMetadata,
+    ) -> Result<Vec<u8>, Error> {
+        let _ = metadata;
+        self.encode_still_image(image)
+    }
+
     /// Encodes a source image.
     ///
     /// The default handles still content and, until animated encoders land
@@ -72,7 +87,9 @@ pub trait ImageEncoder: Send + Sync {
     /// a one-line warning.
     fn encode(&self, input: &SourceImage) -> Result<Vec<u8>, Error> {
         match &input.content {
-            crate::input::ImageContent::Still(image) => self.encode_still_image(image),
+            crate::input::ImageContent::Still(image) => {
+                self.encode_still_image_with_metadata(image, &input.metadata)
+            }
             crate::input::ImageContent::Animated(animation) => {
                 let first = animation.first_frame().ok_or_else(|| {
                     Error::from_string("Animation does not contain any frames".to_string())
@@ -81,7 +98,10 @@ pub trait ImageEncoder: Send + Sync {
                     "Warning: {} does not support animated input yet; encoding the first frame only",
                     self.describe()
                 );
-                self.encode_still_image(&DynamicImage::ImageRgba8(first.buffer.clone()))
+                self.encode_still_image_with_metadata(
+                    &DynamicImage::ImageRgba8(first.buffer.clone()),
+                    &input.metadata,
+                )
             }
         }
     }
@@ -89,6 +109,15 @@ pub trait ImageEncoder: Send + Sync {
     /// Whether this encoder can encode animated input natively.
     fn supports_animation(&self) -> bool {
         false
+    }
+
+    /// Whether this encoder can embed EXIF metadata into its output (WS4).
+    ///
+    /// Encoders that cannot (e.g. ravif AVIF) report `false`; the pipeline
+    /// then drops the payload with a per-file warning and counts it in
+    /// [`RunStats::metadata_dropped`][crate::pipeline::RunStats].
+    fn supports_metadata(&self) -> bool {
+        true
     }
 
     /// Applies a threading budget to the encoder before encoding starts.
