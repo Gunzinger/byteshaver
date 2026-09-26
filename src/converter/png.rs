@@ -53,7 +53,9 @@ pub struct PngOptions {
 }
 
 /// Replicates `image::codecs::png::CompressionType` → `png::Compression`.
-fn convert_compression_type_to_ext(compression_type: Option<CompressionType>) -> png::Compression {
+pub(crate) fn convert_compression_type_to_ext(
+    compression_type: Option<CompressionType>,
+) -> png::Compression {
     match compression_type.unwrap_or(CompressionType::Default) {
         CompressionType::Default => png::Compression::Balanced,
         CompressionType::Fast => png::Compression::Fast,
@@ -62,7 +64,7 @@ fn convert_compression_type_to_ext(compression_type: Option<CompressionType>) ->
 }
 
 /// Replicates `image::codecs::png::FilterType` → `png::Filter`.
-fn convert_filter_type_to_ext(filter_type: Option<FilterType>) -> png::Filter {
+pub(crate) fn convert_filter_type_to_ext(filter_type: Option<FilterType>) -> png::Filter {
     match filter_type.unwrap_or(FilterType::Adaptive) {
         FilterType::NoFilter => png::Filter::NoFilter,
         FilterType::Sub => png::Filter::Sub,

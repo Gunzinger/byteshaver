@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use image::metadata::Orientation;
 use image::{
     AnimationDecoder, DynamicImage, ImageDecoder, ImageFormat as ImageCrateFormat, ImageReader,
-    Limits, codecs::gif::GifDecoder,
+    Limits, codecs::gif::GifDecoder, codecs::png::PngDecoder, codecs::webp::WebPDecoder,
 };
 
 use crate::Error;
@@ -137,6 +137,14 @@ pub fn load_source_with_index(
     if source_format == ImageFormat::Gif {
         return load_source_animated(path, source_format);
     }
+    // WS5: WebP and PNG are only animated when the container says so; probe
+    // cheaply on a dedicated reader and fall through to the still path
+    // otherwise (single-frame results collapse to `Still` as well)
+    if matches!(source_format, ImageFormat::Webp | ImageFormat::Png)
+        && let Some(source) = load_source_animated_if_container_is(path, source_format)?
+    {
+        return Ok(source);
+    }
 
     let mut decoder = reader.into_decoder()?;
     let mut metadata = collect_metadata(&mut decoder)?;
@@ -183,7 +191,8 @@ fn load_heif_source(_path: &Path, _image_index: Option<usize>) -> Result<SourceI
     )))
 }
 
-/// Decodes an animated GIF into [`AnimationData`] (proves the plumbing; WS5 extends this).
+/// Decodes an animated GIF into [`AnimationData`] (WS5: also WebP/APNG via
+/// container probing; single-frame results collapse to the still path).
 fn load_source_animated(path: &Path, source_format: ImageFormat) -> Result<SourceImage, Error> {
     let file = fs::File::open(path)?;
     let decoder = GifDecoder::new(BufReader::new(file))?;
@@ -201,6 +210,16 @@ fn load_source_animated(path: &Path, source_format: ImageFormat) -> Result<Sourc
             path.display()
         )));
     }
+    if frames.len() == 1 {
+        // single-frame gif: resolve to the fast still path
+        let frame = frames.into_iter().next().expect("checked length above");
+        return Ok(SourceImage {
+            content: ImageContent::Still(DynamicImage::ImageRgba8(frame.buffer)),
+            metadata: ImageMetadata::default(),
+            source_format,
+            source_path: path.to_path_buf(),
+        });
+    }
 
     Ok(SourceImage {
         content: ImageContent::Animated(AnimationData {
@@ -213,6 +232,103 @@ fn load_source_animated(path: &Path, source_format: ImageFormat) -> Result<Sourc
         source_format,
         source_path: path.to_path_buf(),
     })
+}
+
+/// Probes the container of a potentially animated WebP/PNG file and, when it
+/// declares an animation, decodes it into [`AnimationData`].
+///
+/// Returns `Ok(None)` for still containers (the caller falls back to the
+/// regular still decode path). Single-frame animations are collapsed into
+/// [`ImageContent::Still`] so the still encoder paths stay fast.
+fn load_source_animated_if_container_is(
+    path: &Path,
+    source_format: ImageFormat,
+) -> Result<Option<SourceImage>, Error> {
+    let file = fs::File::open(path)?;
+    let reader = BufReader::new(file);
+
+    let (loop_count, dimensions, frames, metadata) = match source_format {
+        ImageFormat::Webp => {
+            let mut decoder = WebPDecoder::new(reader)?;
+            if !decoder.has_animation() {
+                return Ok(None);
+            }
+            let loop_count = decoder.loop_count();
+            let (width, height) = decoder.dimensions();
+            // EXIF rides in a RIFF chunk of the animated container
+            let metadata = ImageMetadata {
+                exif: decoder
+                    .exif_metadata()
+                    .map_err(Error::new)?
+                    .and_then(crate::metadata::normalize_exif_payload),
+                icc: decoder.icc_profile().map_err(Error::new)?,
+                xmp: None,
+                exif_applied_orientation: decoder.orientation().map_err(Error::new)?
+                    == Orientation::NoTransforms,
+            };
+            let mut frames = Vec::new();
+            for frame in decoder.into_frames() {
+                let frame = frame.map_err(Error::new)?;
+                frames.push(FrameData::from_image_frame(frame));
+            }
+            (loop_count, (width, height), frames, metadata)
+        }
+        ImageFormat::Png => {
+            let mut decoder = PngDecoder::new(reader)?;
+            if !decoder.is_apng().map_err(Error::new)? {
+                return Ok(None);
+            }
+            let (width, height) = decoder.dimensions();
+            let metadata = ImageMetadata {
+                exif: decoder
+                    .exif_metadata()
+                    .map_err(Error::new)?
+                    .and_then(crate::metadata::normalize_exif_payload),
+                icc: decoder.icc_profile().map_err(Error::new)?,
+                xmp: None,
+                exif_applied_orientation: decoder.orientation().map_err(Error::new)?
+                    == Orientation::NoTransforms,
+            };
+            let apng = decoder.apng().map_err(Error::new)?;
+            let loop_count = apng.loop_count();
+            let mut frames = Vec::new();
+            for frame in apng.into_frames() {
+                let frame = frame.map_err(Error::new)?;
+                frames.push(FrameData::from_image_frame(frame));
+            }
+            (loop_count, (width, height), frames, metadata)
+        }
+        _ => return Ok(None),
+    };
+
+    if frames.is_empty() {
+        return Err(Error::from_string(format!(
+            "Animated image {} does not contain any frames",
+            path.display()
+        )));
+    }
+    if frames.len() == 1 {
+        // single-frame animation: resolve to the fast still path
+        let frame = frames.into_iter().next().expect("checked length above");
+        return Ok(Some(SourceImage {
+            content: ImageContent::Still(DynamicImage::ImageRgba8(frame.buffer)),
+            metadata,
+            source_format,
+            source_path: path.to_path_buf(),
+        }));
+    }
+
+    Ok(Some(SourceImage {
+        content: ImageContent::Animated(AnimationData {
+            width: dimensions.0,
+            height: dimensions.1,
+            frames,
+            loop_count,
+        }),
+        metadata,
+        source_format,
+        source_path: path.to_path_buf(),
+    }))
 }
 
 fn open_reader(path: &Path) -> Result<ImageReader<BufReader<fs::File>>, Error> {

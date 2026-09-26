@@ -113,6 +113,30 @@ The `jxl` target mirrors the `cjxl` option surface:
 - Building requires `cmake`, a C++ compiler and `nasm` (the vendored libjxl is compiled once
   during the cargo build).
 
+### Animations 🎞️
+
+Animated inputs (`gif`, animated `webp`, `APNG`) are decoded with frame timing and
+loop count preserved, and can be re-encoded to animated targets:
+
+| target command | animated output | container notes |
+|----------------|-----------------|-----------------|
+| `webp-anim`    | yes (webp-animation/libwebp) | loop count preserved; EXIF embedded via a `EXIF` RIFF chunk |
+| `apng`         | yes (png crate)          | `.png` output; a separate default image keeps non-APNG viewers happy; EXIF embedded as `eXIf` chunk |
+| `gif`          | yes (image crate)        | no EXIF support |
+
+Rounding notes:
+- internal timing is millisecond-exact; `gif` targets round down to the
+  GIF-standard 10 ms granularity (minimum 10 ms per frame),
+- `apng` writes millisecond-exact delays (1/1000 s fractions),
+- animated `webp` keeps millisecond-exact cumulative timestamps.
+
+Converting animated input to a target that cannot encode animations
+(`jpeg`, `avif`, still `webp`/`png`, ...) defaults to encoding the first frame
+with a notice. Use `--animated-input error` to fail such files instead
+(e.g. in pipelines that must never silently drop animation), and
+`--max-animation-memory <MiB>` (default 4096) to bound the memory used by
+decoded frame buffers.
+
 ### Requests
 
 If this does not cover your needs,

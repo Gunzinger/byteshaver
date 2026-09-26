@@ -14,7 +14,7 @@ use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
 use crate::Error;
-use crate::config::{ConversionConfig, EncoderConfig};
+use crate::config::{AnimatedInputPolicy, ConversionConfig, EncoderConfig};
 use crate::converter::{EncoderRegistry, ImageEncoder, ThreadBudget};
 use crate::format::ImageFormat;
 use crate::input::{self, ImageContent, SourceImage};
@@ -552,6 +552,32 @@ fn convert_file(
     };
     if conf.discard_input_alpha_channel {
         source = source.into_without_alpha();
+    }
+
+    // WS5: animation guards. The memory cap applies to every animated input
+    // (animated targets keep all frames in memory as well); the
+    // --animated-input policy decides the behavior for still-only targets.
+    if let ImageContent::Animated(animation) = &source.content {
+        let projected_bytes = source_buffer_size_bytes(&source);
+        let cap_bytes = conf.max_animation_memory_mib.saturating_mul(1024 * 1024);
+        if projected_bytes > cap_bytes {
+            return Outcome::Error(format!(
+                "{}: animated image ({}x{}px, {} frames, approx. {} MiB of frame buffers) exceeds the --max-animation-memory limit of {} MiB",
+                input_path.display(),
+                animation.width,
+                animation.height,
+                animation.frames.len(),
+                projected_bytes / (1024 * 1024),
+                conf.max_animation_memory_mib
+            ));
+        }
+        if !encoder.supports_animation() && conf.animated_input == AnimatedInputPolicy::Error {
+            return Outcome::Error(format!(
+                "{}: input is animated but the {} target cannot encode animations (--animated-input error)",
+                input_path.display(),
+                encoder.extension()
+            ));
+        }
     }
 
     // WS4: resolve the EXIF policy, bake the orientation into the pixels if

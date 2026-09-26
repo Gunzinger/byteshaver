@@ -9,7 +9,10 @@ use crate::cli::Command;
 use crate::metadata::policy::{ExifPolicy, parse_tag_list};
 use clap::ValueEnum;
 
+#[cfg(feature = "anim-apng")]
+pub use crate::converter::apng::ApngOptions;
 pub use crate::converter::avif::{AlphaColorMode, AvifOptions, BitDepth, ColorModel};
+pub use crate::converter::gif::GifOptions;
 #[cfg(feature = "jxl")]
 pub use crate::converter::jxl::{JxlBitDepthChoice, JxlColorEncodingChoice, JxlOptions};
 #[cfg(feature = "opt-oxipng")]
@@ -18,6 +21,19 @@ pub use crate::converter::oxipng::{
 };
 pub use crate::converter::png::{CompressionType, FilterType, PngOptions};
 pub use crate::converter::webp::WebpOptions;
+#[cfg(feature = "anim-webp")]
+pub use crate::converter::webp_anim::WebpAnimOptions;
+
+/// How to treat animated input when the target encoder cannot encode
+/// animations (WS5 global flag `--animated-input`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AnimatedInputPolicy {
+    /// Encode the first frame only, printing a notice (default).
+    #[default]
+    FirstFrame,
+    /// Fail the file with an error instead of silently dropping animation.
+    Error,
+}
 
 /// How to treat HEIC/HEIF files that contain more than one image.
 ///
@@ -34,7 +50,7 @@ pub enum HeifImagePolicy {
 }
 
 /// Configuration parameters shared across all encoders.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConversionConfig {
     /// Glob pattern to match images to convert.
     /// Example: `images/**/*.png`
@@ -74,6 +90,34 @@ pub struct ConversionConfig {
     /// (`dec-heif` feature): only the primary image, or every image with
     /// suffixed output names. Defaults to [`HeifImagePolicy::Primary`].
     pub heif_image_policy: HeifImagePolicy,
+
+    /// How animated input is treated by targets that cannot encode
+    /// animations (first-frame fallback or per-file error).
+    /// Defaults to first-frame.
+    pub animated_input: AnimatedInputPolicy,
+
+    /// Hard cap for decoded animation memory in MiB (width x height x 4
+    /// x frames per file). Files exceeding the cap fail with an error.
+    /// Defaults to 4096.
+    pub max_animation_memory_mib: u64,
+}
+
+impl Default for ConversionConfig {
+    fn default() -> Self {
+        ConversionConfig {
+            pattern: String::new(),
+            output: String::new(),
+            reverse_processing_order: false,
+            overwrite_if_smaller: false,
+            overwrite_existing: false,
+            discard_if_larger_than_input: false,
+            discard_input_alpha_channel: false,
+            exif: ExifPolicy::default(),
+            heif_image_policy: HeifImagePolicy::default(),
+            animated_input: AnimatedInputPolicy::default(),
+            max_animation_memory_mib: 4096,
+        }
+    }
 }
 
 impl ConversionConfig {
@@ -96,6 +140,13 @@ impl ConversionConfig {
             discard_input_alpha_channel: args.discard_input_alpha_channel.unwrap_or_default(),
             exif: exif_policy_from_args(args),
             heif_image_policy: heif_image_policy_from_args(args),
+            animated_input: match args.animated_input {
+                Some(crate::cli::AnimatedInputArg::FirstFrame) | None => {
+                    AnimatedInputPolicy::FirstFrame
+                }
+                Some(crate::cli::AnimatedInputArg::Error) => AnimatedInputPolicy::Error,
+            },
+            max_animation_memory_mib: args.max_animation_memory.unwrap_or(4096),
         }
     }
 }
@@ -182,6 +233,16 @@ pub enum EncoderConfig {
     /// (requires the `opt-oxipng` feature, on by default)
     #[cfg(feature = "opt-oxipng")]
     Oxipng(OxipngOptions),
+    /// animated webp encoder of the webp-animation crate
+    /// (requires the `anim-webp` feature, on by default)
+    #[cfg(feature = "anim-webp")]
+    WebpAnim(WebpAnimOptions),
+    /// animated png (APNG) encoder of the png crate
+    /// (requires the `anim-apng` feature, on by default)
+    #[cfg(feature = "anim-apng")]
+    Apng(ApngOptions),
+    /// animated gif encoder of the image crate
+    Gif(GifOptions),
 }
 
 impl EncoderConfig {
@@ -296,6 +357,33 @@ impl EncoderConfig {
                 fix_errors: fix_errors.unwrap_or_default(),
                 timeout: timeout_secs.map(std::time::Duration::from_secs),
             })),
+            #[cfg(feature = "anim-webp")]
+            Command::WebpAnim {
+                lossless,
+                quality,
+                kmin,
+                kmax,
+                minimize_size,
+                allow_mixed,
+                method,
+            } => Some(EncoderConfig::WebpAnim(WebpAnimOptions {
+                lossless: lossless.unwrap_or_default(),
+                quality: quality.unwrap_or(90.),
+                kmin: *kmin,
+                kmax: *kmax,
+                minimize_size: minimize_size.unwrap_or_default(),
+                allow_mixed: allow_mixed.unwrap_or_default(),
+                method: *method,
+            })),
+            #[cfg(feature = "anim-apng")]
+            Command::Apng {
+                compression_type,
+                filter_type,
+            } => Some(EncoderConfig::Apng(ApngOptions {
+                compression_type: *compression_type,
+                filter_type: *filter_type,
+            })),
+            Command::Gif { speed } => Some(EncoderConfig::Gif(GifOptions { speed: *speed })),
             Command::Clean {} => None,
         }
     }

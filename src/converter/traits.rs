@@ -5,7 +5,10 @@ use image::DynamicImage;
 
 use crate::Error;
 use crate::config::EncoderConfig;
+#[cfg(feature = "anim-apng")]
+use crate::converter::apng::ApngEncoder;
 use crate::converter::avif::AvifEncoder;
+use crate::converter::gif::GifEncoder;
 #[cfg(feature = "jxl")]
 use crate::converter::jxl::JxlEncoder;
 use crate::converter::mozjpeg::MozjpegEncoder;
@@ -13,6 +16,8 @@ use crate::converter::mozjpeg::MozjpegEncoder;
 use crate::converter::oxipng::OxipngEncoder;
 use crate::converter::png::PngEncoder;
 use crate::converter::webp::WebpEncoder;
+#[cfg(feature = "anim-webp")]
+use crate::converter::webp_anim::WebpAnimEncoder;
 use crate::converter::webp_image::WebpImageEncoder;
 use crate::format::ImageFormat;
 use crate::input::SourceImage;
@@ -99,7 +104,7 @@ pub trait ImageEncoder: Send + Sync {
                     Error::from_string("Animation does not contain any frames".to_string())
                 })?;
                 println!(
-                    "Warning: {} does not support animated input yet; encoding the first frame only",
+                    "Warning: {} cannot encode animated input; encoding the first frame only (use --animated-input error to reject such files)",
                     self.describe()
                 );
                 self.encode_still_image_with_metadata(
@@ -156,6 +161,11 @@ impl EncoderRegistry {
             EncoderConfig::Jxl(options) => Box::new(JxlEncoder::new(options.clone())),
             #[cfg(feature = "opt-oxipng")]
             EncoderConfig::Oxipng(options) => Box::new(OxipngEncoder::new(options.clone())),
+            #[cfg(feature = "anim-webp")]
+            EncoderConfig::WebpAnim(options) => Box::new(WebpAnimEncoder::new(*options)),
+            #[cfg(feature = "anim-apng")]
+            EncoderConfig::Apng(options) => Box::new(ApngEncoder::new(*options)),
+            EncoderConfig::Gif(options) => Box::new(GifEncoder::new(*options)),
         };
         encoder.adjust_threading(budget);
         encoder
