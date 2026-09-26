@@ -8,6 +8,10 @@
 use crate::cli::Command;
 
 pub use crate::converter::avif::{AlphaColorMode, AvifOptions, BitDepth, ColorModel};
+#[cfg(feature = "opt-oxipng")]
+pub use crate::converter::oxipng::{
+    OxipngFilter, OxipngInterlace, OxipngLevel, OxipngOptions, OxipngReduction, OxipngStrip,
+};
 pub use crate::converter::png::{CompressionType, FilterType, PngOptions};
 pub use crate::converter::webp::WebpOptions;
 
@@ -76,6 +80,10 @@ pub enum EncoderConfig {
     Png(PngOptions),
     /// optimized jpeg encoder of the mozjpeg crate
     Jpeg,
+    /// png re-optimization / transcoding encoder of the oxipng crate
+    /// (requires the `opt-oxipng` feature, on by default)
+    #[cfg(feature = "opt-oxipng")]
+    Oxipng(OxipngOptions),
 }
 
 impl EncoderConfig {
@@ -113,6 +121,32 @@ impl EncoderConfig {
                 filter_type: *filter_type,
             })),
             Command::Jpeg {} => Some(EncoderConfig::Jpeg),
+            #[cfg(feature = "opt-oxipng")]
+            Command::Oxipng {
+                level,
+                zopfli,
+                zopfli_iterations,
+                interlace,
+                strip,
+                filters,
+                optimize_alpha,
+                no_reduction,
+                scale_16,
+                fix_errors,
+                timeout_secs,
+            } => Some(EncoderConfig::Oxipng(OxipngOptions {
+                level: level.unwrap_or_default(),
+                zopfli: zopfli.unwrap_or_default(),
+                zopfli_iterations: zopfli_iterations.unwrap_or(15),
+                interlace: interlace.unwrap_or_default(),
+                strip: strip.unwrap_or_default(),
+                filters: filters.clone(),
+                optimize_alpha: optimize_alpha.unwrap_or_default(),
+                no_reduction: no_reduction.clone(),
+                scale_16: scale_16.unwrap_or_default(),
+                fix_errors: fix_errors.unwrap_or_default(),
+                timeout: timeout_secs.map(std::time::Duration::from_secs),
+            })),
             Command::Clean {} => None,
         }
     }

@@ -115,7 +115,7 @@ fn encoder_info() -> String {
 }
 
 /// Encodes a `DynamicImage` to bytes of png format
-fn encode_png(
+pub(crate) fn encode_png(
     image: &DynamicImage,
     compression_type: Option<CompressionType>,
     filter_type: Option<FilterType>,

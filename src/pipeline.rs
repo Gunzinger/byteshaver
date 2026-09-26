@@ -412,6 +412,9 @@ fn convert_file(
                 format_option_binary_two_nospace
             )
         );
+        if let Some(hint) = encoder.huge_image_hint() {
+            println!("{hint}");
+        }
     }
 
     match encoder.encode(&source) {

@@ -7,6 +7,8 @@ use crate::Error;
 use crate::config::EncoderConfig;
 use crate::converter::avif::AvifEncoder;
 use crate::converter::mozjpeg::MozjpegEncoder;
+#[cfg(feature = "opt-oxipng")]
+use crate::converter::oxipng::OxipngEncoder;
 use crate::converter::png::PngEncoder;
 use crate::converter::webp::WebpEncoder;
 use crate::converter::webp_image::WebpImageEncoder;
@@ -91,6 +93,14 @@ pub trait ImageEncoder: Send + Sync {
         false
     }
 
+    /// Extra hint printed alongside the huge-image (8192 px) warning.
+    ///
+    /// Encoders with slow worst-case settings can suggest the user options
+    /// that bound the runtime (e.g. `--level`, `--timeout-secs`).
+    fn huge_image_hint(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Applies a threading budget to the encoder before encoding starts.
     fn adjust_threading(&mut self, _budget: ThreadBudget) {}
 }
@@ -111,6 +121,8 @@ impl EncoderRegistry {
             EncoderConfig::Avif(options) => Box::new(AvifEncoder::new(*options)),
             EncoderConfig::Png(options) => Box::new(PngEncoder::new(*options)),
             EncoderConfig::Jpeg => Box::new(MozjpegEncoder::new()),
+            #[cfg(feature = "opt-oxipng")]
+            EncoderConfig::Oxipng(options) => Box::new(OxipngEncoder::new(options.clone())),
         };
         encoder.adjust_threading(budget);
         encoder

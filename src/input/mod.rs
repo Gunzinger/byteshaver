@@ -8,7 +8,7 @@ pub mod animation;
 
 use std::fs;
 use std::io::BufReader;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use image::metadata::Orientation;
 use image::{
@@ -30,6 +30,11 @@ pub struct SourceImage {
     pub metadata: ImageMetadata,
     /// Format detected from the file header (or extension as fallback).
     pub source_format: ImageFormat,
+    /// Path of the file this image was loaded from.
+    ///
+    /// Byte-passthrough encoders (e.g. the oxipng target) re-read the
+    /// original file bytes from here instead of re-encoding pixels.
+    pub source_path: PathBuf,
 }
 
 /// Pixel content of a source image.
@@ -108,6 +113,7 @@ pub fn load_source(path: &Path) -> Result<SourceImage, Error> {
         content: ImageContent::Still(image),
         metadata,
         source_format,
+        source_path: path.to_path_buf(),
     })
 }
 
@@ -139,6 +145,7 @@ fn load_source_animated(path: &Path, source_format: ImageFormat) -> Result<Sourc
         }),
         metadata: ImageMetadata::default(),
         source_format,
+        source_path: path.to_path_buf(),
     })
 }
 

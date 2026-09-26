@@ -6,6 +6,9 @@
 pub mod avif;
 /// This module provides optimized jpeg conversion via the mozjpeg crate
 pub mod mozjpeg;
+/// This module provides optimal png conversion via the oxipng crate
+#[cfg(feature = "opt-oxipng")]
+pub mod oxipng;
 /// This module provides png conversion via the image crate
 pub mod png;
 /// This module defines the encoder abstraction
