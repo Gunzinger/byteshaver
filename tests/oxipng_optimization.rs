@@ -282,12 +282,14 @@ fn passthrough_preserves_pixels_and_chunks() {
         );
 
         // mode check: PNG input must be a passthrough, i.e. the ancillary
-        // chunk structure of the source survives (default options strip
-        // nothing)
+        // chunk structure of the source survives — with one policy-driven
+        // exception: under the default EXIF `Strip` policy an unset
+        // `--strip` is bumped to `safe`, which removes `eXIf` chunks
+        // (plan WS3 §4 / WS4 §4). With a keep policy the chunk must survive.
         let original_bytes = fs::read(input).expect("read original");
         let output_bytes = fs::read(&output).expect("read output");
         assert_valid_png(&output_bytes);
-        for chunk in ["tRNS", "eXIf", "acTL", "fcTL", "fdAT"] {
+        for chunk in ["tRNS", "acTL", "fcTL", "fdAT"] {
             let present_in_input = has_chunk(&original_bytes, chunk);
             let present_in_output = has_chunk(&output_bytes, chunk);
             assert_eq!(
@@ -296,6 +298,30 @@ fn passthrough_preserves_pixels_and_chunks() {
                 "chunk {chunk} presence changed for {}",
                 input.display()
             );
+        }
+        #[cfg(feature = "exif")]
+        {
+            use byteshaver::metadata::policy::ExifPolicy;
+            let e_x_if_in = has_chunk(&original_bytes, "eXIf");
+            let e_x_if_out = has_chunk(&output_bytes, "eXIf");
+            if e_x_if_in {
+                match options.exif_policy {
+                    ExifPolicy::Strip => {
+                        assert!(
+                            !e_x_if_out,
+                            "eXIf should be stripped by default for {}",
+                            input.display()
+                        );
+                    }
+                    _ => {
+                        assert!(
+                            e_x_if_out,
+                            "eXIf must survive under keep policy for {}",
+                            input.display()
+                        );
+                    }
+                }
+            }
         }
     }
     clean_fixtures(test);

@@ -32,4 +32,5 @@ pub mod utils;
 
 pub use config::{ConversionConfig, EncoderConfig};
 pub use error::Error;
+pub use metadata::policy::{ExifPolicy, TagSelector};
 pub use pipeline::{CollisionPolicy, Outcome, RunStats, run};

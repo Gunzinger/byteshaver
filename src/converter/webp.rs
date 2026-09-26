@@ -51,7 +51,21 @@ impl super::ImageEncoder for WebpEncoder {
     }
 
     fn encode_still_image(&self, image: &DynamicImage) -> Result<Vec<u8>, Error> {
-        encode_webp(image, self.options.lossless, self.options.quality)
+        encode_webp(image, self.options.lossless, self.options.quality, None)
+    }
+
+    fn encode_still_image_with_metadata(
+        &self,
+        image: &DynamicImage,
+        metadata: &crate::metadata::ImageMetadata,
+    ) -> Result<Vec<u8>, Error> {
+        // WS4: the encoded container is rebuilt with an EXIF chunk
+        encode_webp(
+            image,
+            self.options.lossless,
+            self.options.quality,
+            metadata.exif.as_deref(),
+        )
     }
 }
 
@@ -74,8 +88,14 @@ fn encoder_info(lossless: bool, qualify: f32) -> String {
     )
 }
 
-/// Encodes a `DynamicImage` to bytes of webp format
-fn encode_webp(image: &DynamicImage, lossless: bool, quality: f32) -> Result<Vec<u8>, Error> {
+/// Encodes a `DynamicImage` to bytes of webp format; an optional EXIF
+/// payload (raw TIFF stream) is muxed into the container afterwards.
+fn encode_webp(
+    image: &DynamicImage,
+    lossless: bool,
+    quality: f32,
+    exif_payload: Option<&[u8]>,
+) -> Result<Vec<u8>, Error> {
     let converted_image: Option<DynamicImage> = match image {
         DynamicImage::ImageLuma8(_) => Some(DynamicImage::ImageRgb8(image.to_rgb8())),
         DynamicImage::ImageLumaA8(_) => Some(DynamicImage::ImageRgba8(image.to_rgba8())),
@@ -99,5 +119,22 @@ fn encode_webp(image: &DynamicImage, lossless: bool, quality: f32) -> Result<Vec
         .encode_simple(lossless, quality)
         .map_err(|e| Error::from_string(format!("webp encoding failed: {:?}", e)))?;
 
-    Ok(webp_data.to_vec())
+    embed_exif_into_webp(webp_data.to_vec(), exif_payload)
+}
+
+/// Muxes an EXIF payload into an encoded WebP container (WS4).
+///
+/// On muxer failure the unmodified container is kept with a warning
+/// (never fail the whole encoding because of metadata).
+fn embed_exif_into_webp(webp: Vec<u8>, exif_payload: Option<&[u8]>) -> Result<Vec<u8>, Error> {
+    let Some(payload) = exif_payload else {
+        return Ok(webp);
+    };
+    match crate::metadata::riff::mux_exif(&webp, payload) {
+        Some(muxed) => Ok(muxed),
+        None => {
+            println!("Warning: could not embed EXIF into the webp container; metadata skipped");
+            Ok(webp)
+        }
+    }
 }

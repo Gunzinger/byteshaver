@@ -18,8 +18,8 @@
 //! [`ThreadBudget`](super::ThreadBudget) (byteshaver parallelizes across
 //! files instead, avoiding pool oversubscription).
 //!
-//! Note: the EXIF policy interplay (forcing/adjusting `strip`) is deferred to
-//! the WS4 merge; `strip` currently stands alone.
+//! Note: the EXIF policy interplay (`strip` adjustment and payload embedding
+//! in transcode mode) is active when the `exif` feature is enabled.
 
 use std::time::Duration;
 
@@ -31,6 +31,8 @@ use crate::converter::DEPENDENCIES;
 use crate::converter::png::{CompressionType, FilterType, encode_png};
 use crate::format::ImageFormat;
 use crate::input::{ImageContent, SourceImage};
+#[cfg(feature = "exif")]
+use crate::metadata::policy::ExifPolicy;
 
 /// Optimization level preset, mapped onto `oxipng::Options::from_preset`.
 ///
@@ -175,6 +177,15 @@ pub struct OxipngOptions {
     pub fix_errors: bool,
     /// Per-file optimization time limit. Default unlimited.
     pub timeout: Option<Duration>,
+    /// Whether the user explicitly passed `--strip` (drives the EXIF policy
+    /// interplay: under the default `Strip` policy an unset `--strip` is
+    /// bumped to `safe` so eXIf chunks do not silently survive).
+    pub strip_explicit: bool,
+    /// Active EXIF policy of the run; injected from the global config
+    /// (default [`ExifPolicy::Strip`]). Only available with the `exif`
+    /// feature.
+    #[cfg(feature = "exif")]
+    pub exif_policy: ExifPolicy,
 }
 
 impl Default for OxipngOptions {
@@ -191,6 +202,9 @@ impl Default for OxipngOptions {
             scale_16: false,
             fix_errors: false,
             timeout: None,
+            strip_explicit: false,
+            #[cfg(feature = "exif")]
+            exif_policy: ExifPolicy::Strip,
         }
     }
 }
@@ -217,6 +231,20 @@ impl OxipngOptions {
             OxipngStrip::Safe => oxipng::StripChunks::Safe,
             OxipngStrip::All => oxipng::StripChunks::All,
         };
+        // EXIF policy interplay (plan WS3 §4 / WS4 §4): when metadata must
+        // survive, stripping is forced off; under the default strip policy an
+        // unset `--strip` is bumped to `safe` so behavior follows the policy.
+        #[cfg(feature = "exif")]
+        match self.exif_policy {
+            ExifPolicy::Strip => {
+                if !self.strip_explicit {
+                    opts.strip = oxipng::StripChunks::Safe;
+                }
+            }
+            ExifPolicy::Keep | ExifPolicy::FilterExcept(_) | ExifPolicy::KeepOnly(_) => {
+                opts.strip = oxipng::StripChunks::None;
+            }
+        }
         opts.optimize_alpha = self.optimize_alpha;
         for reduction in &self.no_reduction {
             match reduction {
@@ -340,6 +368,28 @@ impl OxipngEncoder {
     pub fn new(options: OxipngOptions) -> Self {
         OxipngEncoder { options }
     }
+
+    /// Transcode mode: baseline-encode at low effort, then optimize.
+    /// oxipng re-encodes the IDAT stream regardless (idat_recoding is on
+    /// by default), so spending compression effort here would be wasted.
+    ///
+    /// When the EXIF policy resolves a payload for the source, it is embedded
+    /// into the baseline PNG (`eXIf` chunk) before optimization; the strip
+    /// interplay in [`OxipngOptions::to_oxipng`] guarantees the chunk
+    /// survives when the policy wants it kept.
+    fn transcode(
+        &self,
+        image: &DynamicImage,
+        exif_payload: Option<&[u8]>,
+    ) -> Result<Vec<u8>, Error> {
+        let baseline = encode_png(
+            image,
+            Some(CompressionType::Fast),
+            Some(FilterType::Adaptive),
+            exif_payload,
+        )?;
+        optimize_bytes(&baseline, &self.options)
+    }
 }
 
 impl super::ImageEncoder for OxipngEncoder {
@@ -364,15 +414,7 @@ impl super::ImageEncoder for OxipngEncoder {
     }
 
     fn encode_still_image(&self, image: &DynamicImage) -> Result<Vec<u8>, Error> {
-        // Transcode mode: baseline-encode at low effort, then optimize.
-        // oxipng re-encodes the IDAT stream regardless (idat_recoding is on
-        // by default), so spending compression effort here would be wasted.
-        let baseline = encode_png(
-            image,
-            Some(CompressionType::Fast),
-            Some(FilterType::Adaptive),
-        )?;
-        optimize_bytes(&baseline, &self.options)
+        self.transcode(image, None)
     }
 
     fn encode(&self, input: &SourceImage) -> Result<Vec<u8>, Error> {
@@ -388,7 +430,14 @@ impl super::ImageEncoder for OxipngEncoder {
             return optimize_bytes(&original, &self.options);
         }
         match &input.content {
-            ImageContent::Still(image) => self.encode_still_image(image),
+            ImageContent::Still(image) => {
+                #[cfg(feature = "exif")]
+                let payload =
+                    crate::metadata::exif::resolve(&self.options.exif_policy, &input.metadata);
+                #[cfg(not(feature = "exif"))]
+                let payload = None;
+                self.transcode(image, payload.as_deref())
+            }
             ImageContent::Animated(animation) => {
                 let first = animation.first_frame().ok_or_else(|| {
                     Error::from_string("Animation does not contain any frames".to_string())
@@ -435,6 +484,11 @@ mod tests {
         assert_eq!(opts.filters, expected.filters);
         assert_eq!(opts.deflater, expected.deflater);
         assert_eq!(opts.interlace, Some(false));
+        // EXIF policy interplay: the default Strip policy with no explicit
+        // `--strip` bumps stripping to `safe` (plan WS3 §4 / WS4 §4)
+        #[cfg(feature = "exif")]
+        assert_eq!(opts.strip, oxipng::StripChunks::Safe);
+        #[cfg(not(feature = "exif"))]
         assert_eq!(opts.strip, oxipng::StripChunks::None);
         assert!(!opts.optimize_alpha);
         assert!(opts.bit_depth_reduction);
@@ -478,6 +532,9 @@ mod tests {
             scale_16: true,
             fix_errors: true,
             timeout: Some(Duration::from_secs(30)),
+            strip_explicit: true,
+            #[cfg(feature = "exif")]
+            exif_policy: ExifPolicy::Strip,
         }
         .to_oxipng();
         assert_eq!(opts.filters.len(), 2);
