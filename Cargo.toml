@@ -80,7 +80,11 @@ libheif-rs = { version = "3", optional = true, default-features = false, feature
 jxl-oxide = { version = "0.12", default-features = false, features = ["rayon", "moxcms", "image"], optional = true }
 moxcms = { version = "0.8", optional = true }
 jpegxl-src = { version = "0.12", optional = true }
-webp-animation = { version = "0.10", optional = true }
+# `static` forces libwebp-sys2 to always build its bundled libwebp instead of
+# linking a system libwebp found via pkg-config — required for static musl
+# builds and reproducible release artifacts (a system libwebp pulled in
+# transitively, e.g. by libheif-dev, would otherwise break static linking)
+webp-animation = { version = "0.10", optional = true, features = ["static"] }
 # headless job API: config/result serialization (always on) and the JSON-lines
 # reporter (`logs` feature)
 serde = { version = "1", features = ["derive"] }

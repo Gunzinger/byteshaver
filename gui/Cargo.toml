@@ -18,6 +18,14 @@ categories = [
 # Versioned in lockstep with the core `byteshaver` crate (displayed in the
 # About panel; the gui crate has no independent release version).
 
+[features]
+default = ["wayland", "x11"]
+# windowing backend passthrough: the static musl GUI build uses
+# `--no-default-features --features x11` (no wayland system libraries),
+# desktop builds use the default (wayland + x11)
+wayland = ["eframe/wayland"]
+x11 = ["eframe/x11"]
+
 [dependencies]
 # egui/eframe: pinned to the 0.32 line — the newest release carrying the
 # classic `eframe::App::update(ctx, frame)` API, `egui::TopBottomPanel`,
@@ -26,7 +34,13 @@ categories = [
 # reworked the `App` trait (`logic`/`ui` split) and egui 0.35+ reworked
 # panels/labels; 0.32 has the drag-and-drop surface this crate builds on.
 # MSRV 1.85 < 1.98 of the workspace toolchain.
-eframe = "0.32"
+# `default-features = false` + explicit base features so the wayland/x11
+# backends are opt-in via the crate features above.
+eframe = { version = "0.32", default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "glow",
+] }
 egui = "0.32"
 # native file dialogs; on Linux the default `xdg-portal` backend compiles
 # without GTK dev packages (needs the xdg-desktop-portal service at runtime)

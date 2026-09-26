@@ -64,9 +64,9 @@ when the `dec-heif` feature is compiled in:
 - 10/12-bit (HDR) sources are down-converted to 8-bit with a printed warning
 
 Without the feature, HEIC/HEIF/AVIF inputs fail per-file with a clear message while the
-rest of the batch keeps converting. Please note that the **release musl and windows
-binaries are built without** `dec-heif` (the native libheif + codec libraries cannot be
-bundled there yet), while the **docker images include it**.
+rest of the batch keeps converting. Please note that the **static release binaries are
+built without** `dec-heif` (the native libheif + codec libraries have no static archives),
+while the **docker images include it** and are validated end-to-end by CI.
 
 `JPEG XL` (`.jxl`) inputs are decoded with [`jxl-oxide`](https://crates.io/crates/jxl-oxide)
  (still images and animations, 8/16-bit, EXIF/XMP boxes and ICC profiles).
@@ -202,13 +202,31 @@ For a good overview of browser support, see the [caniuse.com](https://caniuse.co
 
 ### Using published binaries 📡
 
-Binaries for Windows and Linux are built for every tag.
+Binaries for Windows and Linux are built for every tag — the classic
+CLI binary **and** the desktop GUI as separate downloads:
+
+- `byteshaver-<version>[-cpu]` — CLI, Linux (musl, static-pie)
+- `byteshaver-<version>[-cpu].exe` — CLI, Windows
+- `byteshaver-gui-<version>[-cpu]` — desktop GUI, Linux (musl, static-pie, X11)
+- `byteshaver-gui-<version>[-cpu].exe` — desktop GUI, Windows
+
+`-cpu` suffixes (x86-64-v4, znver3, znver5) are tuned builds; the suffixless
+artifacts target x86-64-v3 (Intel Haswell / AMD Zen and newer). Every artifact
+ships with a `.sha256` checksum.
+
+Feature notes: the static Linux/Windows binaries include everything except
+`dec-heif` — HEIC/HEIF/AVIF input requires the native libheif libraries and is
+therefore only shipped in the **docker images** (validated by CI end-to-end,
+see below). The Linux GUI build uses the X11 windowing backend.
 
 See the [GitHub releases](https://github.com/Gunzinger/byteshaver/releases) page for downloads.
 
 ### Using the docker image 🐳
 
-Docker containers are also built for every tag.
+Docker containers are also built for every tag. Both the alpine and debian
+images include HEIC/HEIF/AVIF input support (`dec-heif`): CI builds both
+images and validates the complete chain — including a real HEIC file decoded
+inside the container — before they are published.
 
 See the [Docker Hub](https://hub.docker.com/r/gunzinger/byteshaver) page for available tags.
 

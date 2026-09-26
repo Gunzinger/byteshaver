@@ -246,6 +246,16 @@ impl block (single, predictable touch-point).
 
 ### 5.5 Packaging & release
 
+> **IMPLEMENTED (supersedes the original text below):** the release pipeline builds
+> GUI + CLI binaries for **linux-musl (static-pie) and windows-gnu** per CPU target.
+> Validated locally: static musl GUI via alpine container with
+> `--no-default-features --features x11` (x11-only windowing; the wayland feature is
+> not target-gated and stays off); windows GUI with `--no-default-features` (winit
+> auto-selects its windows backend). The musl builds run natively in an alpine
+> container because vendored libjxl needs a musl C++ toolchain that
+> ubuntu's `musl-tools` cross setup cannot provide. See `gui/README.md` and the
+> `build_binaries`/`validate_docker` jobs in `.github/workflows/workflow.yaml`.
+
 - Windows: `cargo build --release` + icon via `winresource` (already on the roadmap)
   → zip or NSIS/MSI via `cargo-wix` (v2).
 - macOS: `.app` bundle (manual bundle script or `cargo-bundle`); unsigned initially,

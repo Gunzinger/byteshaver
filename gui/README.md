@@ -39,38 +39,6 @@ dependency's features). Building the gui against a feature-reduced core is
 therefore not supported; use `capabilities()`-driven grayed-out entries
 instead (they already cover feature-stubbed *platforms* at runtime).
 
-## CI additions (not yet wired)
-
-The release pipeline (`.github/workflows`) is intentionally untouched by
-WS8. When GUI artifacts should be built on CI, add a job along these lines
-(gnu targets only for v1; musl/docker stay CLI-only per plan WS8 §5.5):
-
-```yaml
-build-gui:
-  strategy:
-    matrix:
-      include:
-        - { os: ubuntu-24.04,  target: x86_64-unknown-linux-gnu }
-        - { os: windows-latest, target: x86_64-pc-windows-msvc }
-        - { os: macos-14,      target: aarch64-apple-darwin }
-  steps:
-    - uses: actions/checkout@v4
-    - uses: dtolnay/rust-toolchain@stable
-    # no apt packages required to *compile* (x11/wayland/GL are dlopened at
-    # runtime; libxkbcommon is not needed for the build)
-    - run: cargo build --release -p byteshaver-gui
-    # optional smoke test on linux:
-    # - run: xvfb-run -a timeout 3 target/release/byteshaver-gui; test $? -eq 124
-    - uses: actions/upload-artifact@v4
-      with:
-        name: byteshaver-gui-${{ matrix.target }}
-        path: target/release/byteshaver-gui*
-```
-
-Also worth adding once the job exists: `cargo clippy -p byteshaver-gui
---all-targets -- -D warnings` and `cargo test -p byteshaver-gui` (currently
-covered by the workspace-wide runs).
-
 ## Architecture (plan WS8)
 
 ```
@@ -94,6 +62,25 @@ worker (rayon-parallel files); `JobEvent`s cross to the UI via
 All product logic lives outside the rendering closures so the headless test
 suite (`cargo test -p byteshaver-gui`) can cover it — the egui rendering
 itself cannot run without a display server.
+
+## Release packaging (implemented in CI)
+
+The release pipeline builds **separate CLI and GUI binaries for Linux (musl,
+static-pie) and Windows (gnu)** for every CPU target (x86-64-v3/v4, znver3,
+znver5). Build configurations per platform:
+
+| Artifact | Build | Notes |
+|----------|-------|-------|
+| `byteshaver-<ver>[-cpu]` (Linux) | alpine container, `cargo build --release -p byteshaver` | native musl toolchain (gcc/g++/make/cmake) so the vendored libjxl builds; validated static-pie |
+| `byteshaver-gui-<ver>[-cpu]` (Linux) | alpine container, `-p byteshaver-gui --no-default-features --features x11` | x11-only windowing (no wayland system libraries); validated static-pie |
+| `byteshaver-<ver>[-cpu].exe` (Windows) | ubuntu host, `--target x86_64-pc-windows-gnu -p byteshaver` | full features; the libjxl cmake cross needs the target-suffixed `CC/CXX/AR` env vars set by the workflow |
+| `byteshaver-gui-<ver>[-cpu].exe` (Windows) | ubuntu host, `--no-default-features` | winit auto-selects its windows backend; eframe's wayland/x11 features are not target-gated and must stay off |
+
+All artifacts are UPX-packed and shipped with a `.sha256` checksum to the
+GitHub release. The docker images are the only artifacts that carry `dec-heif`
+(the `libheif`/codec libraries have no static archives); a dedicated
+`validate_docker` CI job builds both images and proves the feature with an
+end-to-end decode of a generated real HEIC before publication.
 
 ## Deferred (GUI v1.1+/v2, see plan WS8 §7)
 

@@ -2,8 +2,9 @@ FROM rust:1-slim-trixie AS builder
 WORKDIR /usr/src/myapp
 COPY . .
 # libheif + codec libraries for HEIC/HEIF/AVIF input decoding (dec-heif feature)
-# TODO(ci): verify package names
-RUN apt-get update && apt-get install -y nasm libheif-dev libde265-dev libaom-dev
+# - build-essential/cmake are required by the vendored libjxl build (jxl feature)
+# - package names validated against debian trixie
+RUN apt-get update && apt-get install -y nasm build-essential cmake libheif-dev libde265-dev libaom-dev
 RUN cargo install --profile release --path . --features dec-heif
 
 FROM alpine:latest AS packer
@@ -12,9 +13,9 @@ RUN apk add --no-cache upx && \
     upx --best --ultra-brute /usr/local/bin/byteshaver
 
 FROM debian:trixie-slim
-# runtime libraries of the HEIC/HEIF/AVIF decoders
-# TODO(ci): verify package names
-RUN apt-get update && apt-get install -y libc6 libheif1 libde265-1 libaom3 && rm -rf /var/lib/apt/lists/*
+# runtime libraries of the HEIC/HEIF/AVIF decoders; libstdc++6 is needed because
+# the vendored libjxl static archives link the C++ runtime (valid trixie names)
+RUN apt-get update && apt-get install -y libc6 libstdc++6 libheif1 libde265-1 libaom3 && rm -rf /var/lib/apt/lists/*
 COPY --from=packer /usr/local/bin/byteshaver /usr/local/bin/byteshaver
 WORKDIR /targets
 CMD ["byteshaver"]

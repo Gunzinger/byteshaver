@@ -3,25 +3,29 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch: {}
 
 env:
   IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/byteshaver
   BASE_CPU: x86-64-v3 # docker image and suffixless-binary use this as the target-cpu type
+  # mingw cross variables for the vendored libjxl cmake build (jxl feature);
+  # cmake-rs/cc honor the target-suffixed CC/CXX/AR variables
+  WIN_CC: x86_64-w64-mingw32-gcc
+  WIN_CXX: x86_64-w64-mingw32-g++
+  WIN_AR: x86_64-w64-mingw32-ar
 
 jobs:
   create_release:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
-    outputs:
-      release_id: ${{ steps.gh_release.outputs.id }}
-      release_upload_url: ${{ steps.gh_release.outputs.upload_url }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
 
       # Create GitHub Release
       - name: Create GitHub Release
         id: gh_release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@v2
         with:
           name: Release ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
@@ -29,7 +33,6 @@ jobs:
           prerelease: false
 
   build_binaries:
-    needs: create_release
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -39,13 +42,18 @@ jobs:
       RUSTFLAGS: "-C target-cpu=${{ matrix.cpu_target }}"
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
 
-      # Extract version from the Git tag (strip leading 'v')
+      # Extract version from the Git tag (strip leading 'v'); manual
+      # workflow_dispatch runs fall back to a valid placeholder semver
       - name: Set version from tag
         id: version
         run: |
-          echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+          if [[ "$GITHUB_REF_NAME" == v* ]]; then
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
+          else
+            echo "VERSION=0.0.0-dispatch" >> $GITHUB_ENV
+          fi
 
       - name: Set Cargo.toml version
         shell: bash
@@ -55,90 +63,195 @@ jobs:
           sed -i "s/0\\.0\\.0-git/${VERSION}/" Cargo.lock
           grep -i -C 5 "byteshaver" Cargo.lock
 
-      - name: Install Linux and Windows Cross Compilers
-        run: sudo apt-get install --yes --no-install-recommends musl-tools gcc-mingw-w64-x86-64-win32 nasm upx-ucl
+      - name: Install Windows cross compiler
+        run: sudo apt-get install --yes --no-install-recommends gcc-mingw-w64-x86-64-win32 g++-mingw-w64-x86-64-win32 nasm upx-ucl
 
       - name: Install rustup targets
-        run: rustup target add x86_64-unknown-linux-musl x86_64-pc-windows-gnu
+        run: rustup target add x86_64-pc-windows-gnu
 
       # rust package / target cache
       - uses: Swatinem/rust-cache@v2
 
       # Cargo publish (once!)
       - name: Cargo publish crate
-        if: ${{ matrix.cpu_target == env.BASE_CPU }}
+        if: ${{ matrix.cpu_target == env.BASE_CPU && startsWith(github.ref, 'refs/tags/v') }}
         run: cargo publish --allow-dirty
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
 
-      - name: Build binaries
+      # ---------------------------------------------------------------
+      # Linux (musl, static-pie) — CLI and GUI
+      #
+      # Built natively inside an alpine container: the vendored libjxl
+      # (jxl feature) needs a C++ compiler against musl, which
+      # ubuntu's musl-tools cross setup cannot provide (no musl-g++).
+      # Alpine's native toolchain (gcc/g++/make/cmake) builds libjxl
+      # for musl correctly (validated). dec-heif is NOT included in
+      # the static artifacts (libheif has no static archives); it is
+      # only shipped in the docker images (see validate_docker job).
+      #
+      # The GUI build disables eframe's wayland/x11 features per target:
+      # alpine gets x11 only, windows gets neither (winit auto-selects
+      # its windows backend; the wayland feature is not target-gated
+      # and must stay off for non-linux targets).
+      # ---------------------------------------------------------------
+      - name: Build linux binaries (musl, in alpine container)
         shell: bash
         run: |
-          echo "Building for CPU: ${{ matrix.cpu_target }}"
-          
-          if [ "${{ matrix.cpu_target }}" == "${BASE_CPU}" ]; then
-            SUFFIX=""
-          else
-            SUFFIX="-${{ matrix.cpu_target }}"
-          fi
-          BIN_LINUX="byteshaver-${VERSION}${SUFFIX}"
-          BIN_WIN="byteshaver-${VERSION}${SUFFIX}.exe"
-          
-          cargo build --release --target x86_64-unknown-linux-musl --target x86_64-pc-windows-gnu
+          echo "Building for CPU: ${{ matrix.cpu_target }} (alpine/musl)"
+          docker run --rm -v "$PWD":/src -w /src \
+            -e RUSTFLAGS="${{ env.RUSTFLAGS }}" \
+            rust:1-alpine sh -c '
+              set -e
+              apk add --no-cache nasm musl-dev gcc g++ make cmake upx file >/dev/null
+              # CLI: full default features (opt-oxipng, exif, jxl, anim-webp, anim-apng, logs)
+              cargo build --release -p byteshaver
+              # GUI: static, x11-only windowing
+              cargo build --release -p byteshaver-gui --no-default-features --features x11
+              upx --best --ultra-brute target/release/byteshaver target/release/byteshaver-gui
+              file target/release/byteshaver target/release/byteshaver-gui | grep -q "static-pie" \
+                || (echo "ERROR: binaries are not static-pie" && exit 1)
+            '
           mkdir -p current_release
-          
-          # pack linux binary
-          cp target/x86_64-unknown-linux-musl/release/byteshaver current_release/${BIN_LINUX}
-          upx --best --ultra-brute current_release/${BIN_LINUX}
-          shasum -a 256 current_release/${BIN_LINUX} > current_release/${BIN_LINUX}.sha256
+          if [ "${{ matrix.cpu_target }}" == "${{ env.BASE_CPU }}" ]; then SUFFIX=""; else SUFFIX="-${{ matrix.cpu_target }}"; fi
+          cp target/release/byteshaver "current_release/byteshaver-${{ env.VERSION }}${SUFFIX}"
+          cp target/release/byteshaver-gui "current_release/byteshaver-gui-${{ env.VERSION }}${SUFFIX}"
+          ( cd current_release && sha256sum "byteshaver-${{ env.VERSION }}${SUFFIX}" > "byteshaver-${{ env.VERSION }}${SUFFIX}.sha256" && \
+            sha256sum "byteshaver-gui-${{ env.VERSION }}${SUFFIX}" > "byteshaver-gui-${{ env.VERSION }}${SUFFIX}.sha256" )
 
-          # pack windows binary
-          cp target/x86_64-pc-windows-gnu/release/byteshaver.exe current_release/${BIN_WIN}
-          upx --best --ultra-brute current_release/${BIN_WIN}
-          shasum -a 256 current_release/${BIN_WIN} > current_release/${BIN_WIN}.sha256
+      # ---------------------------------------------------------------
+      # Windows (gnu cross from ubuntu) — CLI and GUI
+      #
+      # Full default features including jxl: the vendored libjxl cmake
+      # build cross-compiles via the target-suffixed CC/CXX/AR vars
+      # (validated). The GUI is built with --no-default-features (no
+      # unix windowing backend features, see the linux step comment).
+      # ---------------------------------------------------------------
+      - name: Build windows binaries (cross)
+        shell: bash
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
+          CC_x86_64_pc_windows_gnu: x86_64-w64-mingw32-gcc
+          CXX_x86_64_pc_windows_gnu: x86_64-w64-mingw32-g++
+          AR_x86_64_pc_windows_gnu: x86_64-w64-mingw32-ar
+        run: |
+          echo "Building for CPU: ${{ matrix.cpu_target }} (windows-gnu)"
+          cargo build --release --target x86_64-pc-windows-gnu -p byteshaver
+          cargo build --release --target x86_64-pc-windows-gnu -p byteshaver-gui --no-default-features
+          upx --best --ultra-brute target/x86_64-pc-windows-gnu/release/byteshaver.exe target/x86_64-pc-windows-gnu/release/byteshaver-gui.exe
+          mkdir -p current_release
+          if [ "${{ matrix.cpu_target }}" == "${{ env.BASE_CPU }}" ]; then SUFFIX=""; else SUFFIX="-${{ matrix.cpu_target }}"; fi
+          cp target/x86_64-pc-windows-gnu/release/byteshaver.exe "current_release/byteshaver-${{ env.VERSION }}${SUFFIX}.exe"
+          cp target/x86_64-pc-windows-gnu/release/byteshaver-gui.exe "current_release/byteshaver-gui-${{ env.VERSION }}${SUFFIX}.exe"
+          ( cd current_release && sha256sum "byteshaver-${{ env.VERSION }}${SUFFIX}.exe" > "byteshaver-${{ env.VERSION }}${SUFFIX}.exe.sha256" && \
+            sha256sum "byteshaver-gui-${{ env.VERSION }}${SUFFIX}.exe" > "byteshaver-gui-${{ env.VERSION }}${SUFFIX}.exe.sha256" )
 
       - name: Upload binaries to GitHub Release
-        uses: softprops/action-gh-release@v3
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        uses: softprops/action-gh-release@v2
         with:
           name: Release ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
           files: current_release/*
 
+      # manual workflow_dispatch runs: attach as workflow artifacts instead
+      - name: Upload binaries as workflow artifacts
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: byteshaver-binaries-${{ matrix.cpu_target }}
+          path: current_release/*
+
+  # ---------------------------------------------------------------
+  # Docker build validation (must pass before images are published)
+  #
+  # Validates the complete dec-heif chain: alpine package names
+  # (libheif-dev, libde265-dev, aom-dev — note: aom, NOT libaom),
+  # the dec-heif + jxl feature build against real libheif, dynamic
+  # musl linking, and an end-to-end decode of a REAL HEIC file
+  # (generated in-container via heif-enc from a synthesized Y4M
+  # through the x265 plugin).
+  # ---------------------------------------------------------------
+  validate_docker:
+    runs-on: ubuntu-latest
+    name: Validate docker images (libheif)
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Build alpine image
+        run: docker build -f Dockerfile -t byteshaver:validate-alpine .
+
+      - name: Smoke test alpine image
+        run: |
+          docker run --rm byteshaver:validate-alpine sh -c 'byteshaver --help >/dev/null && echo "help: ok"'
+          # differential: with dec-heif compiled in, a broken .heic must fail
+          # inside libheif — NOT with the feature-stub message
+          docker run --rm byteshaver:validate-alpine sh -c '
+            printf "garbage-not-a-heif" > /tmp/fake.heic
+            if byteshaver /tmp/fake.heic webp -o /tmp/o 2>&1 | grep -q "dec-heif feature"; then
+              echo "FATAL: dec-heif stub message active — feature not compiled in"; exit 1
+            fi
+            byteshaver /tmp/fake.heic webp -o /tmp/o 2>&1 | grep -qi libheif \
+              && echo "libheif decode path: active"'
+          # real HEIC end-to-end: synthesize a Y4M frame, encode a HEIC via
+          # heif-enc (x265 plugin), decode with byteshaver to three targets
+          docker run --rm byteshaver:validate-alpine sh -c '
+            apk add --no-cache libheif-plugins-all libheif-tools x265 >/dev/null
+            { printf "YUV4MPEG2 W64 H64 F30:1 It A1:1 C420jpeg\nFRAME\n"; head -c 6144 /dev/zero; } > /tmp/in.y4m
+            heif-enc /tmp/in.y4m -o /tmp/real.heic -q 80 >/dev/null
+            test -s /tmp/real.heic || { echo "FATAL: fixture not created"; exit 1; }
+            byteshaver /tmp/real.heic webp -o /tmp/out 2>&1 | grep -q "Successful:  1" \
+              && echo "real HEIC decode -> webp: ok" \
+              || { echo "FATAL: real HEIC decode failed"; exit 1; }'
+
+      - name: Build debian image
+        run: docker build -f Dockerfile-debian -t byteshaver:validate-debian .
+
+      - name: Smoke test debian image
+        run: |
+          docker run --rm byteshaver:validate-debian sh -c '
+            byteshaver --help >/dev/null && echo "help: ok"
+            printf "garbage-not-a-heif" > /tmp/fake.heic
+            byteshaver /tmp/fake.heic webp -o /tmp/o 2>&1 | grep -qi libheif \
+              && echo "libheif decode path: active"'
+
   publish_docker:
-    needs: create_release
+    needs: [validate_docker]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v4
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@v3
 
       - name: Generate Docker metadata
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE_NAME }}
         env:
           DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
 
       - name: Build and Push Docker image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
-          push: true
+          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
       - name: Push README.md to Dockerhub
         uses: peter-evans/dockerhub-description@v5
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
