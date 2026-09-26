@@ -1,10 +1,10 @@
 /*!
-# Image Converter `imgc`
+# Image Converter `byteshaver`
 
-`imgc` is a command-line utility focusing on converting images into other formats,
+`byteshaver` is a command-line utility focusing on converting images into other formats,
  specifically focusing on support for modern image standards and encoders.
 
-`imgc` simplifies the process of batch converting images,
+`byteshaver` simplifies the process of batch converting images,
  optimizing for both performance and storage efficiency.
 
 */

@@ -49,7 +49,7 @@ pub struct CommonConfig {
     /// Defaults to the same location as the original images with the new file extension.
     pub output: String,
 
-    /// By default, imgc will process input files in lexicographical order after expanding the pattern.
+    /// By default, byteshaver will process input files in lexicographical order after expanding the pattern.
     /// Setting this starts the process from the back.
     /// Defaults to false.
     pub reverse_processing_order: bool,

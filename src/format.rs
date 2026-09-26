@@ -9,7 +9,7 @@ use std::path::Path;
 /// # Examples
 ///
 /// ```
-/// use imgc::format::ImageFormat;
+/// use byteshaver::format::ImageFormat;
 ///
 /// let format = ImageFormat::Png;
 /// let unknown_format = ImageFormat::Unknown;

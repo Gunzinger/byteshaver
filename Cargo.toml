@@ -1,13 +1,13 @@
 [package]
-name = "imgc"
+name = "byteshaver"
 version = "0.0.0-git"
 edition = "2024"
 authors = ["Duy NG <hi@tduyng.com>", "Daniel Gunzinger <daniel.gunzinger@posteo.de>"]
 description = "A configurable and efficient batch image converter written in Rust."
 license = "MIT"
-documentation = "https://docs.rs/imgc"
-homepage = "https://github.com/Gunzinger/imgc-rs"
-repository = "https://github.com/Gunzinger/imgc-rs"
+documentation = "https://docs.rs/byteshaver"
+homepage = "https://github.com/Gunzinger/byteshaver"
+repository = "https://github.com/Gunzinger/byteshaver"
 keywords = ["CLI", "image", "conversion", "webp", "avif"]
 readme = "README.md"
 categories = [
@@ -22,7 +22,7 @@ include = [
     "/src/**/*.rs",
     "build.rs"
 ]
-default-run = "imgc"
+default-run = "byteshaver"
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] } # 4.5.41 changes parser ordering; makes command ugly...

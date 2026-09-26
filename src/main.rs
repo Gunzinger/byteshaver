@@ -1,12 +1,12 @@
 use clap::Parser;
-use imgc::{
+use byteshaver::{
     cli::{CliArgs, Command},
     converter::convert_images,
     format::ImageFormat,
     utils::remove_files,
     Error,
 };
-use imgc::converter::CommonConfig;
+use byteshaver::converter::CommonConfig;
 
 fn main() -> Result<(), Error> {
     let args = CliArgs::parse();

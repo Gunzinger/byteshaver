@@ -5,12 +5,12 @@ RUN apt-get update && apt-get install -y nasm
 RUN cargo install --profile release --path .
 
 FROM alpine:latest AS packer
-COPY --from=builder /usr/local/cargo/bin/imgc /usr/local/bin/imgc
+COPY --from=builder /usr/local/cargo/bin/byteshaver /usr/local/bin/byteshaver
 RUN apk add --no-cache upx && \
-    upx --best --ultra-brute /usr/local/bin/imgc
+    upx --best --ultra-brute /usr/local/bin/byteshaver
 
 FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y libc6 && rm -rf /var/lib/apt/lists/*
-COPY --from=packer /usr/local/bin/imgc /usr/local/bin/imgc
+COPY --from=packer /usr/local/bin/byteshaver /usr/local/bin/byteshaver
 WORKDIR /targets
-CMD ["imgc"]
+CMD ["byteshaver"]

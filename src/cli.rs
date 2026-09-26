@@ -25,7 +25,7 @@ pub struct CliArgs {
     #[clap(short, long, global = true, default_value = None)]
     pub output: Option<String>,
     
-    /// By default, imgc will process input files in lexicographical order after expanding the pattern.
+    /// By default, byteshaver will process input files in lexicographical order after expanding the pattern.
     /// Setting this starts the process from the back.
     #[clap(long, global = true, action = Some(ArgAction::SetTrue))]
     pub reverse_processing_order: Option<bool>,
