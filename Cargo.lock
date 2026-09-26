@@ -257,11 +257,8 @@ dependencies = [
  "jpegxl-src",
  "jxl-oxide",
  "kamadak-exif",
-<<<<<<< HEAD
  "libheif-rs",
-=======
  "moxcms",
->>>>>>> impl/ws2
  "mozjpeg",
  "oxipng",
  "png",
@@ -1805,7 +1802,6 @@ dependencies = [
 ]
 
 [[package]]
-<<<<<<< HEAD
 name = "toml"
 version = "1.1.6+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1845,7 +1841,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 
 [[package]]
-=======
 name = "tracing"
 version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1865,7 +1860,6 @@ dependencies = [
 ]
 
 [[package]]
->>>>>>> impl/ws2
 name = "unicode-ident"
 version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
