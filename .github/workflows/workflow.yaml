@@ -32,11 +32,36 @@ jobs:
           draft: false
           prerelease: false
 
+  # Compute the CPU-target matrix for build_binaries.
+  #
+  # Always built: x86-64-v3 (base / docker image / suffixless artifacts)
+  # and x86-64-v4.
+  #
+  # Opt-in: set the repository variable CPU_TARGETS_EXTRA (Settings →
+  # Secrets and variables → Actions → Variables) to a comma-separated
+  # list of extra targets, e.g. `znver3,znver5`, and they join the
+  # matrix for the next release. Unset (default) = v3+v4 only.
+  matrix_prep:
+    runs-on: ubuntu-latest
+    outputs:
+      cpu_targets: ${{ steps.targets.outputs.cpu_targets }}
+    steps:
+      - id: targets
+        run: |
+          TARGETS='"x86-64-v3","x86-64-v4"'
+          EXTRA="${{ vars.CPU_TARGETS_EXTRA }}"
+          if [ -n "$EXTRA" ]; then
+            EXTRA_JSON=$(echo "$EXTRA" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | sed 's/^/"/;s/$/"/' | paste -sd, -)
+            TARGETS="$TARGETS,$EXTRA_JSON"
+          fi
+          echo "cpu_targets=[$TARGETS]" >> "$GITHUB_OUTPUT"
+
   build_binaries:
+    needs: matrix_prep
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        cpu_target: [x86-64-v3, x86-64-v4, znver3, znver5]
+        cpu_target: ${{ fromJSON(needs.matrix_prep.outputs.cpu_targets) }}
     name: Build binaries for ${{ matrix.cpu_target }}
     env:
       RUSTFLAGS: "-C target-cpu=${{ matrix.cpu_target }}"
@@ -108,7 +133,7 @@ jobs:
               cargo build --release -p byteshaver
               # GUI: static, x11-only windowing
               cargo build --release -p byteshaver-gui --no-default-features --features x11
-              upx --best --ultra-brute target/release/byteshaver target/release/byteshaver-gui
+              upx --best target/release/byteshaver target/release/byteshaver-gui
               file target/release/byteshaver target/release/byteshaver-gui | grep -q "static-pie" \
                 || (echo "ERROR: binaries are not static-pie" && exit 1)
             '
@@ -138,7 +163,7 @@ jobs:
           echo "Building for CPU: ${{ matrix.cpu_target }} (windows-gnu)"
           cargo build --release --target x86_64-pc-windows-gnu -p byteshaver
           cargo build --release --target x86_64-pc-windows-gnu -p byteshaver-gui --no-default-features
-          upx --best --ultra-brute target/x86_64-pc-windows-gnu/release/byteshaver.exe target/x86_64-pc-windows-gnu/release/byteshaver-gui.exe
+          upx --best target/x86_64-pc-windows-gnu/release/byteshaver.exe target/x86_64-pc-windows-gnu/release/byteshaver-gui.exe
           mkdir -p current_release
           if [ "${{ matrix.cpu_target }}" == "${{ env.BASE_CPU }}" ]; then SUFFIX=""; else SUFFIX="-${{ matrix.cpu_target }}"; fi
           cp target/x86_64-pc-windows-gnu/release/byteshaver.exe "current_release/byteshaver-${{ env.VERSION }}${SUFFIX}.exe"
@@ -179,8 +204,23 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
 
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Shared buildx cache (type=gha): publish_docker rebuilds this exact
+      # image and hits these layers instead of recompiling (~20 min saved).
+      # provenance=false keeps the result a single-platform manifest that
+      # `load: true` can load locally for the smoke tests.
       - name: Build alpine image
-        run: docker build -f Dockerfile -t byteshaver:validate-alpine .
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          tags: byteshaver:validate-alpine
+          load: true
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Smoke test alpine image
         run: |
@@ -248,6 +288,9 @@ jobs:
           push: ${{ startsWith(github.ref, 'refs/tags/v') }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # consume the layer cache exported by validate_docker (same ref =>
+          # same gha cache scope) instead of recompiling from scratch
+          cache-from: type=gha
 
       - name: Push README.md to Dockerhub
         uses: peter-evans/dockerhub-description@v5

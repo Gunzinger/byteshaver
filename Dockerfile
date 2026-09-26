@@ -11,7 +11,7 @@ RUN apk add --no-cache nasm musl-dev gcc g++ make cmake upx libheif-dev libde265
 # (The downloadable static musl release binaries are built WITHOUT dec-heif, see CI.)
 ENV RUSTFLAGS="-C target-feature=-crt-static"
 RUN cargo install --profile release --path . --features dec-heif
-RUN upx --best --ultra-brute /usr/local/cargo/bin/byteshaver
+RUN upx --best /usr/local/cargo/bin/byteshaver
 
 FROM alpine:latest
 # runtime libraries of the HEIC/HEIF/AVIF decoders + C++ runtime (libjxl static
