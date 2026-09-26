@@ -1,11 +1,11 @@
-name: imgc-rs release pipeline
+name: byteshaver release pipeline
 on:
   push:
     tags:
       - 'v*.*.*'
 
 env:
-  IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/imgc-rs
+  IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/byteshaver
   BASE_CPU: x86-64-v3 # docker image and suffixless-binary use this as the target-cpu type
 
 jobs:
@@ -16,12 +16,12 @@ jobs:
       release_upload_url: ${{ steps.gh_release.outputs.upload_url }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # Create GitHub Release
       - name: Create GitHub Release
         id: gh_release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: Release ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
@@ -39,7 +39,7 @@ jobs:
       RUSTFLAGS: "-C target-cpu=${{ matrix.cpu_target }}"
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # Extract version from the Git tag (strip leading 'v')
       - name: Set version from tag
@@ -53,7 +53,7 @@ jobs:
           sed -i "s/0\\.0\\.0-git/${VERSION}/" Cargo.toml
           head -n 5 Cargo.toml
           sed -i "s/0\\.0\\.0-git/${VERSION}/" Cargo.lock
-          grep -i -C 5 "imgc" Cargo.lock
+          grep -i -C 5 "byteshaver" Cargo.lock
 
       - name: Install Linux and Windows Cross Compilers
         run: sudo apt-get install --yes --no-install-recommends musl-tools gcc-mingw-w64-x86-64-win32 nasm upx-ucl
@@ -81,24 +81,24 @@ jobs:
           else
             SUFFIX="-${{ matrix.cpu_target }}"
           fi
-          BIN_LINUX="imgc-${VERSION}${SUFFIX}"
-          BIN_WIN="imgc-${VERSION}${SUFFIX}.exe"
+          BIN_LINUX="byteshaver-${VERSION}${SUFFIX}"
+          BIN_WIN="byteshaver-${VERSION}${SUFFIX}.exe"
           
           cargo build --release --target x86_64-unknown-linux-musl --target x86_64-pc-windows-gnu
           mkdir -p current_release
           
           # pack linux binary
-          cp target/x86_64-unknown-linux-musl/release/imgc current_release/${BIN_LINUX}
+          cp target/x86_64-unknown-linux-musl/release/byteshaver current_release/${BIN_LINUX}
           upx --best --ultra-brute current_release/${BIN_LINUX}
           shasum -a 256 current_release/${BIN_LINUX} > current_release/${BIN_LINUX}.sha256
 
           # pack windows binary
-          cp target/x86_64-pc-windows-gnu/release/imgc.exe current_release/${BIN_WIN}
+          cp target/x86_64-pc-windows-gnu/release/byteshaver.exe current_release/${BIN_WIN}
           upx --best --ultra-brute current_release/${BIN_WIN}
           shasum -a 256 current_release/${BIN_WIN} > current_release/${BIN_WIN}.sha256
 
       - name: Upload binaries to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: Release ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
@@ -109,27 +109,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Generate Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE_NAME }}
         env:
           DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
 
       - name: Build and Push Docker image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile
@@ -143,5 +143,5 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
           repository: ${{ env.IMAGE_NAME }}
-          short-description: 'imgc-rs, configurable and efficient batch image converter'
+          short-description: 'byteshaver, configurable and efficient batch image converter'
           enable-url-completion: true

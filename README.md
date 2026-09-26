@@ -1,15 +1,21 @@
-# Image Converter `imgc` 🗜️
+# byteshaver 🗜️
 
-`imgc` is a command-line utility focusing on converting images into other formats,
+`byteshaver` is a command-line utility focusing on converting images into other formats,
  specifically focusing on support for modern image standards and encoders.
 
-`imgc` simplifies the process of batch converting images,
+`byteshaver` simplifies the process of batch converting images,
  optimizing for both performance and storage efficiency.
+
+> [!NOTE]
+> **Heritage:** this project started out as a fork of [imgc-rs](https://github.com/tduyng/imgc-rs) by [tduyng](https://github.com/tduyng).
+> Over time it has diverged too much from the original, so it is no longer a fork
+> and is now developed independently as **byteshaver**.
+> Thanks to [@tduyng](https://github.com/tduyng) for the original work and the head start!
 
 ### Usage example using the docker container:
 
 ```bash
-> docker run -v ./examples/:/targets/ -it gunzinger/imgc-rs:latest imgc "**/*.*" avif
+> docker run -v ./examples/:/targets/ -it gunzinger/byteshaver:latest byteshaver "**/*.*" avif
 Converting 16 files...
 Using "ravif" (0.12.0) with options (quality: 90, speed: 3, bit depth: Eight, color model: RGB)
 Encode statistics:
@@ -84,43 +90,43 @@ For a good overview of browser support, see the [caniuse.com](https://caniuse.co
 
 Binaries for Windows and Linux are built for every tag.
 
-See the [GitHub releases](https://github.com/Gunzinger/imgc-rs/releases) page for downloads.
+See the [GitHub releases](https://github.com/Gunzinger/byteshaver/releases) page for downloads.
 
 ### Using the docker image 🐳
 
 Docker containers are also built for every tag.
 
-See the [Docker Hub](https://hub.docker.com/r/gunzinger/imgc-rs) page for available tags.
+See the [Docker Hub](https://hub.docker.com/r/gunzinger/byteshaver) page for available tags.
 
 ```bash
-docker run -it gunzinger/imgc-rs:latest imgc --help
+docker run -it gunzinger/byteshaver:latest byteshaver --help
 
 # directory passthrough on linux
-docker run -v ./input-folder/:/targets/ -it gunzinger/imgc-rs:latest imgc "/targets/**/*.png" avif
+docker run -v ./input-folder/:/targets/ -it gunzinger/byteshaver:latest byteshaver "/targets/**/*.png" avif
 
 # note that on windows the volume passthroughs need to have absolute paths, e.g. (for powershell)
-docker run -v ${PWD}/input-folder/:/targets/ -it gunzinger/imgc-rs:latest imgc "/targets/**/*.png" avif
+docker run -v ${PWD}/input-folder/:/targets/ -it gunzinger/byteshaver:latest byteshaver "/targets/**/*.png" avif
 
 ```
 
 ---
 
-## How to Use `imgc` 🧑‍💻
+## How to Use `byteshaver` 🧑‍💻
 
 ### Basic Usage
 
-The `imgc` program uses glob patterns for target selection:
+The `byteshaver` program uses glob patterns for target selection:
 
 ```bash
-imgc "examples/**/*.png" webp
-imgc "examples/**/*.jpg" webp
-imgc "examples/**/*" webp
+byteshaver "examples/**/*.png" webp
+byteshaver "examples/**/*.jpg" webp
+byteshaver "examples/**/*" webp
 ```
 
 ### Specifying an output directory 🗃️
 
 ```bash
-imgc "examples/**/*" webp -o output_images
+byteshaver "examples/**/*" webp -o output_images
 ```
 
 ### Cleaning up generated files 🧹
@@ -128,7 +134,7 @@ imgc "examples/**/*" webp -o output_images
 **Warning**: Use this command with caution. This is basically `rm -rf` with regex.
 
 ```bash
-imgc "examples/**/*.webp" clean
+byteshaver "examples/**/*.webp" clean
 ```
 
 ---
@@ -138,10 +144,10 @@ imgc "examples/**/*.webp" clean
 For detailed command usage, see all arguments with `--help` or `-h`:
 
 ```bash
-❯ imgc --help
+❯ byteshaver --help
 A configurable and efficient batch image converter written in Rust.
 
-Usage: imgc [OPTIONS] <PATTERN> <COMMAND>
+Usage: byteshaver [OPTIONS] <PATTERN> <COMMAND>
 
 Commands:
   webp        Convert images to webp format (using webp crate)
@@ -156,7 +162,8 @@ Arguments:
   <PATTERN>  Glob pattern to match images to convert. Example: `images/**/*.png`
 
 Options:
-  -o, --output <OUTPUT>               Output directory (flat) of processed images. Defaults to the same location as the original images with the new file extension
+  -o, --output <OUTPUT>               Output directory (flat) of processed images. Defaults to the same location as the original images with the new file extension. If set, replaces the fixed base of the pattern directory structure of the input pattern. (before any * in the glob pattern)
+      --reverse-processing-order      By default, byteshaver will process input files in lexicographical order after expanding the pattern. Setting this starts the process from the back
       --overwrite-if-smaller          Overwrite the existing output file if the current conversion resulted in a smaller file
       --overwrite-existing            Overwrite existing output files regardless of size
       --discard-if-larger-than-input  Discards the encoding result if it is larger than the input file (does not create an output file)
@@ -168,15 +175,16 @@ Options:
 For the `webp` command:
 
 ```bash
-❯ imgc webp --help                                     
+❯ byteshaver webp --help
 Convert images to webp format (using webp crate)
 
-Usage: imgc  <PATTERN> webp [OPTIONS]
+Usage: byteshaver <PATTERN> webp [OPTIONS]
 
 Options:
       --lossless                      Use lossless encoding mode. Defaults to false
   -q, --quality <QUALITY>             Control target quality (0 - 100, lower is worse but results in smaller files). Defaults to 90.0
-  -o, --output <OUTPUT>               Output directory (flat) of processed images. Defaults to the same location as the original images with the new file extension
+  -o, --output <OUTPUT>               Output directory (flat) of processed images. Defaults to the same location as the original images with the new file extension. If set, replaces the fixed base of the pattern directory structure of the input pattern. (before any * in the glob pattern)
+      --reverse-processing-order      By default, byteshaver will process input files in lexicographical order after expanding the pattern. Setting this starts the process from the back
       --overwrite-if-smaller          Overwrite the existing output file if the current conversion resulted in a smaller file
       --overwrite-existing            Overwrite existing output files regardless of size
       --discard-if-larger-than-input  Discards the encoding result if it is larger than the input file (does not create an output file)
@@ -187,10 +195,14 @@ Options:
 For the `webp-image` command:
 
 ```bash
-❯ imgc <PATTERN> webp-image [OPTIONS]
+❯ byteshaver webp-image --help
+Convert images to webp format (using image crate)
+
+Usage: byteshaver <PATTERN> webp-image [OPTIONS]
 
 Options:
-  -o, --output <OUTPUT>               Output directory (flat) of processed images. Defaults to the same location as the original images with the new file extension
+  -o, --output <OUTPUT>               Output directory (flat) of processed images. Defaults to the same location as the original images with the new file extension. If set, replaces the fixed base of the pattern directory structure of the input pattern. (before any * in the glob pattern)
+      --reverse-processing-order      By default, byteshaver will process input files in lexicographical order after expanding the pattern. Setting this starts the process from the back
       --overwrite-if-smaller          Overwrite the existing output file if the current conversion resulted in a smaller file
       --overwrite-existing            Overwrite existing output files regardless of size
       --discard-if-larger-than-input  Discards the encoding result if it is larger than the input file (does not create an output file)
@@ -201,10 +213,10 @@ Options:
 For the `avif` command:
 
 ```bash
-❯ imgc avif --help                                     
+❯ byteshaver avif --help
 Convert images to avif format (using ravif crate)
 
-Usage: imgc <PATTERN> avif [OPTIONS]
+Usage: byteshaver <PATTERN> avif [OPTIONS]
 
 Options:
   -q, --quality <QUALITY>
@@ -220,13 +232,17 @@ Options:
   -a, --alpha-quality <ALPHA_QUALITY>
           Control target alpha quality (0 - 100, lower is worse). Defaults to 90.0
   -o, --output <OUTPUT>
-          Output directory (flat) of processed images. Defaults to the same location as the original images with the new file extension
+          Output directory (flat) of processed images. Defaults to the same location as the original images with the new file extension. If set, replaces the fixed base of the pattern directory structure of the input pattern. (before any * in the glob pattern)
+      --reverse-processing-order
+          By default, byteshaver will process input files in lexicographical order after expanding the pattern. Setting this starts the process from the back
       --overwrite-if-smaller
           Overwrite the existing output file if the current conversion resulted in a smaller file
       --overwrite-existing
           Overwrite existing output files regardless of size
       --discard-if-larger-than-input
           Discards the encoding result if it is larger than the input file (does not create an output file)
+      --discard-input-alpha-channel
+          Discards the alpha channel of the input image(s) if it is present. (this does not make loading faster, but it can improve the encoding result)
   -h, --help
           Print help
 ```
@@ -234,10 +250,10 @@ Options:
 For the `png` command:
 
 ```bash
-❯ imgc png --help                                     
+❯ byteshaver png --help
 Convert images to png format (using image crate)
 
-Usage: imgc <PATTERN> png [OPTIONS]
+Usage: byteshaver <PATTERN> png [OPTIONS]
 
 Options:
       --compression-type <COMPRESSION_TYPE>
@@ -255,7 +271,10 @@ Options:
           [possible values: no-filter, sub, up, avg, paeth, adaptive]
 
   -o, --output <OUTPUT>
-          Output directory (flat) of processed images. Defaults to the same location as the original images with the new file extension
+          Output directory (flat) of processed images. Defaults to the same location as the original images with the new file extension. If set, replaces the fixed base of the pattern directory structure of the input pattern. (before any * in the glob pattern)
+
+      --reverse-processing-order
+          By default, byteshaver will process input files in lexicographical order after expanding the pattern. Setting this starts the process from the back
 
       --overwrite-if-smaller
           Overwrite the existing output file if the current conversion resulted in a smaller file
@@ -276,10 +295,14 @@ Options:
 For the `jpeg` command (unstable; likes to crash! this is a work in progress!):
 
 ```bash
-❯ imgc <PATTERN> jpeg [OPTIONS]
+❯ byteshaver jpeg --help
+Convert images to optimized jpeg format (using mozjpeg crate)
+
+Usage: byteshaver <PATTERN> jpeg [OPTIONS]
 
 Options:
-  -o, --output <OUTPUT>               Output directory (flat) of processed images. Defaults to the same location as the original images with the new file extension
+  -o, --output <OUTPUT>               Output directory (flat) of processed images. Defaults to the same location as the original images with the new file extension. If set, replaces the fixed base of the pattern directory structure of the input pattern. (before any * in the glob pattern)
+      --reverse-processing-order      By default, byteshaver will process input files in lexicographical order after expanding the pattern. Setting this starts the process from the back
       --overwrite-if-smaller          Overwrite the existing output file if the current conversion resulted in a smaller file
       --overwrite-existing            Overwrite existing output files regardless of size
       --discard-if-larger-than-input  Discards the encoding result if it is larger than the input file (does not create an output file)
@@ -290,10 +313,14 @@ Options:
 For the `clean` command:
 
 ```bash
-> imgc <PATTERN> clean [OPTIONS]
+❯ byteshaver clean --help
+Remove files matching a glob pattern
+
+Usage: byteshaver <PATTERN> clean [OPTIONS]
 
 Options:
-  -o, --output <OUTPUT>               Output directory (flat) of processed images. Defaults to the same location as the original images with the new file extension
+  -o, --output <OUTPUT>               Output directory (flat) of processed images. Defaults to the same location as the original images with the new file extension. If set, replaces the fixed base of the pattern directory structure of the input pattern. (before any * in the glob pattern)
+      --reverse-processing-order      By default, byteshaver will process input files in lexicographical order after expanding the pattern. Setting this starts the process from the back
       --overwrite-if-smaller          Overwrite the existing output file if the current conversion resulted in a smaller file
       --overwrite-existing            Overwrite existing output files regardless of size
       --discard-if-larger-than-input  Discards the encoding result if it is larger than the input file (does not create an output file)
@@ -346,18 +373,18 @@ Example of clean command:
 
 #### Install via crate
 
-To install via the [published crate](https://crates.io/crates/imgc), execute the following command:
+To install via the [published crate](https://crates.io/crates/byteshaver), execute the following command:
 
 ```bash
-cargo install imgc
+cargo install byteshaver
 ```
 
 #### Install from git
 
 ```bash
 # 1. Clone the repository:
-git clone https://github.com/Gunzinger/imgc-rs.git
-cd imgc-rs
+git clone https://github.com/Gunzinger/byteshaver.git
+cd byteshaver
 # 2. Build the project:
 cargo build --release
 3. Install locally
@@ -369,7 +396,7 @@ cargo install --path .
 To uninstall, remove the tool via `cargo uninstall`:
 
 ```bash
-cargo uninstall imgc
+cargo uninstall byteshaver
 ```
 
 ---
