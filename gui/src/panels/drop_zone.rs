@@ -3,25 +3,80 @@
 //! `RawInput::dropped_files`/`hovered_files`); this banner is the always
 //! visible affordance — highlighted while a drag hovers, with click-to-
 //! browse (files) and add-folder buttons using the native `rfd` dialogs.
+//!
+//! The summary line aggregates the queue *including* dropped folders
+//! (via their enqueue-time [`crate::queue::DirSummary`] scan): total
+//! detected input size, image count and a per-format breakdown, visible
+//! immediately after a drop.
+
+use std::collections::BTreeMap;
+
+use byteshaver::format::ImageFormat;
 
 use crate::app::{App, INPUT_EXTENSIONS};
-use crate::queue::format_size;
+use crate::queue::{format_breakdown, format_size};
 
 /// Height of the banner in points.
 const BANNER_HEIGHT: f32 = 64.0;
+
+/// Number of formats shown in the per-format breakdown before collapsing
+/// the rest into `+ N more`.
+const BREAKDOWN_LIMIT: usize = 6;
+
+/// Aggregated queue totals across file rows and directory scans.
+struct QueueTotals {
+    file_count: u64,
+    dir_count: u64,
+    image_count: u64,
+    total_bytes: u64,
+    by_format: Vec<(String, u64)>,
+}
+
+impl QueueTotals {
+    /// Folds the queue: file rows contribute their stat'ed size and
+    /// sniffed format, directory rows their [`crate::queue::DirSummary`].
+    fn of(app: &App) -> Self {
+        let mut totals = QueueTotals {
+            file_count: 0,
+            dir_count: 0,
+            image_count: 0,
+            total_bytes: 0,
+            by_format: Vec::new(),
+        };
+        let mut counts: BTreeMap<String, u64> = BTreeMap::new();
+        for item in app.queue.items() {
+            if item.is_dir {
+                totals.dir_count += 1;
+                if let Some(summary) = &item.summary {
+                    totals.image_count += summary.images;
+                    totals.total_bytes += summary.bytes;
+                    for (format, count) in &summary.by_format {
+                        *counts.entry(format.clone()).or_default() += count;
+                    }
+                }
+            } else {
+                totals.file_count += 1;
+                if let Some(size) = item.input_size {
+                    totals.total_bytes += size;
+                }
+                if item.source_format != ImageFormat::Unknown {
+                    totals.image_count += 1;
+                    *counts
+                        .entry(item.source_format.extension().to_string())
+                        .or_default() += 1;
+                }
+            }
+        }
+        totals.by_format = crate::queue::sort_counts(counts);
+        totals
+    }
+}
 
 /// Renders the drop-zone banner at the top of the central panel
 /// (inside the shared `CentralPanel`, see [`super::show`]).
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let highlight = app.drag_hovered;
-    let queued_bytes: u64 = app
-        .queue
-        .items()
-        .iter()
-        .filter_map(|item| item.input_size)
-        .sum();
-    let file_count = app.queue.items().iter().filter(|item| !item.is_dir).count();
-    let dir_count = app.queue.items().iter().filter(|item| item.is_dir).count();
+    let totals = QueueTotals::of(app);
 
     let frame = egui::Frame::new()
         .fill(if highlight {
@@ -50,16 +105,26 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             let summary = if app.queue.is_empty() {
                 "…or use the buttons below to browse".to_string()
             } else {
-                let mut summary = format!("{file_count} files queued");
-                if dir_count > 0 {
-                    summary.push_str(&format!(" · {dir_count} folders (expanded recursively)"));
+                let mut parts = vec![format!("{} files queued", totals.file_count)];
+                if totals.dir_count > 0 {
+                    parts.push(format!(
+                        "{} folders → {} images",
+                        totals.dir_count, totals.image_count
+                    ));
                 }
-                if queued_bytes > 0 {
-                    summary.push_str(&format!(" · {}", format_size(queued_bytes)));
+                if totals.total_bytes > 0 {
+                    parts.push(format_size(totals.total_bytes));
                 }
-                summary
+                parts.join(" · ")
             };
             ui.label(egui::RichText::new(summary).weak());
+            if !totals.by_format.is_empty() {
+                ui.label(
+                    egui::RichText::new(format_breakdown(&totals.by_format, BREAKDOWN_LIMIT))
+                        .weak()
+                        .size(12.0),
+                );
+            }
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 if ui.button("Add files…").clicked() {

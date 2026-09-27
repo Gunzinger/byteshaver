@@ -17,6 +17,7 @@
 //! again when the next run starts so the queue keeps representing the
 //! user's input selection, not the last run's expansion.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use byteshaver::format::ImageFormat;
@@ -94,6 +95,98 @@ impl ItemStatus {
     }
 }
 
+/// Aggregated preview of a directory's convertible image content,
+/// computed at enqueue time by a metadata-only recursive walk (one `stat`
+/// per entry, no file reading) so dropping a folder shows its totals
+/// immediately. Discovery filtering mirrors the core (`ImageFormat`
+/// extension sniff); the conversion itself still hands the directory to
+/// the core, which re-discovers with identical semantics.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DirSummary {
+    /// Number of image files found (supported extensions, symlink targets
+    /// excluded).
+    pub images: u64,
+    /// Total size in bytes of the found image files.
+    pub bytes: u64,
+    /// Per-format image counts (key: canonical extension, e.g. `jpeg`),
+    /// sorted by count descending (ties: extension ascending).
+    pub by_format: Vec<(String, u64)>,
+}
+
+impl DirSummary {
+    /// Walks `dir` recursively and summarizes its convertible content.
+    /// Runs synchronously on the calling (UI) thread — stat-only, so this
+    /// stays responsive for typical photo libraries.
+    #[must_use]
+    pub fn scan(dir: &Path) -> Self {
+        let mut summary = DirSummary::default();
+        let mut counts: BTreeMap<String, u64> = BTreeMap::new();
+        Self::scan_recursive(dir, &mut summary, &mut counts);
+        summary.by_format = sort_counts(counts);
+        summary
+    }
+
+    fn scan_recursive(dir: &Path, summary: &mut Self, counts: &mut BTreeMap<String, u64>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            // file_type does not follow symlinks: symlinked files/dirs are
+            // skipped (cycle-safe; the core's glob discovery expands them,
+            // but the preview deliberately stays conservative)
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if file_type.is_dir() {
+                Self::scan_recursive(&path, summary, counts);
+            } else if file_type.is_file() {
+                let format = ImageFormat::from(path.as_path());
+                if format == ImageFormat::Unknown {
+                    continue;
+                }
+                let Ok(meta) = entry.metadata() else {
+                    continue;
+                };
+                summary.images += 1;
+                summary.bytes += meta.len();
+                *counts.entry(format.extension().to_string()).or_default() += 1;
+            }
+        }
+    }
+
+    /// Per-format counts as `JPEG 210 · PNG 100`, most common first;
+    /// entries beyond `max` collapse into `+ N more`.
+    #[must_use]
+    pub fn breakdown(&self, max: usize) -> String {
+        format_breakdown(&self.by_format, max)
+    }
+}
+
+/// Sorts per-format counts by count descending (ties: key ascending).
+#[must_use]
+pub fn sort_counts(counts: BTreeMap<String, u64>) -> Vec<(String, u64)> {
+    let mut entries: Vec<(String, u64)> = counts.into_iter().collect();
+    entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    entries
+}
+
+/// Formats per-format counts as `JPEG 210 · PNG 100` (most common first),
+/// collapsing entries beyond `max` into `+ N more`. Keys are uppercased
+/// for display.
+#[must_use]
+pub fn format_breakdown(counts: &[(String, u64)], max: usize) -> String {
+    let shown = counts
+        .iter()
+        .take(max)
+        .map(|(format, count)| format!("{} {}", format.to_uppercase(), count));
+    let mut text: Vec<String> = shown.collect();
+    if counts.len() > max {
+        text.push(format!("+ {} more", counts.len() - max));
+    }
+    text.join(" · ")
+}
+
 /// One row of the conversion queue.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QueueItem {
@@ -119,6 +212,9 @@ pub struct QueueItem {
     pub metadata_dropped: bool,
     /// Directories are passed to the core as-is (recursive expansion there).
     pub is_dir: bool,
+    /// Aggregated image content of a directory row (see [`DirSummary`]);
+    /// `None` for file rows.
+    pub summary: Option<DirSummary>,
     /// Transient row appended from a directory/HEIF expansion during a run
     /// (not part of the user's queue selection; dropped on the next run).
     pub discovered: bool,
@@ -135,6 +231,11 @@ impl QueueItem {
             ImageFormat::from(path.as_path())
         };
         let input_size = std::fs::metadata(&path).map(|meta| meta.len()).ok();
+        let summary = if is_dir {
+            Some(DirSummary::scan(&path))
+        } else {
+            None
+        };
         QueueItem {
             path,
             source_format,
@@ -145,6 +246,7 @@ impl QueueItem {
             output_size: None,
             metadata_dropped: false,
             is_dir,
+            summary,
             discovered: false,
         }
     }
@@ -584,6 +686,83 @@ mod tests {
         assert!(dir.is_dir, "test requires a real directory");
         assert!(dir.is_supported(false), "directories are always passed on");
         let _ = std::fs::remove_dir(&dir_path);
+    }
+
+    // ---- Directory content scan -------------------------------------------
+
+    #[test]
+    fn dir_summary_counts_images_sizes_and_formats() {
+        let base = std::env::temp_dir().join(format!("byteshaver-gui-scan-{}", std::process::id()));
+        let nested = base.join("nested");
+        std::fs::create_dir_all(&nested).expect("create fixture dirs");
+        std::fs::write(base.join("a.png"), [0u8; 10]).expect("write png");
+        std::fs::write(base.join("b.jpg"), [0u8; 20]).expect("write jpg");
+        std::fs::write(base.join("c.jpg"), [0u8; 30]).expect("write jpg 2");
+        std::fs::write(base.join("ignored.txt"), [0u8; 999]).expect("write txt");
+        std::fs::write(nested.join("d.webp"), [0u8; 40]).expect("write webp");
+        // a symlink must not count (or loop)
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&base, base.join("loop")).expect("create symlink");
+
+        let item = QueueItem::new(base.clone());
+        assert!(item.is_dir);
+        let summary = item.summary.expect("dir rows carry a summary");
+        assert_eq!(summary.images, 4, "png + 2 jpg + webp, no txt/symlink");
+        assert_eq!(summary.bytes, 100);
+        assert_eq!(
+            summary.by_format,
+            vec![
+                ("jpeg".to_string(), 2),
+                ("png".to_string(), 1),
+                ("webp".to_string(), 1),
+            ],
+            "sorted by count desc, ties by extension"
+        );
+        assert_eq!(summary.breakdown(2), "JPEG 2 · PNG 1 · + 1 more");
+        assert_eq!(summary.breakdown(10), "JPEG 2 · PNG 1 · WEBP 1");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn empty_and_missing_directories_yield_empty_summaries() {
+        assert_eq!(
+            DirSummary::scan(Path::new("/definitely/not/here")),
+            DirSummary::default()
+        );
+
+        let dir =
+            std::env::temp_dir().join(format!("byteshaver-gui-scan-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        assert_eq!(DirSummary::scan(&dir), DirSummary::default());
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn file_rows_have_no_summary() {
+        let item = QueueItem::new(PathBuf::from("/definitely/not/here.png"));
+        assert!(!item.is_dir);
+        assert_eq!(item.summary, None);
+    }
+
+    #[test]
+    fn breakdown_formatting_sorts_and_truncates() {
+        let counts = vec![
+            ("webp".to_string(), 5),
+            ("jpeg".to_string(), 10),
+            ("png".to_string(), 7),
+        ];
+        // format_breakdown takes pre-sorted input; sorting is sort_counts' job
+        assert_eq!(format_breakdown(&counts, 2), "WEBP 5 · JPEG 10 · + 1 more");
+        let sorted = sort_counts(counts.into_iter().collect());
+        assert_eq!(
+            sorted,
+            vec![
+                ("jpeg".to_string(), 10),
+                ("png".to_string(), 7),
+                ("webp".to_string(), 5),
+            ]
+        );
     }
 
     #[test]

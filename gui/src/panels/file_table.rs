@@ -2,6 +2,13 @@
 //! renders only the visible slice, keeping the UI smooth at thousands of
 //! rows. Columns: status glyph, file name (full path in a tooltip), source
 //! format, in → out sizes, status label + note/error, remove button.
+//!
+//! Rows must occupy *exactly* [`ROW_HEIGHT`]: `show_rows` scrolls by a
+//! fixed multiple of it, so anything taller (e.g. a separator per row)
+//! makes the content drift against the scrollbar. Column widths are
+//! proportional to the available width — fixed pixel columns used to
+//! overflow narrow windows, clipping the right-hand columns with no way
+//! to scroll them into view.
 
 use crate::app::App;
 use crate::queue::{ItemStatus, format_size};
@@ -39,12 +46,42 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 } else {
                     item.source_format.extension().to_string()
                 };
-                let sizes = size_column(item.input_size, item.output_size, item.status);
+                // directory rows show the scanned content instead of the
+                // (meaningless) directory inode size
+                let sizes = if let Some(summary) = &item.summary {
+                    format_size(summary.bytes)
+                } else {
+                    size_column(item.input_size, item.output_size, item.status)
+                };
+                let sizes_hover = if item.summary.is_some() {
+                    "total size of the contained images (enqueue-time scan)"
+                } else {
+                    "input size → output size"
+                };
                 let status = item.status;
-                let note = item.note.clone();
+                let mut status_text = if let Some(summary) = &item.summary {
+                    format!("→ {} images", summary.images)
+                } else {
+                    status.label().to_string()
+                };
+                if let Some(note) = &item.note {
+                    status_text.push_str(" · ");
+                    status_text.push_str(note);
+                }
                 let error = item.error.clone();
                 let supported = item.is_supported(heif_enabled);
                 let unsupported_reason = item.unsupported_reason(heif_enabled);
+                // tooltip: full path plus the per-format breakdown for
+                // scanned directories
+                let mut hover = full_path.clone();
+                if let Some(summary) = &item.summary {
+                    hover.push('\n');
+                    hover.push_str(&summary.breakdown(10));
+                }
+                if let Some(reason) = &unsupported_reason {
+                    hover.push('\n');
+                    hover.push_str(reason);
+                }
 
                 ui.horizontal(|ui| {
                     ui.set_min_height(ROW_HEIGHT - 4.0);
@@ -53,21 +90,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         egui::Label::new(egui::RichText::new(status.glyph()).color(glyph_color))
                             .selectable(false),
                     );
-                    // file name column takes the leftover width
-                    let fixed = 430.0;
-                    let name_width = (ui.available_width() - fixed).max(100.0);
+                    // column widths: proportional so every column stays
+                    // visible at any window size (name takes the rest)
+                    let spacing = ui.spacing().item_spacing.x * 5.0;
+                    let status_width = (ui.available_width() * 0.26).clamp(140.0, 290.0);
+                    let fixed = status_width + 110.0 + 44.0 + 16.0 + spacing;
+                    let name_width = (ui.available_width() - fixed).max(60.0);
+
                     let mut name_text = egui::RichText::new(&name).monospace();
-                    let mut hover = full_path;
-                    if let Some(reason) = &unsupported_reason {
+                    if unsupported_reason.is_some() {
                         name_text = name_text.weak();
-                        hover.push('\n');
-                        hover.push_str(reason);
                     }
                     let name_label = egui::Label::new(name_text).truncate().selectable(false);
-                    let name_response = ui
-                        .add_sized([name_width, ROW_HEIGHT], name_label)
+                    ui.add_sized([name_width, ROW_HEIGHT], name_label)
                         .on_hover_text(hover);
-                    let _ = name_response;
 
                     ui.monospace(egui::RichText::new(format).weak().size(12.0))
                         .on_hover_text("detected source format (extension sniff)");
@@ -75,18 +111,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         [110.0, ROW_HEIGHT],
                         egui::Label::new(egui::RichText::new(sizes).size(12.0)),
                     )
-                    .on_hover_text("input size → output size");
-                    let mut status_text = status.label().to_string();
-                    if let Some(note) = &note {
-                        status_text.push_str(" · ");
-                        status_text.push_str(note);
-                    }
+                    .on_hover_text(sizes_hover);
                     let mut status_rich = egui::RichText::new(&status_text).size(12.0);
                     if error.is_some() {
                         status_rich = status_rich.color(ui.visuals().error_fg_color);
                     }
                     let status_label = egui::Label::new(status_rich).truncate().selectable(false);
-                    let status_response = ui.add_sized([290.0, ROW_HEIGHT], status_label);
+                    let status_response = ui.add_sized([status_width, ROW_HEIGHT], status_label);
                     if let Some(error) = &error {
                         status_response.on_hover_text(error.clone());
                     } else if let Some(reason) = &unsupported_reason {
@@ -103,7 +134,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         }
                     });
                 });
-                ui.separator();
+                // no per-row separator: rows must stay exactly ROW_HEIGHT
+                // tall or show_rows' scroll math drifts against the content
             }
         });
 }

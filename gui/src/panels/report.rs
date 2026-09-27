@@ -35,7 +35,9 @@ pub fn show_window(app: &mut App, ctx: &egui::Context) {
             ui.add_space(6.0);
             ui.separator();
 
-            // per-file results (virtualized; the row count can be large)
+            // per-file results (virtualized; the row count can be large).
+            // Rows are exactly ROW_HEIGHT tall (no per-row separator) and
+            // use proportional widths so no column is clipped off-window.
             let rows = report.files.len();
             const ROW_HEIGHT: f32 = 20.0;
             egui::ScrollArea::vertical()
@@ -51,12 +53,20 @@ pub fn show_window(app: &mut App, ctx: &egui::Context) {
                             ui.monospace(
                                 egui::RichText::new(status.glyph()).color(status_color(ui, status)),
                             );
+                            let spacing = ui.spacing().item_spacing.x * 3.0;
+                            let sizes_width = 120.0;
+                            let status_width = (ui.available_width() * 0.32).clamp(170.0, 260.0);
+                            let width = (ui.available_width()
+                                - sizes_width
+                                - status_width
+                                - spacing
+                                - 14.0)
+                                .max(80.0);
                             let name = result
                                 .path
                                 .file_name()
                                 .map(|name| name.to_string_lossy().to_string())
                                 .unwrap_or_else(|| result.path.display().to_string());
-                            let width = (ui.available_width() - 420.0).max(120.0);
                             ui.add_sized(
                                 [width, ROW_HEIGHT],
                                 egui::Label::new(egui::RichText::new(&name).weak().monospace())
@@ -102,7 +112,7 @@ pub fn show_window(app: &mut App, ctx: &egui::Context) {
                                 Outcome::Error(_) | Outcome::Aborted => "—".to_string(),
                             };
                             ui.add_sized(
-                                [120.0, ROW_HEIGHT],
+                                [sizes_width, ROW_HEIGHT],
                                 egui::Label::new(egui::RichText::new(sizes).size(12.0)),
                             );
                             let status_color = if let Outcome::Error(_) = &result.outcome {
@@ -117,12 +127,12 @@ pub fn show_window(app: &mut App, ctx: &egui::Context) {
                             )
                             .truncate()
                             .selectable(false);
-                            let status_response = ui.add_sized([260.0, ROW_HEIGHT], status_label);
+                            let status_response =
+                                ui.add_sized([status_width, ROW_HEIGHT], status_label);
                             if let Outcome::Error(message) = &result.outcome {
                                 status_response.on_hover_text(message.clone());
                             }
                         });
-                        ui.separator();
                     }
                 });
 
