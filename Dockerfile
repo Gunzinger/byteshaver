@@ -5,14 +5,13 @@ COPY . .
 # - gcc/g++/make/cmake are required by the vendored libjxl build (jxl feature)
 # - alpine package for AV1 is `aom`/`aom-dev` (there is no `libaom` package)
 # - validated against alpine latest (libheif 1.23.x)
-# no UPX here: packing static-PIE musl binaries produces flaky,
-# ASLR-dependent SIGILL crashes at startup (see workflow.yaml linux step)
-RUN apk add --no-cache nasm musl-dev gcc g++ make cmake libheif-dev libde265-dev aom-dev
+RUN apk add --no-cache nasm musl-dev gcc g++ make cmake upx libheif-dev libde265-dev aom-dev
 # The dec-heif feature links the system libheif/libde265/libaom shared libraries,
 # which do not exist as static archives -> build this image with dynamic musl libc.
 # (The downloadable static musl release binaries are built WITHOUT dec-heif, see CI.)
 ENV RUSTFLAGS="-C target-feature=-crt-static"
 RUN cargo install --profile release --path . --features dec-heif
+RUN upx --best /usr/local/cargo/bin/byteshaver
 
 FROM alpine:latest
 # runtime libraries of the HEIC/HEIF/AVIF decoders + C++ runtime (libjxl static
