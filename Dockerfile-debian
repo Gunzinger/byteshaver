@@ -7,18 +7,15 @@ COPY . .
 #   do not ship it)
 # - package names validated against debian trixie
 RUN apt-get update && apt-get install -y nasm build-essential cmake pkg-config libheif-dev libde265-dev libaom-dev
+# no UPX: packing static-PIE musl binaries produces flaky, ASLR-dependent
+# SIGILL crashes at startup (see workflow.yaml linux step / Dockerfile)
 RUN cargo install --profile release --path . --features dec-heif
-
-FROM alpine:latest AS packer
-COPY --from=builder /usr/local/cargo/bin/byteshaver /usr/local/bin/byteshaver
-RUN apk add --no-cache upx && \
-    upx --best /usr/local/bin/byteshaver
 
 FROM debian:trixie-slim
 # runtime libraries of the HEIC/HEIF/AVIF decoders; libstdc++6 is needed because
 # the vendored libjxl static archives link the C++ runtime
 # (names validated against trixie: the libde265 runtime package is libde265-0)
 RUN apt-get update && apt-get install -y libc6 libstdc++6 libheif1 libde265-0 libaom3 && rm -rf /var/lib/apt/lists/*
-COPY --from=packer /usr/local/bin/byteshaver /usr/local/bin/byteshaver
+COPY --from=builder /usr/local/cargo/bin/byteshaver /usr/local/bin/byteshaver
 WORKDIR /targets
 CMD ["byteshaver"]

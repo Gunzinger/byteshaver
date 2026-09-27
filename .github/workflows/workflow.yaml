@@ -143,14 +143,20 @@ jobs:
             rust:1-alpine sh -c '
               set -e
               unset RUSTFLAGS
-              apk add --no-cache nasm musl-dev gcc g++ make cmake upx file >/dev/null
+              # NOTE: no UPX for the linux artifacts — UPX's handling of
+              # static-PIE musl binaries is unreliable (flaky, ASLR-dependent
+              # SIGILL at startup; observed with upx 5.2.0: one run crashes,
+              # the next 30 pass, unpacked binary is 100/100 stable). Windows
+              # PE packing below is a different, mature UPX code path.
+              apk add --no-cache nasm musl-dev gcc g++ make cmake file >/dev/null
               # CLI: full default features (opt-oxipng, exif, jxl, anim-webp, anim-apng, logs)
               cargo build --release --target x86_64-unknown-linux-musl -p byteshaver
               # GUI: static, x11-only windowing
               cargo build --release --target x86_64-unknown-linux-musl -p byteshaver-gui --no-default-features --features x11
-              upx --best target/x86_64-unknown-linux-musl/release/byteshaver target/x86_64-unknown-linux-musl/release/byteshaver-gui
-              file target/x86_64-unknown-linux-musl/release/byteshaver target/x86_64-unknown-linux-musl/release/byteshaver-gui | grep -q "static-pie" \
-                || (echo "ERROR: binaries are not static-pie" && exit 1)
+              file target/x86_64-unknown-linux-musl/release/byteshaver | grep -q "static-pie" \
+                || (echo "ERROR: byteshaver is not static-pie" && exit 1)
+              file target/x86_64-unknown-linux-musl/release/byteshaver-gui | grep -q "static-pie" \
+                || (echo "ERROR: byteshaver-gui is not static-pie" && exit 1)
             '
           mkdir -p current_release
           if [ "${{ matrix.cpu_target }}" == "${{ env.BASE_CPU }}" ]; then SUFFIX=""; else SUFFIX="-${{ matrix.cpu_target }}"; fi
