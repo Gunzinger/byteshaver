@@ -134,6 +134,22 @@ jobs:
       # static-pie binary contains AVX-512 instructions, all build
       # scripts ran on a non-AVX-512 machine).
       # ---------------------------------------------------------------
+      # Container build tree cache: keyed on Cargo.lock (+ per cpu_target, so
+      # the differently-tuned matrix trees never clobber each other); the
+      # restore-key falls back to the closest previous tree when Cargo.lock
+      # changes, making the rebuild incremental. Ownership is safe both ways:
+      # the cache action (runner) can read root-written world-readable files,
+      # and the root container ignores permission bits on runner-owned
+      # restored files. Note: a rustc version bump inside rust:1-alpine makes
+      # cargo rebuild stale units inside the restored tree (correct, just
+      # slower once per toolchain update).
+      - name: Cache linux build tree
+        uses: actions/cache@v6
+        with:
+          path: target-linux
+          key: byteshaver-linux-target-${{ matrix.cpu_target }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: byteshaver-linux-target-${{ matrix.cpu_target }}-
+
       - name: Build linux binaries (musl, in alpine container)
         shell: bash
         run: |
