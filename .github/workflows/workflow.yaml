@@ -138,7 +138,13 @@ jobs:
         shell: bash
         run: |
           echo "Building for CPU: ${{ matrix.cpu_target }} (alpine/musl)"
+          # CARGO_TARGET_DIR keeps the container's (root-owned) build tree out
+          # of `target/`: the container runs as root and would otherwise leave
+          # root-owned files (e.g. .cargo-build-lock) that the subsequent
+          # windows-gnu host build cannot overwrite. It also avoids sharing
+          # host-unit dirs between the musl-host and gnu-host toolchains.
           docker run --rm -v "$PWD":/src -w /src \
+            -e CARGO_TARGET_DIR=/src/target-linux \
             -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-cpu=${{ matrix.cpu_target }}" \
             rust:1-alpine sh -c '
               set -e
@@ -151,16 +157,16 @@ jobs:
               cargo build --release --target x86_64-unknown-linux-musl -p byteshaver
               # GUI: static, x11-only windowing
               cargo build --release --target x86_64-unknown-linux-musl -p byteshaver-gui --no-default-features --features x11
-              file target/x86_64-unknown-linux-musl/release/byteshaver | grep -q "static-pie" \
+              file target-linux/x86_64-unknown-linux-musl/release/byteshaver | grep -q "static-pie" \
                 || (echo "ERROR: byteshaver is not static-pie" && exit 1)
-              file target/x86_64-unknown-linux-musl/release/byteshaver-gui | grep -q "static-pie" \
+              file target-linux/x86_64-unknown-linux-musl/release/byteshaver-gui | grep -q "static-pie" \
                 || (echo "ERROR: byteshaver-gui is not static-pie" && exit 1)
-              upx --best target/x86_64-unknown-linux-musl/release/byteshaver target/x86_64-unknown-linux-musl/release/byteshaver-gui
+              upx --best target-linux/x86_64-unknown-linux-musl/release/byteshaver target-linux/x86_64-unknown-linux-musl/release/byteshaver-gui
             '
           mkdir -p current_release
           if [ "${{ matrix.cpu_target }}" == "${{ env.BASE_CPU }}" ]; then SUFFIX=""; else SUFFIX="-${{ matrix.cpu_target }}"; fi
-          cp target/x86_64-unknown-linux-musl/release/byteshaver "current_release/byteshaver-${{ env.VERSION }}${SUFFIX}"
-          cp target/x86_64-unknown-linux-musl/release/byteshaver-gui "current_release/byteshaver-gui-${{ env.VERSION }}${SUFFIX}"
+          cp target-linux/x86_64-unknown-linux-musl/release/byteshaver "current_release/byteshaver-${{ env.VERSION }}${SUFFIX}"
+          cp target-linux/x86_64-unknown-linux-musl/release/byteshaver-gui "current_release/byteshaver-gui-${{ env.VERSION }}${SUFFIX}"
           ( cd current_release && sha256sum "byteshaver-${{ env.VERSION }}${SUFFIX}" > "byteshaver-${{ env.VERSION }}${SUFFIX}.sha256" && \
             sha256sum "byteshaver-gui-${{ env.VERSION }}${SUFFIX}" > "byteshaver-gui-${{ env.VERSION }}${SUFFIX}.sha256" )
 
