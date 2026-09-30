@@ -344,6 +344,13 @@ curves), so every size from the 512px tile down to a 16px favicon scales
 crisply. The grids live in `docs/img/icon-proposals/generate.py`, which
 regenerates all six SVGs (+ a QA contact PNG) after edits.
 
+A second, newer set with a tighter brief — pixel-art **shaver** and
+**shaver + image / bytes / batch** marks using the classic pixel image-icon
+colors (white frame, blue sky, green hill, yellow sun) on a **transparent**
+background — lives in `docs/img/icon-proposals/shaver/` (50 propositions:
+`generate.py` builds 01–05, `generate-more.py` builds 06–50; `index.html`
+is the contact sheet for the whole set).
+
 | # | File | Concept | Small-size legibility | Verdict |
 |---|---|---|---|---|
 | 1 | `01-razor-slice.svg` | pixel photo card sliced by a steel razor diagonal, trimmed pixels drifting, amber spark | good — pixel grid stays crisp at 16px | **recommended primary**: most distinctive, literal "shaving bytes" story |
