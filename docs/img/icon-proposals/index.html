@@ -1,0 +1,123 @@
+<!doctype html>
+<!-- Preview contact sheet for the byteshaver icon proposals.
+     Open this file in a browser: docs/img/icon-proposals/index.html
+     All proposals are pixel art: 16x16 grids rendered at 32px cells
+     (see generate.py — edit the grids there and re-run it). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>byteshaver icon proposals</title>
+<style>
+  :root { color-scheme: dark light; }
+  body { font-family: system-ui, sans-serif; margin: 2rem; background: #f1f5f9; color: #0f172a; }
+  .card { background: #fff; border-radius: 14px; padding: 1.25rem; margin-bottom: 1.5rem;
+          box-shadow: 0 1px 4px rgba(0,0,0,.12); }
+  h1 { font-size: 1.4rem; } h2 { font-size: 1.05rem; margin: 0 0 .25rem; }
+  p.note { color: #475569; margin: .2rem 0 .9rem; max-width: 70ch; }
+  .row { display: flex; align-items: flex-end; gap: 1.5rem; flex-wrap: wrap; }
+  .swatch { text-align: center; font-size: .72rem; color: #64748b; }
+  .dark, .light { padding: .6rem; border-radius: 10px; display: inline-block; }
+  .dark { background: #0f172a; } .light { background: #f8fafc; border: 1px solid #e2e8f0; }
+  img { display: block; image-rendering: pixelated; }
+  img.px16, img.px32, img.px64 { border-radius: 4px; }
+</style>
+</head>
+<body>
+<h1>byteshaver — application icon proposals (pixel art)</h1>
+<p>All six proposals are true pixel art now: every mark is a cell on a 16×16 grid
+   (32px cells, flat palette, hard edges — no gradients, no anti-aliased curves),
+   so they scale crisply from the 512px tile down to a 16px favicon.
+   Shared design language: dark tile, slate/steel pixel work, teal + amber accents.
+   Judge each at 32px and 16px — that is taskbar/tab reality. The grids live in
+   <code>generate.py</code>; re-run it after editing.</p>
+
+<div class="card" id="c1">
+  <h2>01 — Razor slice</h2>
+  <p class="note">The flagship: a pixel photo card (sun, sky, ground) with its corner
+     shaved off by a steel razor diagonal; the trimmed pixels drift away and an amber
+     spark marks the tip. Most literal "shaving bytes off images" story, and the pixel
+     grid keeps it legible even at 16px.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img class="px256" src="01-razor-slice.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img class="px64" src="01-razor-slice.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="dark"><img class="px32" src="01-razor-slice.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img class="px16" src="01-razor-slice.svg" width="16"></span><br>16px</span>
+    <span class="swatch"><span class="light"><img class="px64" src="01-razor-slice.svg" width="64"></span><br>64px light</span>
+  </div>
+</div>
+
+<div class="card" id="c2">
+  <h2>02 — Nested shrink</h2>
+  <p class="note">Recursive compression as pure pixel geometry: a dashed outer frame and
+     a solid inner frame collapsing into a teal core, with an amber chevron kicking
+     inward. Very "product logo"; the chunky dashed ring gives it a distinct retro
+     texture at every size.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img class="px256" src="02-nested-shrink.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img class="px64" src="02-nested-shrink.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="dark"><img class="px32" src="02-nested-shrink.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img class="px16" src="02-nested-shrink.svg" width="16"></span><br>16px</span>
+    <span class="swatch"><span class="light"><img class="px64" src="02-nested-shrink.svg" width="64"></span><br>64px light</span>
+  </div>
+</div>
+
+<div class="card" id="c3">
+  <h2>03 — Pixel shave</h2>
+  <p class="note">The abstract one: a field of pixel blocks with a diagonal bite shaved
+     out, a steel staircase blade along the cut and trimmed blocks floating away. Two
+     teal blocks mark the surviving data. Reads as "image being cut down" even at 16px;
+     strongest pure-pixel silhouette of the set.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img class="px256" src="03-pixel-shave.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img class="px64" src="03-pixel-shave.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="dark"><img class="px32" src="03-pixel-shave.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img class="px16" src="03-pixel-shave.svg" width="16"></span><br>16px</span>
+    <span class="swatch"><span class="light"><img class="px64" src="03-pixel-shave.svg" width="64"></span><br>64px light</span>
+  </div>
+</div>
+
+<div class="card" id="c4">
+  <h2>04 — Squeeze</h2>
+  <p class="note">Compression as pressure: two chunky teal arrows pressing a tiny pixel
+     photo. The friendliest mark of the set — at 16px it still resolves to
+     arrow + tile, which is the whole story.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img class="px256" src="04-squeeze.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img class="px64" src="04-squeeze.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="dark"><img class="px32" src="04-squeeze.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img class="px16" src="04-squeeze.svg" width="16"></span><br>16px</span>
+    <span class="swatch"><span class="light"><img class="px64" src="04-squeeze.svg" width="64"></span><br>64px light</span>
+  </div>
+</div>
+
+<div class="card" id="c5">
+  <h2>05 — Blade badge</h2>
+  <p class="note">A classic safety-razor blade as a pixel badge: light top edge, shaded
+     base, characteristic center slot and side notches, one teal glint pixel. The best
+     monochrome-safe favicon/taskbar shape; on its own it says "sharp", not "shrink".</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img class="px256" src="05-blade-badge.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img class="px64" src="05-blade-badge.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="dark"><img class="px32" src="05-blade-badge.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img class="px16" src="05-blade-badge.svg" width="16"></span><br>16px</span>
+    <span class="swatch"><span class="light"><img class="px64" src="05-blade-badge.svg" width="64"></span><br>64px light</span>
+  </div>
+</div>
+
+<div class="card" id="c6">
+  <h2>06 — Before / after</h2>
+  <p class="note">The result pitch in pixels: a big washed-out frame, an amber arrow,
+     and the same image as a small vivid tile. Tells the value story
+     ("smaller, same picture") best of the set; suited to README headers and
+     mid-size surfaces.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img class="px256" src="06-before-after.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img class="px64" src="06-before-after.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="dark"><img class="px32" src="06-before-after.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img class="px16" src="06-before-after.svg" width="16"></span><br>16px</span>
+    <span class="swatch"><span class="light"><img class="px64" src="06-before-after.svg" width="64"></span><br>64px light</span>
+  </div>
+</div>
+
+</body>
+</html>
