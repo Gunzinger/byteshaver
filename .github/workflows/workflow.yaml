@@ -215,6 +215,14 @@ jobs:
           echo "Building for CPU: ${{ matrix.cpu_target }} (windows-gnu)"
           cargo build --release --target x86_64-pc-windows-gnu -p byteshaver
           cargo build --release --target x86_64-pc-windows-gnu -p byteshaver-gui --no-default-features
+          # guard against regressions of the jpegxl-src host-cfg stdc++ link
+          # (v0.5.2 shipped exes needing libstdc++-6.dll, absent on stock
+          # windows); no mingw runtime DLL may appear in the import table
+          for exe in target/x86_64-pc-windows-gnu/release/byteshaver.exe target/x86_64-pc-windows-gnu/release/byteshaver-gui.exe; do
+            if objdump -p "$exe" | grep -qi 'DLL Name: lib\(stdc++\|gcc_s\|winpthread\)'; then
+              echo "FATAL: $exe depends on a mingw runtime DLL (libstdc++-6/libgcc_s/libwinpthread)"; objdump -p "$exe" | grep 'DLL Name'; exit 1
+            fi
+          done
           upx --best target/x86_64-pc-windows-gnu/release/byteshaver.exe target/x86_64-pc-windows-gnu/release/byteshaver-gui.exe
           mkdir -p current_release
           if [ "${{ matrix.cpu_target }}" == "${{ env.BASE_CPU }}" ]; then SUFFIX=""; else SUFFIX="-${{ matrix.cpu_target }}"; fi
