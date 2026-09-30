@@ -1,6 +1,7 @@
 /target*
 .tmp
 .DS_Store
+__pycache__/
 
 .idea/
 upx/
