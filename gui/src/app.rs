@@ -42,6 +42,7 @@ use crate::options;
 use crate::queue::Queue;
 use crate::reporter::ChannelReporter;
 use crate::settings::Settings;
+use crate::thumb::{ThumbKey, ThumbState};
 
 /// Version of the core the GUI is released with.
 ///
@@ -276,6 +277,12 @@ pub struct App {
     /// Last known viewport size in points (refreshed every frame; anchors
     /// the confetti emission at the Convert-button corner).
     pub viewport_size: [f32; 2],
+    /// Thumbnail/EXIF background worker: request dedup, texture cache
+    /// and the pause flag (plan 11 §6; paused while a job runs).
+    pub thumbs: ThumbState,
+    /// Last row-action failure (spawn errors surface as row tooltips,
+    /// plan 11 §5 — never dialogs).
+    pub action_error: Option<String>,
     settings_dirty: bool,
 }
 
@@ -300,6 +307,8 @@ impl App {
             confetti: None,
             flourish: None,
             viewport_size: [1100.0, 720.0],
+            thumbs: ThumbState::new(),
+            action_error: None,
             settings_dirty: false,
         }
     }
@@ -352,6 +361,21 @@ impl App {
             self.mark_settings_dirty();
         }
         true
+    }
+
+    /// Output extension of the selected encoder (`"webp"`, `"avif"`, …),
+    /// from the capability registry with the encoder kind name as the
+    /// fallback — the Target-format column's value (plan 11 §3).
+    #[must_use]
+    pub fn target_extension(&self) -> Option<&'static str> {
+        let kind = options::encoder_kind_name(&self.settings.encoder);
+        Some(
+            self.capabilities
+                .encoders
+                .iter()
+                .find(|info| info.name == kind)
+                .map_or(kind, |info| info.extension),
+        )
     }
 
     // ---- job spec construction -------------------------------------------
@@ -466,7 +490,8 @@ impl App {
         // a new run retires the previous celebration
         self.confetti = None;
         self.flourish = None;
-        self.queue.begin_run();
+        let target = self.target_extension();
+        self.queue.begin_run(target);
         let (tx, rx) = mpsc::channel::<JobEvent>();
         let reporter: Box<dyn Reporter> = Box::new(ChannelReporter::new(tx));
         let stop = StopFlag::new();
@@ -604,6 +629,36 @@ impl App {
         }
     }
 
+    /// Fills the lazy per-row data the file table requested for its
+    /// visible slice (plan 11 §4/§6): thumbnail requests go to the
+    /// background worker, EXIF summaries ride the same worker, dimensions
+    /// are read right here (a header-only stat, ~µs — safe on the UI
+    /// thread, cached on the row afterwards).
+    pub fn request_row_data(
+        &mut self,
+        visible_keys: &[ThumbKey],
+        need_dimensions: &[PathBuf],
+        need_exif: &[PathBuf],
+    ) {
+        self.thumbs.request_thumbs(visible_keys);
+        for path in need_exif {
+            self.thumbs.request_exif(path.clone());
+        }
+        for path in need_dimensions {
+            let Some(item) = self
+                .queue
+                .items_mut()
+                .iter_mut()
+                .find(|item| &item.path == path)
+            else {
+                continue;
+            };
+            if item.dimensions.is_none() {
+                item.dimensions = Some(crate::thumb::read_dimensions(path).unwrap_or((0, 0)));
+            }
+        }
+    }
+
     /// Completes the running job: joins the worker (instant after
     /// `Finished`), collects the report, resets the queue run state and
     /// arms the celebration (plan 12 §3).
@@ -716,6 +771,19 @@ impl eframe::App for App {
         if self.running.is_some() {
             self.drain_events();
         }
+
+        // 2.5 thumbnail/EXIF worker results: textures land in the LRU
+        // cache, summaries onto their queue rows (plan 11 §6); the worker
+        // pauses while a job runs (decode would contend with rayon)
+        {
+            let queue = &mut self.queue;
+            self.thumbs.poll(ctx, &mut |path, summary| {
+                if let Some(item) = queue.items_mut().iter_mut().find(|item| item.path == path) {
+                    item.exif = Some(summary);
+                }
+            });
+        }
+        self.thumbs.set_paused(self.running.is_some());
 
         // 3. panels
         crate::panels::show(self, ctx);
@@ -945,6 +1013,13 @@ mod tests {
         assert_eq!(job.finished_items, 1);
         assert_eq!(job.stats.ok, 1);
         assert_eq!(job.progress(), Some(1.0));
+        // plan 11 §5: the outcome's real on-disk output path lands on the
+        // row and enables the open/reveal actions
+        assert_eq!(
+            app.queue.items()[0].output_path,
+            Some(PathBuf::from("/x/a.webp"))
+        );
+        assert_eq!(app.queue.items()[0].converted_to, Some("webp"));
 
         app.apply_event(JobEvent::Finished);
         assert!(app.running.is_none());

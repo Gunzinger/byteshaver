@@ -345,10 +345,7 @@ mod tests {
             exif::Field {
                 tag: Tag::ExposureTime,
                 ifd_num: In::PRIMARY,
-                value: exif::Value::Rational(vec![exif::Rational {
-                    num: 1,
-                    denom: 125,
-                }]),
+                value: exif::Value::Rational(vec![exif::Rational { num: 1, denom: 125 }]),
             },
         ];
         let mut writer = Writer::new();
@@ -362,15 +359,14 @@ mod tests {
             }
         }
         let mut serialized = Cursor::new(Vec::new());
-        writer
-            .write(&mut serialized, true)
-            .expect("fixture writer");
+        writer.write(&mut serialized, true).expect("fixture writer");
         std::fs::write(path, serialized.into_inner()).expect("write fixture");
     }
 
     #[test]
     fn read_summary_extracts_camera_date_iso_exposure() {
-        let dir = std::env::temp_dir().join(format!("byteshaver-exif-summary-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("byteshaver-exif-summary-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let file = dir.join("photo.tif");
         write_tiff_fixture(&file, true);
@@ -389,7 +385,8 @@ mod tests {
 
     #[test]
     fn read_summary_handles_partial_and_absent_metadata() {
-        let dir = std::env::temp_dir().join(format!("byteshaver-exif-partial-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("byteshaver-exif-partial-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let file = dir.join("partial.tif");
         write_tiff_fixture(&file, false);

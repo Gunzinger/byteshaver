@@ -14,6 +14,8 @@ use byteshaver::metadata::policy::{ExifPolicy, parse_tag_list};
 use serde::{Deserialize, Serialize};
 
 use crate::celebrate::ConfettiLevel;
+use crate::table::{ColumnState, SortKey};
+use crate::thumb::ThumbMode;
 
 /// Which existing outputs survive a run (maps onto the CLI's
 /// `--overwrite-if-smaller` / `--overwrite-existing` flag pair).
@@ -150,6 +152,16 @@ pub struct Settings {
     /// viewport opens.
     #[serde(default)]
     pub report_window_geometry: Option<[f32; 4]>,
+    /// Visible file-table columns in display order (plan 11 §1; old
+    /// settings files keep the default column set).
+    #[serde(default)]
+    pub table_columns: ColumnState,
+    /// Current file-table sort (view-only; plan 11 §1).
+    #[serde(default)]
+    pub table_sort: SortKey,
+    /// When thumbnails are decoded (plan 11 §6; default `OnConvert`).
+    #[serde(default)]
+    pub thumbnails: ThumbMode,
 }
 
 /// Serde default for the tree collapse states (open, like the GUI default).
@@ -176,6 +188,9 @@ impl Default for Settings {
             policies_tree_open: true,
             window_size: None,
             report_window_geometry: None,
+            table_columns: ColumnState::default(),
+            table_sort: SortKey::default(),
+            thumbnails: ThumbMode::default(),
         }
     }
 }
@@ -250,6 +265,16 @@ mod tests {
             policies_tree_open: true,
             window_size: Some([1100.0, 720.0]),
             report_window_geometry: Some([12.0, 34.0, 760.0, 480.0]),
+            table_columns: crate::table::ColumnState {
+                visible: vec![
+                    crate::table::Column::Status,
+                    crate::table::Column::Name,
+                    crate::table::Column::Dimensions,
+                    crate::table::Column::Actions,
+                ],
+            },
+            table_sort: crate::table::SortKey::Asc(crate::table::Column::Modified),
+            thumbnails: crate::thumb::ThumbMode::OnAdd,
         };
         let json = serde_json::to_string(&settings).expect("serialize settings");
         let parsed: Settings = serde_json::from_str(&json).expect("deserialize settings");
@@ -266,6 +291,24 @@ mod tests {
         }
         let parsed: Settings = serde_json::from_value(json).expect("old schema still loads");
         assert_eq!(parsed.report_window_geometry, None);
+    }
+
+    #[test]
+    fn table_settings_default_when_absent_from_the_file() {
+        // settings written before plan 11 lack the file-table fields
+        let mut value = serde_json::to_value(Settings::default()).expect("serialize defaults");
+        let object = value
+            .as_object_mut()
+            .expect("settings serialize to an object");
+        object.remove("table_columns");
+        object.remove("table_sort");
+        object.remove("thumbnails");
+        let parsed: Settings =
+            serde_json::from_value(value).expect("deserialize without the new fields");
+        assert_eq!(parsed.table_columns, crate::table::ColumnState::default());
+        assert_eq!(parsed.table_sort, crate::table::SortKey::None);
+        assert_eq!(parsed.thumbnails, crate::thumb::ThumbMode::OnConvert);
+        assert_eq!(parsed, Settings::default());
     }
 
     #[test]

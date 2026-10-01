@@ -42,6 +42,12 @@ eframe = { version = "0.32", default-features = false, features = [
     "glow",
 ] }
 egui = "0.32"
+# table widget (sortable headers, resizable columns, row virtualization)
+# — pinned to the same 0.32 line as egui/eframe above
+egui_extras = "0.32"
+# thumbnail decode + header-only dimension reads (plan 11 §6): same
+# version line as the core's `image` dependency, no extra features
+image = "0.25"
 # native file dialogs; on Linux the default `xdg-portal` backend compiles
 # without GTK dev packages (needs the xdg-desktop-portal service at runtime)
 rfd = "0.17"
@@ -53,6 +59,5 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "6"
 
-[dev-dependencies]
 # the CLI parity tests build CliArgs exactly like the CLI binary does
 clap = "4"

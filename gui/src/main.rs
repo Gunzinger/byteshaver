@@ -20,9 +20,12 @@ mod celebrate;
 mod chips;
 mod options;
 mod panels;
+mod platform;
 mod queue;
 mod reporter;
 mod settings;
+mod table;
+mod thumb;
 
 use eframe::egui;
 
