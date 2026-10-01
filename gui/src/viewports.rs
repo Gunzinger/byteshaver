@@ -79,13 +79,15 @@ impl PopupKind {
     }
 
     /// Default inner size, used before any persisted geometry applies.
+    /// The preset-save modal is sized to its short form (plan 16 F20) —
+    /// a taller default would open with a large empty area below it.
     #[must_use]
     pub fn default_size(self) -> [f32; 2] {
         match self {
             PopupKind::Report => [760.0, 480.0],
             PopupKind::About => [560.0, 440.0],
             PopupKind::Inspector => [880.0, 620.0],
-            PopupKind::PresetSave => [420.0, 320.0],
+            PopupKind::PresetSave => [420.0, 260.0],
             PopupKind::PresetManage => [600.0, 520.0],
         }
     }
@@ -305,6 +307,19 @@ mod tests {
         }
         assert_eq!(PopupKind::Report.title(), "byteshaver — run report");
         assert_ne!(PopupKind::About.title(), PopupKind::PresetManage.title());
+    }
+
+    #[test]
+    fn preset_save_default_size_fits_its_short_form() {
+        // plan 16 F20: the modal must open close to its form height —
+        // tall enough for both fields, the two toggles and a validation
+        // line, but without a large empty area below the content.
+        let [width, height] = PopupKind::PresetSave.default_size();
+        assert_eq!(width, 420.0, "width matches the embedded save window");
+        assert!(
+            (200.0..=280.0).contains(&height),
+            "save modal default height {height} must fit the short form"
+        );
     }
 
     #[test]

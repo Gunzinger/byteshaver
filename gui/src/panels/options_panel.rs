@@ -72,12 +72,10 @@ const DESCRIPTION_EDIT_ID: &str = "byteshaver-preset-description-edit";
 const RENAME_DRAFT_ID: &str = "byteshaver-preset-rename-draft";
 const DESCRIPTION_DRAFT_ID: &str = "byteshaver-preset-description-draft";
 const DELETE_CONFIRM_ID: &str = "byteshaver-preset-delete-confirm";
-/// Bounded-window geometry (plan 09's doctrine, plan 15 F13): the manage
-/// list scrolls inside the height left after the blocks below it — the
-/// old fixed [`MANAGE_LIST_MAX_HEIGHT`] ceiling is gone, so the window
-/// may be resized arbitrarily tall. The floor keeps tiny windows usable.
-const MANAGE_BELOW_RESERVE: f32 = 150.0;
-const MANAGE_LIST_MIN_HEIGHT: f32 = 60.0;
+/// Bounded-window geometry (plan 09's doctrine, plan 15 F13, plan 16
+/// F20): the manage list is `.auto_shrink([false, true])` — it takes
+/// min(content, available) height, grows with the window and never
+/// reserves guessed space, so the widgets below sit directly under it.
 const MANAGE_WINDOW_WIDTH: f32 = 600.0;
 const SAVE_WINDOW_WIDTH: f32 = 420.0;
 
@@ -1128,8 +1126,9 @@ fn manage_rows(app: &App) -> ManageRows {
 }
 
 /// The window body shared by the embedded window and the viewport shape:
-/// toolbar, height-bounded grouped preset list, the transient inline
-/// editors (rename/description/delete-confirm) and the status line.
+/// toolbar, grouped preset list (auto-shrunk to its content, capped at
+/// the available height), the transient inline editors
+/// (rename/description/delete-confirm) and the status line.
 fn manage_body(app: &App, ui: &mut egui::Ui, rows: &ManageRows, intents: &mut ManageIntents) {
     ui.horizontal(|ui| {
         if ui.button("Import…").clicked() {
@@ -1145,14 +1144,14 @@ fn manage_body(app: &App, ui: &mut egui::Ui, rows: &ManageRows, intents: &mut Ma
     });
     ui.separator();
 
-    // plan 15 F13: no fixed ceiling — the list is bounded by the height
-    // left after reserving room for the status line and the transient
-    // inline editors below, so it grows with the window (report.rs's
-    // bounded-layout doctrine).
+    // plan 16 F20: no fixed reserve — the list takes min(content,
+    // available) height (`auto_shrink` vertical), so the widgets below
+    // follow immediately with no grey strip, the window may be resized
+    // arbitrarily tall and the scrollbar appears only on overflow. No
+    // min-height floor: the list stays scrollable (wheel + scrollbar) at
+    // any height, while a floor would push the widgets below out of a
+    // collapsed window — the very gap this fix removes.
     egui::ScrollArea::vertical()
-        .max_height(
-            (ui.available_height() - MANAGE_BELOW_RESERVE).max(MANAGE_LIST_MIN_HEIGHT),
-        )
         .auto_shrink([false, true])
         .show(ui, |ui| {
             ui.strong("Built-in (read-only)");
