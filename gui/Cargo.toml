@@ -18,6 +18,17 @@ categories = [
 # Versioned in lockstep with the core `byteshaver` crate (displayed in the
 # About panel; the gui crate has no independent release version).
 
+# lib + bin split (plan 17 §6.1): the application modules live in the
+# `byteshaver_gui` library so the binary, tests and the feature-gated
+# `bh-gui-capture` capture binary share one implementation.
+[lib]
+name = "byteshaver_gui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "byteshaver-gui"
+path = "src/main.rs"
+
 [features]
 default = ["wayland", "x11"]
 # windowing backend passthrough: the static musl GUI build uses
@@ -65,3 +76,6 @@ clap = "4"
 # takes `&[RGBA<u8>]`) — same 0.8 line the core already uses.
 dssim = "3"
 rgb = "0.8"
+
+[dev-dependencies]
+egui_kittest = { version = "0.36", features = ["eframe", "wgpu"] }

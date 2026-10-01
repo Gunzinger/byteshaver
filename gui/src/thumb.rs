@@ -59,21 +59,31 @@ pub enum ThumbEntry {
 /// Work item handed to the decode thread.
 pub enum WorkerJob {
     /// Decode + downscale one image.
-    Thumbnail { key: ThumbKey },
+    Thumbnail {
+        /// Cache key of the enqueued file.
+        key: ThumbKey,
+    },
     /// Read the typed EXIF summary of one file.
-    Exif { path: PathBuf },
+    Exif {
+        /// File to read.
+        path: PathBuf,
+    },
 }
 
 /// Result produced by the decode thread.
 pub enum WorkerResult {
     /// `None` = decode failed (placeholder).
     Thumbnail {
+        /// Cache key the result belongs to.
         key: ThumbKey,
+        /// Decoded+downscaled pixels, `None` on failure.
         image: Option<RgbaImage>,
     },
     /// Summary read outcome (`None` = no EXIF/unparsable).
     Exif {
+        /// File the summary belongs to.
         path: PathBuf,
+        /// Typed summary, `None` if absent/unparsable.
         summary: Option<ExifSummary>,
     },
 }
