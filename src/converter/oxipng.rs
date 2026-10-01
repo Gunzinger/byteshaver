@@ -27,7 +27,6 @@ use clap::ValueEnum;
 use image::DynamicImage;
 
 use crate::Error;
-use crate::converter::DEPENDENCIES;
 use crate::converter::png::{CompressionType, FilterType, encode_png};
 use crate::format::ImageFormat;
 use crate::input::{ImageContent, SourceImage};
@@ -408,13 +407,16 @@ impl super::ImageEncoder for OxipngEncoder {
     }
 
     fn describe(&self) -> String {
-        // we might have multiple versions of the package, use rfind to find the newest one
-        let oxipng_version = DEPENDENCIES
-            .iter()
-            .rfind(|&&(name, _)| name == "oxipng")
-            .map_or("unknown", |(_, version)| *version);
         format!(
-            "Using \"oxipng\" ({oxipng_version}) with options: {}",
+            "lossless PNG re-optimizer (oxipng {})",
+            super::dependency_version("oxipng")
+        )
+    }
+
+    fn describe_options(&self) -> String {
+        format!(
+            "Using \"oxipng\" ({}) with options: {}",
+            super::dependency_version("oxipng"),
             self.options
         )
     }
@@ -593,11 +595,18 @@ mod tests {
     }
 
     #[test]
-    fn describe_mentions_version_and_options() {
+    fn describe_is_identity_only_and_options_carry_the_detail() {
         let encoder = OxipngEncoder::new(OxipngOptions::default());
+        // plan 15 F4: the capability description stays stable while
+        // options change — identity only, no option dump
         let description = encoder.describe();
         assert!(description.contains("oxipng"), "{description}");
         assert!(description.contains("10.2"), "{description}");
-        assert!(description.contains("level=2"), "{description}");
+        assert!(!description.contains("level="), "{description}");
+        // the per-run notice keeps the resolved options
+        let options = encoder.describe_options();
+        assert!(options.contains("oxipng"), "{options}");
+        assert!(options.contains("10.2"), "{options}");
+        assert!(options.contains("level=2"), "{options}");
     }
 }

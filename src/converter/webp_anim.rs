@@ -73,6 +73,13 @@ impl super::ImageEncoder for WebpAnimEncoder {
     }
 
     fn describe(&self) -> String {
+        format!(
+            "animated WebP encoder (webp-animation {})",
+            super::dependency_version("webp-animation")
+        )
+    }
+
+    fn describe_options(&self) -> String {
         encoder_info(&self.options)
     }
 

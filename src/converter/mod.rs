@@ -32,4 +32,13 @@ pub mod webp_image;
 // Include dependency version numbers
 include!(concat!(env!("OUT_DIR"), "/versions.rs"));
 
+/// Version of a build dependency from the generated table (newest entry,
+/// `"unknown"` when absent) — used by the encoders' identity lines.
+pub(crate) fn dependency_version(name: &str) -> &'static str {
+    DEPENDENCIES
+        .iter()
+        .rfind(|&&(dependency, _)| dependency == name)
+        .map_or("unknown", |&(_, version)| version)
+}
+
 pub use traits::{EncoderRegistry, ImageEncoder, ThreadBudget};

@@ -98,6 +98,13 @@ impl super::ImageEncoder for PngEncoder {
     }
 
     fn describe(&self) -> String {
+        format!(
+            "still-image PNG encoder (png {})",
+            super::dependency_version("png")
+        )
+    }
+
+    fn describe_options(&self) -> String {
         encoder_info()
     }
 

@@ -590,15 +590,21 @@ fn oxipng_transcodes_jpg_examples_to_png() {
 // ---- describe() -----------------------------------------------------------
 
 #[test]
-fn describe_prints_version_and_resolved_options() {
+fn describe_is_identity_only_and_options_carry_the_detail() {
     let encoder = oxipng_encoder(OxipngOptions {
         level: OxipngLevel::Four,
         zopfli: true,
         ..OxipngOptions::default()
     });
+    // plan 15 F4: the capability description is option-free identity
     let description = encoder.describe();
     assert!(description.contains("oxipng"), "{description}");
     assert!(description.contains("10.2"), "{description}");
-    assert!(description.contains("level=4"), "{description}");
-    assert!(description.contains("zopfli=true"), "{description}");
+    assert!(!description.contains("level="), "{description}");
+    assert!(!description.contains("zopfli"), "{description}");
+    // the per-run notice keeps the resolved options
+    let options = encoder.describe_options();
+    assert!(options.contains("oxipng"), "{options}");
+    assert!(options.contains("level=4"), "{options}");
+    assert!(options.contains("zopfli=true"), "{options}");
 }

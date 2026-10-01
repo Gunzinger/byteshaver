@@ -291,6 +291,7 @@ impl StdoutReporter {
                 input_size,
                 output_size,
                 metadata_dropped,
+                ..
             } => {
                 state.ok += 1;
                 state.input_bytes += input_size;
@@ -300,6 +301,7 @@ impl StdoutReporter {
             Outcome::SkippedExisting {
                 input_size,
                 existing_size,
+                ..
             }
             | Outcome::DiscardedLargerThanExisting {
                 input_size,

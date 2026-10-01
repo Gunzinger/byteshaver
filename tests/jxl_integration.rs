@@ -63,10 +63,16 @@ fn encoder_reports_format_animation_and_options() {
     assert_eq!(encoder.format(), byteshaver::format::ImageFormat::Jxl);
     assert_eq!(encoder.extension(), "jxl");
     assert!(encoder.supports_animation());
+    // plan 15 F4: the capability description is option-free identity
     let description = encoder.describe();
     assert!(description.contains("libjxl"), "{description}");
-    assert!(description.contains("effort=9"), "{description}");
-    assert!(description.contains("quality=80"), "{description}");
+    assert!(!description.contains("effort=9"), "{description}");
+    assert!(!description.contains("quality=80"), "{description}");
+    // the per-run notice keeps the resolved options
+    let options = encoder.describe_options();
+    assert!(options.contains("libjxl"), "{options}");
+    assert!(options.contains("effort=9"), "{options}");
+    assert!(options.contains("quality=80"), "{options}");
 }
 
 #[test]

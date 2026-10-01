@@ -15,6 +15,76 @@ use exif::{Context, In, Reader, Tag};
 use crate::metadata::ImageMetadata;
 use crate::metadata::policy::{ExifPolicy, Ifd, TagSelector};
 
+/// Small typed summary of the most-visited EXIF fields of a photo, for
+/// front-ends (GUI file-table columns, job-API consumers) so they do not
+/// need a `kamadak-exif` dependency of their own. Every field is `None`
+/// when the source does not carry it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ExifSummary {
+    /// `Make` and `Model` joined with a single space (`None` when neither
+    /// tag is present).
+    pub camera: Option<String>,
+    /// `DateTimeOriginal` verbatim (`YYYY:MM:DD HH:MM:SS` — this exact
+    /// spelling sorts chronologically as a plain string).
+    pub date_time_original: Option<String>,
+    /// ISO sensitivity (`ISOSpeed`).
+    pub iso: Option<u32>,
+    /// Exposure time rendered camera-style: `1/125`, `1/2`, `2s`.
+    pub exposure: Option<String>,
+}
+
+/// Reads an [`ExifSummary`] straight from a container file on disk
+/// (JPEG/PNG/WebP/HEIF/TIFF — whatever `kamadak-exif` parses as a
+/// container). Returns `None` when the file is unreadable, unparsable or
+/// carries no EXIF at all; never panics.
+#[must_use]
+pub fn read_summary(path: &std::path::Path) -> Option<ExifSummary> {
+    let bytes = std::fs::read(path).ok()?;
+    let parsed = parse_with_container(&bytes)?;
+    let text = |tag: Tag| -> Option<String> {
+        match &parsed.get_field(tag, In::PRIMARY)?.value {
+            exif::Value::Ascii(values) => values
+                .first()
+                .map(|raw| String::from_utf8_lossy(raw).trim().to_string())
+                .filter(|text| !text.is_empty()),
+            _ => None,
+        }
+    };
+    let camera = match (text(Tag::Make), text(Tag::Model)) {
+        (Some(make), Some(model)) => Some(format!("{make} {model}")),
+        (make, model) => make.or(model),
+    };
+    let exposure = parsed
+        .get_field(Tag::ExposureTime, In::PRIMARY)
+        .and_then(|field| match &field.value {
+            exif::Value::Rational(values) => values.first().copied(),
+            _ => None,
+        })
+        .map(format_exposure);
+    Some(ExifSummary {
+        camera,
+        date_time_original: text(Tag::DateTimeOriginal),
+        iso: parsed
+            .get_field(Tag::ISOSpeed, In::PRIMARY)
+            .and_then(|field| field.value.get_uint(0)),
+        exposure,
+    })
+}
+
+/// Renders an exposure-time rational camera-style (`1/125`, `1/2`, `2s`).
+fn format_exposure(rational: exif::Rational) -> String {
+    if rational.denom == 0 {
+        return format!("{}?", rational.num);
+    }
+    if rational.num == 0 {
+        return "0".to_string();
+    }
+    if rational.denom == 1 {
+        return format!("{}s", rational.num);
+    }
+    format!("{}/{}", rational.num, rational.denom)
+}
+
 /// Parses a raw TIFF payload into kamadak's [`Exif`][exif::Exif] structure.
 pub fn parse(payload: &[u8]) -> Result<exif::Exif, exif::Error> {
     Reader::new().read_raw(payload.to_vec())
@@ -238,5 +308,112 @@ fn field_in_ifd_context(field: &exif::Field, ifd: Ifd) -> bool {
         Ifd::Thumbnail => field.ifd_num == In::THUMBNAIL,
         // sub-IFDs share the top-level IFD number of their pointer
         Ifd::Exif | Ifd::Gps | Ifd::Interop => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    /// Builds a bare TIFF file (valid container for kamadak) carrying the
+    /// summary tags via the crate's own writer.
+    fn write_tiff_fixture(path: &std::path::Path, with_exif_sub_ifd: bool) {
+        let fields = [
+            exif::Field {
+                tag: Tag::Make,
+                ifd_num: In::PRIMARY,
+                value: exif::Value::Ascii(vec![b"TestCam\0".to_vec()]),
+            },
+            exif::Field {
+                tag: Tag::Model,
+                ifd_num: In::PRIMARY,
+                value: exif::Value::Ascii(vec![b"Byteshaver 9000\0".to_vec()]),
+            },
+        ];
+        let sub_ifd = [
+            exif::Field {
+                tag: Tag::DateTimeOriginal,
+                ifd_num: In::PRIMARY,
+                value: exif::Value::Ascii(vec![b"2024:05:01 12:34:56\0".to_vec()]),
+            },
+            exif::Field {
+                tag: Tag::ISOSpeed,
+                ifd_num: In::PRIMARY,
+                value: exif::Value::Short(vec![200]),
+            },
+            exif::Field {
+                tag: Tag::ExposureTime,
+                ifd_num: In::PRIMARY,
+                value: exif::Value::Rational(vec![exif::Rational { num: 1, denom: 125 }]),
+            },
+        ];
+        let mut writer = Writer::new();
+        for field in &fields {
+            writer.push_field(field);
+        }
+        if with_exif_sub_ifd {
+            // Exif-IFD context tags: the writer synthesizes the pointer
+            for field in &sub_ifd {
+                writer.push_field(field);
+            }
+        }
+        let mut serialized = Cursor::new(Vec::new());
+        writer.write(&mut serialized, true).expect("fixture writer");
+        std::fs::write(path, serialized.into_inner()).expect("write fixture");
+    }
+
+    #[test]
+    fn read_summary_extracts_camera_date_iso_exposure() {
+        let dir =
+            std::env::temp_dir().join(format!("byteshaver-exif-summary-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let file = dir.join("photo.tif");
+        write_tiff_fixture(&file, true);
+
+        let summary = read_summary(&file).expect("summary of an EXIF-bearing fixture");
+        assert_eq!(summary.camera.as_deref(), Some("TestCam Byteshaver 9000"));
+        assert_eq!(
+            summary.date_time_original.as_deref(),
+            Some("2024:05:01 12:34:56")
+        );
+        assert_eq!(summary.iso, Some(200));
+        assert_eq!(summary.exposure.as_deref(), Some("1/125"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_summary_handles_partial_and_absent_metadata() {
+        let dir =
+            std::env::temp_dir().join(format!("byteshaver-exif-partial-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let file = dir.join("partial.tif");
+        write_tiff_fixture(&file, false);
+
+        let summary = read_summary(&file).expect("parses");
+        assert_eq!(summary.camera.as_deref(), Some("TestCam Byteshaver 9000"));
+        assert_eq!(summary.date_time_original, None);
+        assert_eq!(summary.iso, None);
+        assert_eq!(summary.exposure, None);
+
+        // no EXIF at all / no file at all → None, never panic
+        let plain = dir.join("plain.png");
+        std::fs::write(&plain, [0u8; 16]).expect("write junk");
+        assert_eq!(read_summary(&plain), None);
+        assert_eq!(read_summary(&dir.join("missing.tif")), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn exposure_rendering_covers_the_camera_styles() {
+        let rational = |num: u32, denom: u32| exif::Rational { num, denom };
+        assert_eq!(format_exposure(rational(1, 125)), "1/125");
+        assert_eq!(format_exposure(rational(1, 2)), "1/2");
+        assert_eq!(format_exposure(rational(2, 1)), "2s");
+        assert_eq!(format_exposure(rational(3, 10)), "3/10");
+        assert_eq!(format_exposure(rational(0, 100)), "0");
+        assert_eq!(format_exposure(rational(5, 0)), "5?");
     }
 }

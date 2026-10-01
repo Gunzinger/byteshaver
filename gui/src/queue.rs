@@ -19,8 +19,10 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use byteshaver::format::ImageFormat;
+use byteshaver::metadata::exif::ExifSummary;
 use byteshaver::pipeline::Outcome;
 
 /// Status of one queue row, mapped 1:1 from the core's [`Outcome`] plus the
@@ -76,6 +78,21 @@ impl ItemStatus {
             ItemStatus::DiscardedLargerThanInput => "✂",
             ItemStatus::Error => "✖",
             ItemStatus::Aborted => "⏸",
+        }
+    }
+
+    /// Status-column glyph during a run, refined by the job's active set
+    /// (plan 12 §1): `Queue::begin_run` marks *every* row
+    /// [`ItemStatus::Running`], so only the cross-check against
+    /// `RunningJob::active` makes the glyph truthful — actively worked
+    /// rows keep `⟳`, rows still waiting in this run show the weak
+    /// pending `…`. Non-running rows delegate to [`ItemStatus::glyph`].
+    #[must_use]
+    pub fn glyph_while_running(self, active: bool) -> &'static str {
+        match self {
+            ItemStatus::Running if active => "⟳",
+            ItemStatus::Running => "…",
+            other => other.glyph(),
         }
     }
 
@@ -218,6 +235,22 @@ pub struct QueueItem {
     /// Transient row appended from a directory/HEIF expansion during a run
     /// (not part of the user's queue selection; dropped on the next run).
     pub discovered: bool,
+    /// Target extension of the last run this row entered (`"webp"`,
+    /// `"avif"`, …) — set at [`Queue::begin_run`], replaced by the next
+    /// one (rows carry only the latest run's result, like `output_size`).
+    pub converted_to: Option<&'static str>,
+    /// Path the last run's output was written to, from
+    /// [`Outcome::Encoded`]/[`Outcome::SkippedExisting`] — enables the
+    /// open/reveal row actions (plan 11 §5).
+    pub output_path: Option<PathBuf>,
+    /// Input file modification time, stat'ed at enqueue (Modified column).
+    pub modified: Option<SystemTime>,
+    /// Pixel dimensions of the input, read lazily for the Dimensions
+    /// column (`Some((0, 0))` = attempted but unreadable).
+    pub dimensions: Option<(u32, u32)>,
+    /// EXIF summary cache; outer `None` = not read yet, inner `None` =
+    /// read but the file carries no EXIF.
+    pub exif: Option<Option<ExifSummary>>,
 }
 
 impl QueueItem {
@@ -230,7 +263,9 @@ impl QueueItem {
         } else {
             ImageFormat::from(path.as_path())
         };
-        let input_size = std::fs::metadata(&path).map(|meta| meta.len()).ok();
+        let metadata = std::fs::metadata(&path).ok();
+        let input_size = metadata.as_ref().map(|meta| meta.len());
+        let modified = metadata.and_then(|meta| meta.modified().ok());
         let summary = if is_dir {
             Some(DirSummary::scan(&path))
         } else {
@@ -248,6 +283,11 @@ impl QueueItem {
             is_dir,
             summary,
             discovered: false,
+            converted_to: None,
+            output_path: None,
+            modified,
+            dimensions: None,
+            exif: None,
         }
     }
 
@@ -286,27 +326,36 @@ impl QueueItem {
         }
     }
 
-    /// Applies a finished outcome to the row (status, sizes, error text).
+    /// Applies a finished outcome to the row (status, sizes, error text,
+    /// output path).
     pub fn apply_outcome(&mut self, outcome: &Outcome) {
         self.status = ItemStatus::from_outcome(outcome);
         self.metadata_dropped = false;
         self.error = None;
         self.note = None;
+        self.output_path = None;
         match outcome {
             Outcome::Encoded {
                 input_size,
                 output_size,
                 metadata_dropped,
+                output_path,
             } => {
                 self.input_size = Some(*input_size);
                 self.output_size = Some(*output_size);
                 self.metadata_dropped = *metadata_dropped;
+                self.output_path = Some(output_path.clone());
             }
             Outcome::SkippedExisting {
                 input_size,
                 existing_size,
+                output_path,
+            } => {
+                self.input_size = Some(*input_size);
+                self.output_size = Some(*existing_size);
+                self.output_path = Some(output_path.clone());
             }
-            | Outcome::DiscardedLargerThanExisting {
+            Outcome::DiscardedLargerThanExisting {
                 input_size,
                 existing_size,
             } => {
@@ -415,9 +464,12 @@ impl Queue {
         self.items.iter().map(|item| item.path.clone()).collect()
     }
 
-    /// Marks every row running (start of a job) and drops the previous
-    /// run's discovered rows.
-    pub fn begin_run(&mut self) {
+    /// Marks every row running (start of a job), stamps the run's target
+    /// format onto every row and drops the previous run's discovered
+    /// rows. `target` is the encoder's output extension (plan 11 §3: a
+    /// run uses one global encoder; rows carry only the latest run's
+    /// result).
+    pub fn begin_run(&mut self, target: Option<&'static str>) {
         self.clear_discovered();
         for item in &mut self.items {
             item.status = ItemStatus::Running;
@@ -425,6 +477,8 @@ impl Queue {
             item.note = None;
             item.output_size = None;
             item.metadata_dropped = false;
+            item.output_path = None;
+            item.converted_to = target;
         }
     }
 
@@ -506,6 +560,7 @@ mod tests {
             input_size: 100,
             output_size: 50,
             metadata_dropped: true,
+            output_path: PathBuf::from("/x/a.out"),
         }
     }
 
@@ -520,7 +575,8 @@ mod tests {
         assert_eq!(
             ItemStatus::from_outcome(&Outcome::SkippedExisting {
                 input_size: 10,
-                existing_size: 5
+                existing_size: 5,
+                output_path: PathBuf::from("/x/a.out"),
             }),
             ItemStatus::SkippedExisting
         );
@@ -564,11 +620,120 @@ mod tests {
         assert_eq!(item.input_size, Some(100));
         assert_eq!(item.output_size, Some(50));
         assert!(item.metadata_dropped);
+        assert_eq!(
+            item.output_path.as_deref(),
+            Some(Path::new("/x/a.out")),
+            "the real on-disk output path enables the row actions"
+        );
 
         item.apply_outcome(&Outcome::Error("nope".to_string()));
         assert_eq!(item.status, ItemStatus::Error);
         assert_eq!(item.error.as_deref(), Some("nope"));
         assert!(!item.metadata_dropped);
+        assert_eq!(item.output_path, None, "errors clear the output path");
+    }
+
+    #[test]
+    fn output_path_is_extracted_only_from_outcomes_that_keep_a_file() {
+        let mut item = QueueItem::new(PathBuf::from("/definitely/not/here.png"));
+
+        item.apply_outcome(&Outcome::SkippedExisting {
+            input_size: 10,
+            existing_size: 5,
+            output_path: PathBuf::from("/x/kept.img"),
+        });
+        assert_eq!(item.status, ItemStatus::SkippedExisting);
+        assert_eq!(item.output_path.as_deref(), Some(Path::new("/x/kept.img")));
+
+        item.apply_outcome(&Outcome::SkippedCollision {
+            input_size: 10,
+            output_path: PathBuf::from("/x/claimed.img"),
+        });
+        assert_eq!(
+            item.output_path, None,
+            "collisions claim another input's path — no action here"
+        );
+
+        item.apply_outcome(&Outcome::DiscardedLargerThanInput {
+            input_size: 10,
+            encoded_size: 12,
+        });
+        assert_eq!(item.output_path, None, "nothing was written");
+
+        item.apply_outcome(&Outcome::DiscardedLargerThanExisting {
+            input_size: 10,
+            existing_size: 5,
+        });
+        assert_eq!(
+            item.output_path, None,
+            "the kept file is another run's output (no event path)"
+        );
+
+        item.apply_outcome(&Outcome::Aborted);
+        assert_eq!(item.output_path, None);
+    }
+
+    // ---- plan 11 §3: target-format lifecycle -------------------------------
+
+    #[test]
+    fn converted_to_is_set_per_run_and_replaced_by_the_next() {
+        let mut queue = Queue::new();
+        queue.add_paths(vec![PathBuf::from("/x/a.png")]);
+        assert_eq!(queue.items()[0].converted_to, None, "before any run");
+
+        queue.begin_run(Some("avif"));
+        assert_eq!(queue.items()[0].converted_to, Some("avif"));
+
+        // a finished row keeps its target …
+        queue.apply_file_finished(&PathBuf::from("/x/a.png"), &outcome_encoded());
+        assert_eq!(queue.items()[0].converted_to, Some("avif"));
+        assert_eq!(
+            queue.items()[0].output_path.as_deref(),
+            Some(Path::new("/x/a.out"))
+        );
+
+        // … until the next run stamps the new target (same lifecycle as
+        // output_size) and clears the previous run's output path
+        queue.begin_run(Some("webp"));
+        assert_eq!(queue.items()[0].converted_to, Some("webp"));
+        assert_eq!(queue.items()[0].output_path, None);
+        assert_eq!(queue.items()[0].output_size, None);
+    }
+
+    #[test]
+    fn rows_carry_enqueue_time_metadata() {
+        let tmp = std::env::temp_dir().join(format!("byteshaver-gui-meta-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let file = tmp.join("m.png");
+        std::fs::write(&file, [0]).expect("write temp file");
+
+        let item = QueueItem::new(file.clone());
+        assert!(item.modified.is_some(), "stat'ed at enqueue");
+        assert_eq!(item.dimensions, None, "read lazily");
+        assert_eq!(item.exif, None, "read lazily (outer None = not read)");
+        assert_eq!(item.converted_to, None);
+        assert_eq!(item.output_path, None);
+
+        let missing = QueueItem::new(PathBuf::from("/definitely/not/here.png"));
+        assert_eq!(missing.modified, None);
+
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_dir(&tmp);
+    }
+
+    // ---- Glyph truthfulness (plan 12 §1) ------------------------------------
+
+    #[test]
+    fn running_glyph_distinguishes_active_from_pending_rows() {
+        // actively worked rows keep the spinner…
+        assert_eq!(ItemStatus::Running.glyph_while_running(true), "⟳");
+        // …rows still waiting in this run show the pending dots
+        assert_eq!(ItemStatus::Running.glyph_while_running(false), "…");
+        // non-running statuses delegate unchanged
+        assert_eq!(ItemStatus::Queued.glyph_while_running(false), "…");
+        assert_eq!(ItemStatus::Queued.glyph_while_running(true), "…");
+        assert_eq!(ItemStatus::Encoded.glyph_while_running(true), "✔");
+        assert_eq!(ItemStatus::Aborted.glyph_while_running(false), "⏸");
     }
 
     // ---- Add / dedup / remove / clear ------------------------------------
@@ -624,7 +789,7 @@ mod tests {
         let mut queue = Queue::new();
         queue.add_paths(vec![dir.clone(), file.clone()]);
         assert!(queue.items()[0].is_dir);
-        queue.begin_run();
+        queue.begin_run(Some("webp"));
         assert!(
             queue
                 .items()
@@ -650,7 +815,7 @@ mod tests {
         assert!(queue.items()[0].note.is_some());
         assert_eq!(queue.items()[1].status, ItemStatus::Encoded);
 
-        queue.begin_run();
+        queue.begin_run(Some("webp"));
         assert_eq!(queue.len(), 2, "discovered rows are dropped");
         assert_eq!(queue.items()[1].status, ItemStatus::Running);
 

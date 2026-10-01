@@ -85,7 +85,9 @@ while the **docker images include it** and are validated end-to-end by CI.
 
 - `webp`, webp encoder using the `webp` crate (libwebp bindings) - offers lossy and lossless encoding
 - `webp-image`, webp encoder using the `image` crate - offers lossless encoding
-- `avif`, avif encoder using the `ravif` crate - offers lossy and lossless encoding
+- `avif`, avif encoder using the `ravif` crate - offers lossy and lossless encoding. EXIF that
+  survives the policy is embedded natively by ravif (>= 0.13) as a standard HEIF `Exif` item after
+  the AV1 encode — with no measurable encoding overhead.
 - `png`, png encoder using the `png` crate - offers lossless encoding (with optional eXIf embedding)
 - `jpeg`, jpeg optimizer using the `mozjpeg` crate - only optimizes images (with optional EXIF embedding)
 - `jxl`, jpeg-xl encoder using in-tree FFI bindings to `libjxl` (vendored static build via `jpegxl-src`) - offers
@@ -198,7 +200,8 @@ Where EXIF ends up per target:
 | `oxipng` | `eXIf` chunk; under `keep`/`filter` metadata stripping is forced off, under `strip` an unset `--strip` is bumped to `safe` |
 | `webp`, `webp-image`, `webp-anim` | `EXIF` RIFF chunk |
 | `jxl` | `Exif` metadata box (Brotli-compressed) |
-| `avif`, `gif` | not supported — a warning is printed per file and the count appears in the run summary |
+| `avif` | standard HEIF `Exif` item (ISOBMFF), embedded natively by `ravif` after the AV1 encode |
+| `gif` | not supported — a warning is printed per file and the count appears in the run summary |
 
 Notes:
 - inputs without EXIF simply produce outputs without EXIF, regardless of policy
@@ -528,6 +531,9 @@ Example of clean command:
 - `cmake`, a C++ compiler and `nasm` are needed for building the vendored `libjxl`
   (jpeg-xl support; enabled by default via the `jxl` feature).
   Install via `apt install cmake g++ nasm` / `apk add cmake g++ nasm`.
+- The opt-in `dec-heif` feature (HEIC/HEIF/AVIF input) needs the native
+  `libheif` + codec development libraries at build time
+  (`apt install libheif-dev libde265-dev libaom-dev pkg-config` / `apk add libheif-dev libde265-dev aom-dev`).
 
 ### Installation Guide
 
@@ -582,6 +588,7 @@ cargo uninstall byteshaver
   - [x] animated `webp` / `apng` / `gif`
   - [ ] animated `avif` (blocked upstream: needs libheif ≥ 1.20 with an AV1 encoder; see `docs/plans/06-*`)
 - [x] Image metadata handling (EXIF data preservation/stripping/filtering)
+  - [x] `avif` EXIF embedding (native Exif item via ravif >= 0.13)
 - [x] Output logs (JSON-lines event log via `--json-log`)
 - [ ] `winresource` integration (application icon and .exe metadata for Windows binaries)
 - [x] GUI (egui/eframe desktop front-end; drag-and-drop queue; see `gui/`)

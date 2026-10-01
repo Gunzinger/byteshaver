@@ -1,11 +1,11 @@
 //! Capability discovery for front-ends (plan WS7 §2.3): every registry
 //! encoder with its typed properties and compile-time availability.
 //!
-//! Enabled entries are driven by [`EncoderRegistry`] (the description is the
-//! encoder's own `describe()` for its default options); encoders compiled
-//! out (`jxl`, `opt-oxipng`, `anim-webp`, `anim-apng`) are still listed with
-//! `enabled = false` and a reason so UIs can gray them out up front instead
-//! of failing per file at runtime.
+//! Enabled entries are driven by [`EncoderRegistry`] (the description is
+//! the encoder's option-free identity line, `describe()` — plan 15 F4);
+//! encoders compiled out (`jxl`, `opt-oxipng`, `anim-webp`, `anim-apng`)
+//! are still listed with `enabled = false` and a reason so UIs can gray
+//! them out up front instead of failing per file at runtime.
 
 use crate::converter::{EncoderRegistry, ThreadBudget};
 
@@ -24,7 +24,9 @@ pub struct EncoderInfo {
     pub enabled: bool,
     /// Why the encoder is unavailable (`None` when enabled).
     pub disabled_reason: Option<&'static str>,
-    /// Human-readable description of the encoder and its default options.
+    /// Human-readable identity description of the encoder (library or
+    /// binding name plus one-line character; no option values — those
+    /// change at runtime and would go stale here, plan 15 F4).
     pub description: String,
 }
 

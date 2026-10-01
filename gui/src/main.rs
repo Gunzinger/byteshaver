@@ -16,11 +16,20 @@
 )]
 
 mod app;
+mod celebrate;
+mod chips;
+mod metrics;
 mod options;
 mod panels;
+mod platform;
+mod presets;
 mod queue;
+mod ratio;
 mod reporter;
 mod settings;
+mod table;
+mod thumb;
+mod viewports;
 
 use eframe::egui;
 

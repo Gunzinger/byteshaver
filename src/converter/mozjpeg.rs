@@ -28,6 +28,13 @@ impl super::ImageEncoder for MozjpegEncoder {
     }
 
     fn describe(&self) -> String {
+        format!(
+            "still-image JPEG encoder (mozjpeg {})",
+            super::dependency_version("mozjpeg")
+        )
+    }
+
+    fn describe_options(&self) -> String {
         encoder_info()
     }
 

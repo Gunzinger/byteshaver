@@ -5,24 +5,30 @@
 //! headless.
 //!
 //! Layout (top to bottom): header bar, drop-zone banner + file table
-//! (central), options & policies panel, run footer. Optional windows:
-//! report and about.
+//! (central), options & policies panel, run footer. Every popup window
+//! (report, about, inspector, preset save/manage) is hosted by
+//! [`crate::viewports`] as an independent OS viewport (plan 15 F12),
+//! each with a bounded `egui::Window` embedded fallback (plan 09).
 
 pub mod about;
 pub mod drop_zone;
 pub mod file_table;
 pub mod footer;
+pub mod inspector;
 pub mod options_panel;
 pub mod report;
 
 use crate::app::App;
 
-/// Renders one full frame: all panels plus the optional windows.
+/// Renders one full frame: all panels plus the hosted popup viewports.
 ///
 /// Panel order: header (top), footer + options (bottom), central panel
 /// with the drop-zone banner and the queue table. Both central pieces
 /// render inside **one** `CentralPanel` (egui gives each `CentralPanel`
-/// the whole remaining rect, so a second one would be invisible).
+/// the whole remaining rect, so a second one would be invisible). The
+/// popups are hosted last, every frame, regardless of open state — that
+/// is what keeps their OS windows alive from startup (no creation flash,
+/// plan 15 F12).
 pub fn show(app: &mut App, ctx: &egui::Context) {
     header(app, ctx);
     footer::show(app, ctx);
@@ -31,8 +37,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         drop_zone::show(app, ui);
         file_table::show(app, ui);
     });
-    report::show_window(app, ctx);
-    about::show_window(app, ctx);
+    crate::viewports::show_all(app, ctx);
 }
 
 /// Header bar: app title plus report/about toggles.

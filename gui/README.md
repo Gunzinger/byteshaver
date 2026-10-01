@@ -85,5 +85,8 @@ end-to-end decode of a generated real HEIC before publication.
 ## Deferred (GUI v1.1+/v2, see plan WS8 §7)
 
 packaging scripts (AppImage/.app/NSIS, icons), per-item encoder overrides,
-quick-mode wizard overlay, pause, thumbnails, i18n, file associations,
+quick-mode wizard overlay, pause, i18n, file associations,
 `byteshaver watch` hot folders, a Linux `xvfb-run` smoke test in CI.
+(Implemented since: thumbnails, sortable/configurable file table, presets,
+quality metrics + difference inspector, segmented progress bar + confetti,
+independent report viewport — see `docs/plans/09-*.md` through `14-*.md`.)
