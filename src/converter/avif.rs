@@ -121,6 +121,13 @@ impl super::ImageEncoder for AvifEncoder {
     }
 
     fn describe(&self) -> String {
+        format!(
+            "still-image AV1 encoder (ravif {})",
+            super::dependency_version("ravif")
+        )
+    }
+
+    fn describe_options(&self) -> String {
         encoder_info(
             self.options.quality,
             self.options.speed,

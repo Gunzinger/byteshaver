@@ -26,6 +26,13 @@ impl super::ImageEncoder for WebpImageEncoder {
     }
 
     fn describe(&self) -> String {
+        format!(
+            "still-image WebP encoder (image crate {})",
+            super::dependency_version("image")
+        )
+    }
+
+    fn describe_options(&self) -> String {
         encoder_info()
     }
 

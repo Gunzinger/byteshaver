@@ -844,7 +844,9 @@ pub fn execute(
     let encoder = EncoderRegistry::build(&spec.encoder, budget);
     reporter.on_event(JobEvent::Notice {
         path: None,
-        message: encoder.describe(),
+        // per-run notice with the options actually in effect (plan 15 F4:
+        // the capability description stays option-free instead)
+        message: encoder.describe_options(),
     });
 
     let (tx, rx) = mpsc::channel::<(u64, WorkItem)>();

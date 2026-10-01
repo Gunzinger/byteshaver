@@ -56,6 +56,13 @@ impl super::ImageEncoder for ApngEncoder {
     }
 
     fn describe(&self) -> String {
+        format!(
+            "animated PNG (APNG) encoder (png {})",
+            super::dependency_version("png")
+        )
+    }
+
+    fn describe_options(&self) -> String {
         encoder_info()
     }
 

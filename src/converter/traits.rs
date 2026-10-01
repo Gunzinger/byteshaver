@@ -68,8 +68,19 @@ pub trait ImageEncoder: Send + Sync {
     /// File extension (without dot) of the encoder output.
     fn extension(&self) -> &'static str;
 
-    /// Human-readable description of the encoder and its active options.
+    /// Human-readable one-line **identity** of the encoder: library or
+    /// binding name plus a one-line character ("still-image AV1 encoder
+    /// (ravif)"). Deliberately free of option values — those change at
+    /// runtime and stale text in capability lists is a bug (plan 15 F4);
+    /// front-ends show this in pickers/about panels.
     fn describe(&self) -> String;
+
+    /// Human-readable one-line **run notice**: identity plus the
+    /// encoder's *active* options ("Using \"oxipng\" (10.2) with
+    /// options: …"). Emitted once per conversion run — the options are
+    /// the ones actually in effect, so the detail belongs here and not
+    /// in [`ImageEncoder::describe`] (plan 15 F4).
+    fn describe_options(&self) -> String;
 
     /// Encodes a still image into the encoder's target format.
     fn encode_still_image(&self, image: &DynamicImage) -> Result<Vec<u8>, Error>;

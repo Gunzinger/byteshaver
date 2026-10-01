@@ -322,6 +322,13 @@ impl ImageEncoder for JxlEncoder {
     fn describe(&self) -> String {
         let (major, minor, patch) = ffi::version();
         format!(
+            "still-image/animated JPEG XL encoder (libjxl {major}.{minor}.{patch}, vendored via jpegxl-src)"
+        )
+    }
+
+    fn describe_options(&self) -> String {
+        let (major, minor, patch) = ffi::version();
+        format!(
             "Using \"libjxl\" ({major}.{minor}.{patch}, vendored via jpegxl-src) with options: {}",
             self.options
         )

@@ -47,6 +47,13 @@ impl super::ImageEncoder for WebpEncoder {
     }
 
     fn describe(&self) -> String {
+        format!(
+            "still-image WebP encoder (webp {})",
+            super::dependency_version("webp")
+        )
+    }
+
+    fn describe_options(&self) -> String {
         encoder_info(self.options.lossless, self.options.quality)
     }
 
