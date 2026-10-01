@@ -3,10 +3,12 @@
 //! manager — hand-rolled on [`std::process::Command`], no extra
 //! dependencies.
 //!
-//! The command construction is factored into pure `(program, args)`
-//! functions so the argv shapes stay unit-testable; [`open_path`] and
-//! [`reveal_in_folder`] only spawn detached and never block: failures
-//! surface as strings (row tooltips), never dialogs and never panics.
+//! The command construction is factored into pure functions so the
+//! argv shapes stay unit-testable (on Windows the reveal is one raw
+//! argument string instead — see the `reveal_select_arg` docs for why);
+//! [`open_path`] and [`reveal_in_folder`] only spawn detached and never
+//! block: failures surface as strings (row tooltips), never dialogs and
+//! never panics.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -28,23 +30,21 @@ pub fn open_path(path: &Path) -> Result<(), String> {
 /// spawned detached but **watched** — a non-zero exit inside the watch
 /// window (no `FileManager1` service registered) or a missing binary
 /// falls back to opening the containing folder with `xdg-open`. Windows
-/// normalizes the path for `explorer /select,` and opens the parent when
-/// the spawn itself fails. macOS uses `open -R`.
+/// passes explorer a raw `/select,"<path>"` argument (`spawn_reveal_windows`)
+/// and opens the parent when the spawn itself fails. macOS uses `open -R`.
 pub fn reveal_in_folder(path: &Path) -> Result<(), String> {
     let resolved = resolve_absolute(path);
     #[cfg(target_os = "linux")]
     return reveal_linux(&resolved);
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    return spawn_reveal_windows(&resolved).or_else(|_| {
+        // explorer itself failed to launch: open the folder instead
+        spawn_detached("explorer", &[parent_folder(&resolved)])
+    });
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         let (program, args) = reveal_argv(&resolved);
-        spawn_detached(&program, &args).or_else(|first_error| {
-            if cfg!(target_os = "windows") {
-                // explorer itself failed to launch: open the folder instead
-                spawn_detached("explorer", &[parent_folder(&resolved)])
-            } else {
-                Err(first_error)
-            }
-        })
+        spawn_detached(&program, &args)
     }
 }
 
@@ -163,23 +163,41 @@ pub(crate) fn open_argv(path: &Path) -> (String, Vec<String>) {
     }
 }
 
-/// Command line of [`reveal_in_folder`] (unit-tested argv shape). The
-/// path goes through [`normalize_windows_select`] first: `explorer
-/// /select,` silently opens its default view (Win11 "Home") unless it
-/// gets a plain backslash path without the extended-length prefix (plan
-/// 15 F14).
+/// Windows reveal: launches explorer with the `/select,` argument built
+/// by [`reveal_select_arg`] passed through
+/// `std::os::windows::process::CommandExt::raw_arg`, which appends the
+/// string to the command line verbatim (plan 16 F22). The regular
+/// `Command::args` route is unusable here: its CRT quoting wraps the
+/// whole argument in quotes as soon as the path contains a space, and
+/// `explorer /select,` rejects that quoted form — it silently opens its
+/// default view (Documents / Win11 Home) instead of selecting.
 #[cfg(target_os = "windows")]
-pub(crate) fn reveal_argv(path: &Path) -> (String, Vec<String>) {
-    (
-        "explorer".to_string(),
-        vec![format!("/select,{}", normalize_windows_select(path))],
-    )
+fn spawn_reveal_windows(path: &Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    Command::new("explorer")
+        .raw_arg(reveal_select_arg(path))
+        .spawn()
+        .map(|_child| ())
+        .map_err(|error| format!("explorer could not be launched: {error}"))
 }
 
-/// Explorer `/select,` argument form of `path`: the `\\?\UNC\` and `\\?\`
-/// extended-length prefixes (`canonicalize()` adds them) are stripped and
-/// every separator becomes a backslash. Pure string transforms;
-/// unit-tested on every host.
+/// Explorer's `/select,` argument in its native raw form:
+/// `/select,"<path>"` — double quotes around the path only, never around
+/// `/select,` (explorer parses the switch off the unquoted head of the
+/// argument). The path goes through [`normalize_windows_select`] first.
+/// Pure; unit-tested on every host; the cfg(windows) caller
+/// [`spawn_reveal_windows`] feeds it to `CommandExt::raw_arg` so the CRT
+/// never re-quotes it.
+#[cfg(any(target_os = "windows", test))]
+fn reveal_select_arg(path: &Path) -> String {
+    format!(r#"/select,"{}""#, normalize_windows_select(path))
+}
+
+/// Normalized form of `path` for explorer's `/select,` argument: the
+/// `\\?\UNC\` extended-length prefix maps back onto its `\\server\share`
+/// UNC form and the plain `\\?\` prefix is stripped (both are added by
+/// `canonicalize()` and defeat `/select,`), and every separator becomes
+/// a backslash. Pure string transforms; unit-tested on every host.
 #[cfg(any(target_os = "windows", test))]
 fn normalize_windows_select(path: &Path) -> String {
     let text = path.as_os_str().to_string_lossy();
@@ -335,6 +353,31 @@ mod tests {
         assert_eq!(absolutize_lexical(Path::new("a.png")), cwd.join("a.png"));
     }
 
+    // ---- windows /select, raw-argument construction (all platforms) ---------
+
+    #[test]
+    fn reveal_select_arg_quotes_the_path_only() {
+        let select = |text: &str| reveal_select_arg(Path::new(text));
+        // explorer's native form: `/select,` stays unquoted, the path is
+        // quoted — whole-argument quoting (what the CRT produces) or no
+        // quoting at all makes explorer silently open its default view
+        // (plan 16 F22)
+        assert_eq!(select(r"C:\x\a.png"), r#"/select,"C:\x\a.png""#);
+        // spaces must land inside the quotes
+        assert_eq!(select(r"C:\my dir\a.png"), r#"/select,"C:\my dir\a.png""#);
+        // forward slashes are normalized before quoting (plan 15 F14)
+        assert_eq!(
+            select("C:/my dir/out/a.webp"),
+            r#"/select,"C:\my dir\out\a.webp""#
+        );
+        // extended-length prefixes are stripped / mapped back to UNC
+        assert_eq!(select(r"\\?\C:\x\a.png"), r#"/select,"C:\x\a.png""#);
+        assert_eq!(
+            select(r"\\?\UNC\server\share\my dir\a.png"),
+            r#"/select,"\\server\share\my dir\a.png""#
+        );
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
     fn argv_shapes_windows() {
@@ -342,17 +385,6 @@ mod tests {
         assert_eq!(
             (program.as_str(), args.as_slice()),
             ("cmd", &["/C", "start", "", "C:\\x\\a.png"])
-        );
-        let (program, args) = reveal_argv(&PathBuf::from(r"C:\x\a.png"));
-        assert_eq!(
-            (program.as_str(), args.as_slice()),
-            ("explorer", &["/select,C:\\x\\a.png"])
-        );
-        // forward-slash paths must not leak into /select, (plan 15 F14)
-        let (program, args) = reveal_argv(&PathBuf::from("C:/x/out/a.webp"));
-        assert_eq!(
-            (program.as_str(), args.as_slice()),
-            ("explorer", &["/select,C:\\x\\out\\a.webp"])
         );
         assert_eq!(
             file_uri(&PathBuf::from(r"C:\x\a.png")),
