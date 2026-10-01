@@ -24,7 +24,7 @@ use byteshaver::metadata::exif::ExifSummary;
 use egui::TextureHandle;
 use egui_extras::TableBuilder;
 
-use crate::app::{App, SegTone, ratio_tone};
+use crate::app::App;
 use crate::platform;
 use crate::queue::{ItemStatus, format_size};
 use crate::table::{self, Column, SortKey};
@@ -548,14 +548,18 @@ fn exif_cell(
 }
 
 /// Ratio cell: percent text with a subtle cell tint from the shared
-/// plan-12 ratio bands (`ratio_tone`: ≤ 0.8 good / ≤ 1.0 neutral /
-/// > 1.0 grew).
+/// plan-10 ratio bands ([`crate::ratio::hint_for_ratio`]: ≤ 0.8 good /
+/// ≤ 1.0 neutral / > 1.0 grew) — the percent text always carries the
+/// information, the color is redundancy (accessibility: never color-only).
 fn ratio_cell(ui: &mut egui::Ui, snapshot: &RowSnapshot) {
     let Some(ratio) = snapshot.ratio else {
         return;
     };
-    let tone = ratio_tone(ratio);
-    let color = tone_color(ui, tone);
+    let hint = match (snapshot.input_size, snapshot.output_size) {
+        (Some(input), Some(output)) => crate::ratio::ratio_hint(input, output),
+        _ => return,
+    };
+    let color = crate::ratio::hint_color(hint, ui.visuals());
     let rect = ui.available_rect_before_wrap();
     ui.painter()
         .rect_filled(rect, 3.0, color.gamma_multiply(0.25));
@@ -698,17 +702,6 @@ fn status_color(ui: &egui::Ui, status: ItemStatus, unsupported: bool) -> egui::C
         ItemStatus::Running => ui.visuals().selection.stroke.color,
         ItemStatus::Encoded => egui::Color32::from_rgb(90, 190, 110),
         ItemStatus::Error => ui.visuals().error_fg_color,
-        _ => ui.visuals().weak_text_color(),
-    }
-}
-
-/// Color of a ratio-band tone (text + cell tint; the bands match the
-/// footer's segmented bar).
-fn tone_color(ui: &egui::Ui, tone: SegTone) -> egui::Color32 {
-    match tone {
-        SegTone::Good => egui::Color32::from_rgb(90, 190, 110),
-        SegTone::Grew => egui::Color32::from_rgb(235, 170, 60),
-        SegTone::Error => ui.visuals().error_fg_color,
         _ => ui.visuals().weak_text_color(),
     }
 }

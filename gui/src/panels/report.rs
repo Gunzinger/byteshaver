@@ -296,15 +296,13 @@ fn totals_block(ui: &mut egui::Ui, report: &RunReport) {
             report.totals.aborted
         ));
     });
+    // plan 10 §phase 1: the percentage comes from the shared ratio
+    // helper, so the report shows the exact string the footer shows
     ui.label(format!(
-        "{} → {} ({:.02}%) in {:.1}s",
+        "{} → {} ({}) in {:.1}s",
         format_size(report.totals.input_size),
         format_size(report.totals.output_size),
-        if report.totals.input_size > 0 {
-            report.totals.output_size as f64 / report.totals.input_size as f64 * 100.0
-        } else {
-            0.0
-        },
+        crate::ratio::ratio_label(report.totals.input_size, report.totals.output_size),
         report.elapsed.as_secs_f32()
     ));
     if report.metadata_dropped_count > 0 {

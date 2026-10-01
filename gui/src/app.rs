@@ -174,10 +174,9 @@ impl SegState {
         }
     }
 
-    /// Maps a finished [`Outcome`] onto its segment state. The ratio
-    /// bands match plan 10 §phase 1 (≤ 80 % good, 80–100 % neutral,
-    /// above 100 % grew; discarded-larger counts as grew); once plan 10
-    /// lands its shared helper this private copy gets unified away.
+    /// Maps a finished [`Outcome`] onto its segment state. The ratio bands
+    /// come from [`crate::ratio`] (plan 10 §phase 1: ≤ 80 % good, 80–100 %
+    /// neutral, above 100 % grew; discarded-larger counts as grew).
     #[must_use]
     pub fn from_outcome(outcome: &Outcome) -> Self {
         match outcome {
@@ -214,26 +213,18 @@ impl SegState {
 
 /// `output / input` as a fraction (`None` for a zero-size input).
 fn ratio_of(input: u64, output: u64) -> Option<f32> {
-    if input == 0 {
-        None
-    } else {
-        Some(output as f32 / input as f32)
-    }
+    crate::ratio::ratio_fraction(input, output)
 }
 
-/// Ratio band of a compression fraction (plan 10 §phase 1 bands): ≤ 0.8
-/// good, ≤ 1.0 neutral, > 1.0 grew. Non-finite input maps to neutral.
+/// Ratio band of a compression fraction as a segment paint class — a thin
+/// bridge onto [`crate::ratio::hint_for_ratio`], the single home of the
+/// plan-10 bands (≤ 0.8 good / ≤ 1.0 neutral / > 1.0 grew).
 #[must_use]
 pub fn ratio_tone(ratio: f32) -> SegTone {
-    if !ratio.is_finite() {
-        return SegTone::Neutral;
-    }
-    if ratio <= 0.8 {
-        SegTone::Good
-    } else if ratio <= 1.0 {
-        SegTone::Neutral
-    } else {
-        SegTone::Grew
+    match crate::ratio::hint_for_ratio(ratio) {
+        crate::ratio::Hint::Good => SegTone::Good,
+        crate::ratio::Hint::Neutral => SegTone::Neutral,
+        crate::ratio::Hint::Grew => SegTone::Grew,
     }
 }
 

@@ -362,12 +362,16 @@ fn show_flourish(app: &App, ui: &mut egui::Ui) {
     ui.label(egui::RichText::new(&flourish.text).color(faded));
 }
 
-/// Footer statistics line (same numbers as the CLI progress bar message).
+/// Footer statistics line (same numbers as the CLI progress bar message),
+/// with the plan-10 ratio appendix `(62% · saved 89.1MiB)` right after the
+/// sizes (the same [`crate::ratio`] helpers the report totals use, so both
+/// surfaces show identical strings).
 fn stats_line(stats: &FooterStats, elapsed: Option<std::time::Duration>) -> String {
     let mut line = format!(
-        "{} → {} | ✔ {} — {} ✖ {}",
+        "{} → {} {} | ✔ {} — {} ✖ {}",
         format_size(stats.input_bytes),
         format_size(stats.output_bytes),
+        crate::ratio::ratio_appendix(stats.input_bytes, stats.output_bytes),
         stats.ok,
         stats.skipped,
         stats.errors
@@ -553,6 +557,48 @@ mod tests {
         assert_eq!(
             segment_tooltip(&grew_layout[0], &grew, &paths),
             "trip.png — done — larger than input"
+        );
+    }
+
+    // ---- stats line (plan 10 §phase 1) ----------------------------------------
+
+    #[test]
+    fn stats_line_carries_the_ratio_appendix() {
+        let stats = FooterStats {
+            input_bytes: 146 * 1024 * 1024,
+            output_bytes: 91 * 1024 * 1024,
+            ok: 1,
+            skipped: 0,
+            errors: 0,
+        };
+        let line = stats_line(&stats, None);
+        assert!(
+            line.contains("→ 91.00MiB (62% · saved 55.00MiB) |"),
+            "appendix directly after the sizes: {line}"
+        );
+        // grew names the growth instead of savings
+        let grew = FooterStats {
+            input_bytes: 1000,
+            output_bytes: 1200,
+            ..stats
+        };
+        assert!(
+            stats_line(&grew, None).contains("(120% · grew 200B)"),
+            "larger outputs are honest about it"
+        );
+        // zero-size input: no appendix at all (undefined ratio)
+        let empty = FooterStats {
+            input_bytes: 0,
+            output_bytes: 0,
+            ..stats
+        };
+        assert!(!stats_line(&empty, None).contains('('));
+        // parity with the report label (same helper, same string)
+        assert!(
+            stats_line(&stats, None).contains(&crate::ratio::ratio_label(
+                stats.input_bytes,
+                stats.output_bytes
+            ))
         );
     }
 }

@@ -22,6 +22,7 @@ mod options;
 mod panels;
 mod platform;
 mod queue;
+mod ratio;
 mod reporter;
 mod settings;
 mod table;
