@@ -17,6 +17,7 @@
 
 mod app;
 mod celebrate;
+mod chips;
 mod options;
 mod panels;
 mod queue;
