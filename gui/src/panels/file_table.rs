@@ -297,6 +297,10 @@ fn render_table(app: &mut App, ui: &mut egui::Ui, columns: &[Column]) {
     let mut action_error: Option<String> = app.action_error.clone();
     let mut need_dimensions: Vec<PathBuf> = Vec::new();
     let mut need_exif: Vec<PathBuf> = Vec::new();
+    // plan 10 §phase 2: "Measure quality" requests collected by the row
+    // context menus, applied after the table borrow ends
+    let mut measure_requests: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let metric_off = app.settings.quality_metric == crate::metrics::MetricMode::Off;
 
     let builder = TableBuilder::new(ui)
         .id_salt("byteshaver-file-table")
@@ -328,6 +332,15 @@ fn render_table(app: &mut App, ui: &mut egui::Ui, columns: &[Column]) {
                 return;
             };
             let snapshot = RowSnapshot::of(item, heif_enabled);
+            // plan 10 §phase 2: measured quality of this row (status
+            // tooltip), or the in-flight marker
+            let metric_text = if app.metrics.is_pending(&snapshot.path) {
+                Some("quality: measuring…".to_string())
+            } else {
+                app.metrics
+                    .cached(&snapshot.path)
+                    .map(|entry| format!("{} — {}", entry.result.pretty, entry.result.interpretation()))
+            };
             let active = app
                 .running
                 .as_ref()
@@ -366,16 +379,17 @@ fn render_table(app: &mut App, ui: &mut egui::Ui, columns: &[Column]) {
                     });
                 } else {
                     let (_, response) = row.col(|ui| {
-                        data_cell(ui, column, &snapshot, active, &thumb_cell);
+                        data_cell(ui, column, &snapshot, active, &thumb_cell, metric_text.as_deref());
                     });
                     row_top.get_or_insert(response.rect.top());
                 }
             }
 
-            // right-click menu stub (plan 10 extends it)
+            // right-click menu (plan 10 §phase 2/3 extends it)
             row.response().context_menu(|ui| {
                 output_action_buttons(ui, &snapshot, &mut action_error);
                 ui.separator();
+                measure_quality_button(ui, &snapshot, running, metric_off, &mut measure_requests);
                 ui.add_enabled_ui(!running, |ui| {
                     if ui.button("✕ remove from queue").clicked() {
                         row_remove = Some(queue_index);
@@ -401,6 +415,9 @@ fn render_table(app: &mut App, ui: &mut egui::Ui, columns: &[Column]) {
 
     if let Some(index) = remove_index {
         app.queue.remove(index);
+    }
+    for (input, output) in measure_requests {
+        app.measure_quality(&input, &output);
     }
     app.action_error = action_error;
     app.thumbs.set_visible(visible_keys.clone());
@@ -428,6 +445,7 @@ fn data_cell(
     snapshot: &RowSnapshot,
     active: bool,
     thumb_cell: &ThumbCell<'_>,
+    metric_text: Option<&str>,
 ) {
     match column {
         Column::Status => {
@@ -451,7 +469,7 @@ fn data_cell(
                 }
                 ThumbCell::Hidden => {}
             }
-            status_content(ui, snapshot, active);
+            status_content(ui, snapshot, active, metric_text);
         }
         Column::Name => {
             let mut name_text = egui::RichText::new(&snapshot.name).monospace();
@@ -577,8 +595,14 @@ fn ratio_cell(ui: &mut egui::Ui, snapshot: &RowSnapshot) {
 }
 
 /// The row's status glyph (refined by the run's active set, plan 12 §1)
-/// plus the status label/note.
-fn status_content(ui: &mut egui::Ui, snapshot: &RowSnapshot, active: bool) {
+/// plus the status label/note — with the plan-10 quality-metric text
+/// (`dssim 0.012 — excellent match`) appended to the tooltip.
+fn status_content(
+    ui: &mut egui::Ui,
+    snapshot: &RowSnapshot,
+    active: bool,
+    metric_text: Option<&str>,
+) -> egui::Response {
     let glyph_color = status_color(ui, snapshot.status, snapshot.unsupported);
     ui.label(egui::RichText::new(snapshot.status.glyph_while_running(active)).color(glyph_color));
     let mut status_rich = egui::RichText::new(&snapshot.status_text).size(12.0);
@@ -587,10 +611,59 @@ fn status_content(ui: &mut egui::Ui, snapshot: &RowSnapshot, active: bool) {
     }
     let status_label = egui::Label::new(status_rich).truncate().selectable(false);
     let response = ui.add_sized([ui.available_width().max(40.0), ROW_HEIGHT], status_label);
+    // tooltip: error/reason first, the metric reading appended below it
+    // (information in text, never color-only)
+    let mut tooltip = String::new();
     if let Some(error) = &snapshot.error {
-        response.on_hover_text(error.clone());
+        tooltip.push_str(error);
     } else if let Some(reason) = &snapshot.unsupported_reason {
-        response.on_hover_text(reason.clone());
+        tooltip.push_str(reason);
+    }
+    if let Some(metric) = metric_text {
+        if !tooltip.is_empty() {
+            tooltip.push('\n');
+        }
+        tooltip.push_str(metric);
+    }
+    if tooltip.is_empty() {
+        response
+    } else {
+        response.on_hover_text(tooltip)
+    }
+}
+
+/// The plan-10 "Measure quality" context-menu action: enabled iff the row
+/// has a written output, metrics are not `Off` and no job is running.
+/// The request is collected into `requests` (applied after the table
+/// borrow ends) — the comparison itself runs on the metric worker.
+fn measure_quality_button(
+    ui: &mut egui::Ui,
+    snapshot: &RowSnapshot,
+    running: bool,
+    metric_off: bool,
+    requests: &mut Vec<(PathBuf, PathBuf)>,
+) {
+    let enabled = snapshot.output_path.is_some() && !metric_off && !running;
+    let hint = if metric_off {
+        "quality metrics are switched off (settings)"
+    } else if running {
+        "a conversion job is running"
+    } else if snapshot.output_path.is_none() {
+        "no output was written"
+    } else {
+        "compare input and output (bounded decode) — the reading lands in the status tooltip"
+    };
+    let button = ui.add_enabled(enabled, egui::Button::new("Measure quality"));
+    let button = if enabled {
+        button.on_hover_text(hint)
+    } else {
+        button.on_disabled_hover_text(hint)
+    };
+    if button.clicked()
+        && let Some(output) = &snapshot.output_path
+    {
+        requests.push((snapshot.path.clone(), output.clone()));
+        ui.close();
     }
 }
 

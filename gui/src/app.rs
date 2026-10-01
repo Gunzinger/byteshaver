@@ -38,6 +38,7 @@ use byteshaver::metadata::policy::ExifPolicy;
 use byteshaver::pipeline::Outcome;
 
 use crate::celebrate::{Confetti, RectPx, TextFlourish};
+use crate::metrics::{MetricMode, MetricState};
 use crate::options;
 use crate::queue::Queue;
 use crate::reporter::ChannelReporter;
@@ -271,6 +272,9 @@ pub struct App {
     /// Thumbnail/EXIF background worker: request dedup, texture cache
     /// and the pause flag (plan 11 §6; paused while a job runs).
     pub thumbs: ThumbState,
+    /// Quality-metric background worker (plan 10 §phase 2): measurement
+    /// requests/results cache, same pause policy as the thumbs worker.
+    pub metrics: MetricState,
     /// Last row-action failure (spawn errors surface as row tooltips,
     /// plan 11 §5 — never dialogs).
     pub action_error: Option<String>,
@@ -281,6 +285,7 @@ impl App {
     /// Builds the app with the given (already loaded) settings.
     #[must_use]
     pub fn with_settings(settings: Settings) -> Self {
+        let metric_engine = settings.metric_engine;
         App {
             queue: Queue::new(),
             settings,
@@ -299,6 +304,11 @@ impl App {
             flourish: None,
             viewport_size: [1100.0, 720.0],
             thumbs: ThumbState::new(),
+            metrics: {
+                let mut metrics = MetricState::new();
+                metrics.engine = metric_engine;
+                metrics
+            },
             action_error: None,
             settings_dirty: false,
         }
@@ -512,6 +522,22 @@ impl App {
             job.stop.raise();
         }
     }
+
+    /// Requests a quality measurement for a converted pair (plan 10
+    /// §phase 2 "Measure quality"): no-op when metrics are `Off`. The
+    /// decode+compare run on the metric worker; the result lands in
+    /// [`App::metrics`] (rendered by the file table + report).
+    pub fn measure_quality(&mut self, input: &std::path::Path, output: &std::path::Path) {
+        if self.settings.quality_metric == MetricMode::Off {
+            return;
+        }
+        self.metrics.request_measure(
+            input.to_path_buf(),
+            output.to_path_buf(),
+            self.settings.metric_engine,
+            self.settings.metric_max_edge_clamped(),
+        );
+    }
     /// Drains the event channel of the running job into the UI state.
     pub fn drain_events(&mut self) {
         loop {
@@ -669,7 +695,19 @@ impl App {
             self.start_error = Some(message.clone());
         }
         self.celebrate_run(&report);
+        // plan 10 §phase 2 AutoAfterRun: enqueue measurements for every
+        // successfully encoded file (the metric worker just un-paused)
+        let auto_pairs =
+            crate::metrics::auto_measure_pairs(&report, self.settings.quality_metric);
         self.report = Some(report);
+        for (input, output) in auto_pairs {
+            self.metrics.request_measure(
+                input,
+                output,
+                self.settings.metric_engine,
+                self.settings.metric_max_edge_clamped(),
+            );
+        }
     }
 
     /// Decides and arms the post-run celebration (plan 12 §3): a
@@ -775,6 +813,18 @@ impl eframe::App for App {
             });
         }
         self.thumbs.set_paused(self.running.is_some());
+
+        // 2.6 metric worker results (plan 10 §phase 2): measurements land
+        // in the cache, inspector buffers become textures via the
+        // callback; the worker pauses while a job runs (same policy as
+        // the thumbnail worker). An engine-settings change invalidates
+        // the cache so rows/aggregate never mix engines silently.
+        if self.metrics.engine != self.settings.metric_engine {
+            self.metrics.engine = self.settings.metric_engine;
+            self.metrics.clear_results();
+        }
+        self.metrics.poll();
+        self.metrics.set_paused(self.running.is_some());
 
         // 3. panels
         crate::panels::show(self, ctx);

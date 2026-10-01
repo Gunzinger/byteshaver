@@ -18,6 +18,7 @@
 mod app;
 mod celebrate;
 mod chips;
+mod metrics;
 mod options;
 mod panels;
 mod platform;

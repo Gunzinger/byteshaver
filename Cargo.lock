@@ -681,7 +681,7 @@ dependencies = [
  "jxl-oxide",
  "kamadak-exif",
  "libheif-rs",
- "moxcms",
+ "moxcms 0.8.1",
  "mozjpeg",
  "oxipng",
  "png",
@@ -701,11 +701,13 @@ dependencies = [
  "byteshaver",
  "clap",
  "dirs",
+ "dssim",
  "eframe",
  "egui",
  "egui_extras",
  "image",
  "rfd",
+ "rgb",
  "serde",
  "serde_json",
 ]
@@ -999,6 +1001,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-channel"
+version = "0.5.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98b0cc327b5bc766e7fda9c9260cc0fa81b43a8e240440422dff70788e3f9ef1"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-deque"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1125,6 +1136,35 @@ name = "dpi"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
+
+[[package]]
+name = "dssim"
+version = "3.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "405b5e1e4023bf04c65c56511bc3f8904df22bc73edbb985e03cb97f5d488b8d"
+dependencies = [
+ "crossbeam-channel",
+ "dssim-core",
+ "getopts",
+ "imgref",
+ "load_image",
+ "lodepng",
+ "ordered-channel",
+ "rayon",
+ "rgb",
+]
+
+[[package]]
+name = "dssim-core"
+version = "3.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2186fbf554f956fbd6206e3b2554978062558ace6572c317b34d0c03a2dbdff"
+dependencies = [
+ "imgref",
+ "itertools 0.15.0",
+ "rayon",
+ "rgb",
+]
 
 [[package]]
 name = "dunce"
@@ -1602,6 +1642,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "getopts"
+version = "0.2.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfe4fbac503b8d1f88e6676011885f34b7174f46e59956bba534ba83abded4df"
+dependencies = [
+ "unicode-width",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1905,7 +1954,7 @@ dependencies = [
  "exr",
  "gif",
  "image-webp",
- "moxcms",
+ "moxcms 0.8.1",
  "num-traits",
  "png",
  "qoi",
@@ -1979,6 +2028,15 @@ name = "itertools"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
+dependencies = [
+ "either",
+]
+
+[[package]]
+name = "itertools"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b4baf93f58d4425749ca49a51c50ebab072c5df6994d08fed93541c331481dc"
 dependencies = [
  "either",
 ]
@@ -2208,7 +2266,7 @@ dependencies = [
  "jxl-oxide-common",
  "jxl-render",
  "jxl-threadpool",
- "moxcms",
+ "moxcms 0.8.1",
  "tracing",
 ]
 
@@ -2438,12 +2496,39 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
+name = "load_image"
+version = "3.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dec91a6048c166e5f54736399d7b7e40616560d988c06937480c26555c316b98"
+dependencies = [
+ "bytemuck",
+ "imgref",
+ "jpeg-decoder",
+ "lodepng",
+ "moxcms 0.9.1",
+ "quick-error",
+ "rexif",
+ "rgb",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965"
 dependencies = [
  "scopeguard",
+]
+
+[[package]]
+name = "lodepng"
+version = "3.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe7982db11054edc023a1b424dddcc65be18f71fa46ec6bde2efcfc1fb6b22da"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "rgb",
 ]
 
 [[package]]
@@ -2538,6 +2623,16 @@ name = "moxcms"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
+dependencies = [
+ "num-traits",
+ "pxfm",
+]
+
+[[package]]
+name = "moxcms"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "396077b717181ce3f9a6b66739b269b82d756be5ec0f76be0bc40a7c51775830"
 dependencies = [
  "num-traits",
  "pxfm",
@@ -3070,6 +3165,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ordered-channel"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95be4d57809897b5a7539fc15a7dfe0e84141bc3dfaa2e9b1b27caa90acf61ab"
+
+[[package]]
 name = "ordered-stream"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3471,7 +3572,7 @@ dependencies = [
  "cc",
  "cfg-if",
  "interpolate_name",
- "itertools",
+ "itertools 0.14.0",
  "libc",
  "libfuzzer-sys",
  "log",
@@ -3589,6 +3690,12 @@ name = "renderdoc-sys"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
+
+[[package]]
+name = "rexif"
+version = "0.7.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be932047c168919c8d5af065b16fa7d4bd24835ffa256bf0cf1ff463f91c15df"
 
 [[package]]
 name = "rfd"

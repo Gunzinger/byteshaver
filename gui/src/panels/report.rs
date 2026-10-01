@@ -142,7 +142,10 @@ fn report_body(app: &mut App, ui: &mut egui::Ui) {
         ui.label("No finished run yet.");
         return;
     };
-    totals_block(ui, &report);
+    // plan 10 §phase 2: aggregated quality metrics over the measured
+    // files (mean per engine), if any were measured
+    let metric_line = app.metrics.aggregate();
+    totals_block(ui, &report, metric_line.as_deref());
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         if ui.button("Export JSONL…").clicked() {
@@ -282,8 +285,9 @@ fn report_body(app: &mut App, ui: &mut egui::Ui) {
         });
 }
 
-/// Aggregated totals (the "Encode statistics" numbers).
-fn totals_block(ui: &mut egui::Ui, report: &RunReport) {
+/// Aggregated totals (the "Encode statistics" numbers) plus the optional
+/// plan-10 quality-metric mean line.
+fn totals_block(ui: &mut egui::Ui, report: &RunReport, metric_line: Option<&str>) {
     ui.horizontal_wrapped(|ui| {
         ui.label(format!(
             "{} files · ✔ {} ok · — {} skipped · ⤷ {} collisions · ✂ {} discarded · ✖ {} errors · ⏸ {} aborted",
@@ -310,6 +314,9 @@ fn totals_block(ui: &mut egui::Ui, report: &RunReport) {
             "{} outputs could not carry EXIF metadata (target format has no support)",
             report.metadata_dropped_count
         ));
+    }
+    if let Some(line) = metric_line {
+        ui.weak(line);
     }
     if let Some(error) = &report.error {
         ui.colored_label(ui.visuals().error_fg_color, error.clone());

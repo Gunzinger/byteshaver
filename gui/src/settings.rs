@@ -162,6 +162,22 @@ pub struct Settings {
     /// When thumbnails are decoded (plan 11 §6; default `OnConvert`).
     #[serde(default)]
     pub thumbnails: ThumbMode,
+    /// When quality metrics are computed (plan 10 §phase 2, decision D2:
+    /// default `Manual` — no surprise CPU cost).
+    #[serde(default)]
+    pub quality_metric: crate::metrics::MetricMode,
+    /// Which metric engine measures (plan 10 §phase 2, decision D1).
+    #[serde(default)]
+    pub metric_engine: crate::metrics::MetricEngineChoice,
+    /// Longest edge metric decodes are bounded to in px (plan 10 §phase 2
+    /// memory guardrail; clamped to 256..=16384 wherever it is used).
+    #[serde(default = "default_metric_max_edge")]
+    pub metric_max_edge: u32,
+}
+
+/// Serde default for [`Settings::metric_max_edge`].
+fn default_metric_max_edge() -> u32 {
+    crate::metrics::DEFAULT_METRIC_MAX_EDGE
 }
 
 /// Serde default for the tree collapse states (open, like the GUI default).
@@ -191,6 +207,9 @@ impl Default for Settings {
             table_columns: ColumnState::default(),
             table_sort: SortKey::default(),
             thumbnails: ThumbMode::default(),
+            quality_metric: crate::metrics::MetricMode::default(),
+            metric_engine: crate::metrics::MetricEngineChoice::default(),
+            metric_max_edge: crate::metrics::DEFAULT_METRIC_MAX_EDGE,
         }
     }
 }
@@ -200,6 +219,13 @@ impl Settings {
     #[must_use]
     pub fn path() -> Option<PathBuf> {
         dirs::config_dir().map(|dir| dir.join("byteshaver-gui").join("settings.json"))
+    }
+
+    /// The metric decode edge clamped to the sane range (plan 10 §phase 2:
+    /// a hand-edited settings file cannot defeat the memory guardrail).
+    #[must_use]
+    pub fn metric_max_edge_clamped(&self) -> u32 {
+        crate::metrics::clamp_metric_max_edge(self.metric_max_edge)
     }
 
     /// Loads the settings, falling back to defaults for every error
@@ -275,6 +301,9 @@ mod tests {
             },
             table_sort: crate::table::SortKey::Asc(crate::table::Column::Modified),
             thumbnails: crate::thumb::ThumbMode::OnAdd,
+            quality_metric: crate::metrics::MetricMode::AutoAfterRun,
+            metric_engine: crate::metrics::MetricEngineChoice::Psnr,
+            metric_max_edge: 8192,
         };
         let json = serde_json::to_string(&settings).expect("serialize settings");
         let parsed: Settings = serde_json::from_str(&json).expect("deserialize settings");
@@ -328,8 +357,7 @@ mod tests {
     }
 
     #[test]
-    fn collapse_tree_states_default_open_when_absent_and_round_trip() {
-        let mut settings = Settings::default();
+    fn collapse_tree_states_default_open_when_absent_and_round_trip() {        let mut settings = Settings::default();
         assert!(settings.options_tree_open);
         assert!(settings.policies_tree_open);
         settings.options_tree_open = false;
@@ -394,5 +422,63 @@ mod tests {
             ..ExifSettings::default()
         };
         assert!(bogus.to_policy().is_err());
+    }
+
+    // ---- plan 10 §phase 2: metric settings ----------------------------------
+
+    #[test]
+    fn metric_settings_default_to_manual_dssim_4096_and_round_trip() {
+        let settings = Settings::default();
+        assert_eq!(settings.quality_metric, crate::metrics::MetricMode::Manual, "decision D2");
+        assert_eq!(
+            settings.metric_engine,
+            crate::metrics::MetricEngineChoice::Dssim,
+            "decision D1"
+        );
+        assert_eq!(settings.metric_max_edge, 4096);
+        assert_eq!(settings.metric_max_edge_clamped(), 4096);
+
+        let settings = Settings {
+            quality_metric: crate::metrics::MetricMode::AutoAfterRun,
+            metric_engine: crate::metrics::MetricEngineChoice::Psnr,
+            metric_max_edge: 8192,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&settings).expect("serialize settings");
+        let parsed: Settings = serde_json::from_str(&json).expect("deserialize settings");
+        assert_eq!(parsed, settings);
+    }
+
+    #[test]
+    fn metric_settings_default_when_absent_from_the_file() {
+        // settings written before plan 10 lack the three fields
+        let mut value = serde_json::to_value(Settings::default()).expect("serialize defaults");
+        let object = value
+            .as_object_mut()
+            .expect("settings serialize to an object");
+        object.remove("quality_metric");
+        object.remove("metric_engine");
+        object.remove("metric_max_edge");
+        let parsed: Settings =
+            serde_json::from_value(value).expect("deserialize without the new fields");
+        assert_eq!(parsed, Settings::default());
+        assert_eq!(parsed.quality_metric, crate::metrics::MetricMode::Manual);
+        assert_eq!(parsed.metric_engine, crate::metrics::MetricEngineChoice::Dssim);
+        assert_eq!(parsed.metric_max_edge, 4096);
+    }
+
+    #[test]
+    fn hand_edited_metric_edge_is_clamped() {
+        // a huge value in the file stays stored but is clamped at use
+        let mut value =
+            serde_json::to_value(Settings::default()).expect("serialize defaults");
+        value["metric_max_edge"] = serde_json::json!(1_000_000);
+        let parsed: Settings = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(parsed.metric_max_edge, 1_000_000, "stored verbatim");
+        assert_eq!(
+            parsed.metric_max_edge_clamped(),
+            16_384,
+            "used clamped (guardrail)"
+        );
     }
 }

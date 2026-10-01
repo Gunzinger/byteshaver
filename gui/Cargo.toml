@@ -61,3 +61,10 @@ dirs = "6"
 
 # the CLI parity tests build CliArgs exactly like the CLI binary does
 clap = "4"
+
+# DSSIM (multi-scale SSIM) quality metric, plan 10 §phase 2: pure Rust,
+# internally downsamples (large-image friendly), score 0.0 = identical.
+# The `rgb` types are part of dssim's public API (`create_image_rgba`
+# takes `&[RGBA<u8>]`) — same 0.8 line the core already uses.
+dssim = "3"
+rgb = "0.8"
