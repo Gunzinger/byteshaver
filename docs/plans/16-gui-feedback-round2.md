@@ -1,7 +1,10 @@
 # 16 — GUI feedback round 2: window fill, confetti origin, Windows reveal, action labels
 
 **Size:** S (3 work packages) · **Status: implemented** on branch
-`plans/gui-ux-improvements`. Follow-up to plan 15; issues F20–F23.
+`plans/gui-ux-improvements` (F20–F23; deviations: burst origins capped at
+24 with all-rows-scrolled-out arming nothing; hover buttons read
+"open file"/"output folder" with the full F23 wording in menu + tooltips;
+`\\?\UNC\` strip was already present from round 1 and was verified).
 
 ## F20 — dead grey space at the bottom of the preset-manage window and the visual-difference viewer
 
