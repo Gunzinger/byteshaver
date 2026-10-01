@@ -16,6 +16,7 @@
 )]
 
 mod app;
+mod celebrate;
 mod options;
 mod panels;
 mod queue;
