@@ -81,10 +81,15 @@ jobs:
       - name: Set Cargo.toml version
         shell: bash
         run: |
-          sed -i "s/0\\.0\\.0-git/${VERSION}/" Cargo.toml
-          head -n 5 Cargo.toml
-          sed -i "s/0\\.0\\.0-git/${VERSION}/" Cargo.lock
-          grep -i -C 5 "byteshaver" Cargo.lock
+          # Patch BOTH workspace crates (core + gui): the gui crate is
+          # versioned in lockstep with byteshaver and the GUI binary displays
+          # its own CARGO_PKG_VERSION (header + About panel) — missing
+          # gui/Cargo.toml here is what shipped 0.0.0-git GUI releases.
+          # Anchored so only the package `version` lines are touched
+          # (Cargo.lock has one matching `version = "..."` line per crate).
+          sed -i "s/^version = \"0\\.0\\.0-git\"/version = \"${VERSION}\"/" Cargo.toml gui/Cargo.toml Cargo.lock
+          grep -n '^version' Cargo.toml gui/Cargo.toml
+          grep -n -A1 '^name = "byteshaver' Cargo.lock
 
       - name: Install Windows cross compiler
         run: sudo apt-get install --yes --no-install-recommends gcc-mingw-w64-x86-64-win32 g++-mingw-w64-x86-64-win32 nasm upx-ucl
@@ -210,6 +215,14 @@ jobs:
           echo "Building for CPU: ${{ matrix.cpu_target }} (windows-gnu)"
           cargo build --release --target x86_64-pc-windows-gnu -p byteshaver
           cargo build --release --target x86_64-pc-windows-gnu -p byteshaver-gui --no-default-features
+          # guard against regressions of the jpegxl-src host-cfg stdc++ link
+          # (v0.5.2 shipped exes needing libstdc++-6.dll, absent on stock
+          # windows); no mingw runtime DLL may appear in the import table
+          for exe in target/x86_64-pc-windows-gnu/release/byteshaver.exe target/x86_64-pc-windows-gnu/release/byteshaver-gui.exe; do
+            if objdump -p "$exe" | grep -qi 'DLL Name: lib\(stdc++\|gcc_s\|winpthread\)'; then
+              echo "FATAL: $exe depends on a mingw runtime DLL (libstdc++-6/libgcc_s/libwinpthread)"; objdump -p "$exe" | grep 'DLL Name'; exit 1
+            fi
+          done
           upx --best target/x86_64-pc-windows-gnu/release/byteshaver.exe target/x86_64-pc-windows-gnu/release/byteshaver-gui.exe
           mkdir -p current_release
           if [ "${{ matrix.cpu_target }}" == "${{ env.BASE_CPU }}" ]; then SUFFIX=""; else SUFFIX="-${{ matrix.cpu_target }}"; fi
