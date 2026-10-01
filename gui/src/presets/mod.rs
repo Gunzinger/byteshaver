@@ -19,14 +19,20 @@
 //! `schema > PRESET_SCHEMA` parse structurally and stay visible read-only
 //! (the "newer format" badge is derived via [`is_newer_format`]).
 //!
-//! # Privacy (plan 14 §2)
+//! # Privacy (plan 14 §2, adapted by plan 15 F16)
 //!
 //! `include_output_dir == false` (the default) → the preset's
-//! `policies.output_dir` is **stripped before any write** ([`sanitized`];
-//! the `Option` is also `skip_serializing_if`'d while unset), so neither
-//! the user-dir file nor an export ever embeds a local path unless the
-//! user explicitly opts in. Applying such a preset leaves the local output
-//! directory untouched ([`preset_matches`] ignores the field accordingly).
+//! `policies.output_dir` path is **cleared before any write**
+//! ([`sanitized`]; the empty string is also `skip_serializing_if`'d, so
+//! the key disappears entirely), so neither the user-dir file nor an
+//! export ever embeds a local path unless the user explicitly opts in.
+//! The *mode* ([`crate::settings::OutputMode`]) always rides along, so a
+//! preset saved in directory mode keeps selecting directory output on
+//! apply — the user then picks the actual folder locally (the plan-15 F17
+//! start blocker guards the empty-path state). Applying such a preset
+//! keeps the local output directory *string* untouched
+//! ([`crate::app::App::apply_preset`], [`preset_matches`] ignores the
+//! field accordingly).
 
 mod builtin;
 
@@ -294,8 +300,8 @@ pub fn now_unix() -> u64 {
 }
 
 /// Builds a user preset from the save dialog's fields (pure): the scope
-/// toggle decides whether policies ride along; the output directory is
-/// only embedded on explicit opt-in (see [`sanitized`]).
+/// toggle decides whether policies ride along; the output directory path
+/// is only embedded on explicit opt-in (see [`sanitized`]).
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 pub fn build_preset(
@@ -311,7 +317,7 @@ pub fn build_preset(
     if let Some(saved) = &mut saved_policies
         && !include_output_dir
     {
-        saved.output_dir = None;
+        saved.output_dir = String::new();
     }
     Preset {
         schema: PRESET_SCHEMA,
@@ -329,9 +335,10 @@ pub fn build_preset(
     }
 }
 
-/// Privacy strip (plan 14 §2): the exact variant that may be written to
-/// disk or exported — `builtin` forced `false` and the output directory
-/// removed unless `include_output_dir` opts in. Idempotent.
+/// Privacy strip (plan 14 §2, plan 15 F16): the exact variant that may be
+/// written to disk or exported — `builtin` forced `false` and the output
+/// directory *path* removed unless `include_output_dir` opts in (the mode
+/// stays). Idempotent.
 #[must_use]
 pub fn sanitized(preset: &Preset) -> Preset {
     let mut copy = preset.clone();
@@ -339,7 +346,7 @@ pub fn sanitized(preset: &Preset) -> Preset {
     if !copy.content.include_output_dir
         && let Some(policies) = &mut copy.content.policies
     {
-        policies.output_dir = None;
+        policies.output_dir = String::new();
     }
     copy
 }
@@ -375,8 +382,9 @@ pub fn parse_preset_text(text: &str) -> Result<Preset, String> {
 
 /// Whether a preset is exactly active for the given state: the encoder
 /// must be equal, and — for full-scope presets — the policies too. The
-/// output directory is ignored when the preset did not embed it (privacy
-/// exclusions must not read as "modified").
+/// output directory *path* is ignored when the preset did not embed it
+/// (privacy exclusions must not read as "modified"); the output *mode*
+/// always compares (it applies unconditionally, plan 15 F16).
 #[must_use]
 pub fn preset_matches(preset: &Preset, encoder: &EncoderConfig, policies: &PolicySet) -> bool {
     if preset.content.encoder != *encoder {
@@ -389,9 +397,9 @@ pub fn preset_matches(preset: &Preset, encoder: &EncoderConfig, policies: &Polic
         saved == policies
     } else {
         let mut without_output = saved.clone();
-        without_output.output_dir = None;
+        without_output.output_dir = String::new();
         let mut current = policies.clone();
-        current.output_dir = None;
+        current.output_dir = String::new();
         without_output == current
     }
 }
@@ -414,12 +422,13 @@ pub fn apply_preview(preset: &Preset) -> String {
 /// How many of the nine policy mirrors differ from the defaults (the
 /// meaningful payload size of a full-scope preset; also the default of the
 /// save dialog's scope toggle — decision 1: full preset only when the
-/// policies actually differ).
+/// policies actually differ). The output target is one mirror: mode or
+/// path drift both count once.
 #[must_use]
 pub fn policy_change_count(policies: &PolicySet) -> usize {
     let defaults = PolicySet::default();
     let mut changes = 0;
-    if policies.output_dir != defaults.output_dir {
+    if policies.output_mode != defaults.output_mode || policies.output_dir != defaults.output_dir {
         changes += 1;
     }
     if policies.exif != defaults.exif {
@@ -874,7 +883,8 @@ mod tests {
     fn privacy_skip_strips_the_output_dir_unless_opted_in() {
         let mut preset = sample_preset("Local");
         preset.content.policies = Some(PolicySet {
-            output_dir: Some("/home/me/secret-out".to_string()),
+            output_mode: crate::settings::OutputMode::Directory,
+            output_dir: "/home/me/secret-out".to_string(),
             ..PolicySet::default()
         });
         preset.content.include_output_dir = false;
@@ -890,7 +900,12 @@ mod tests {
                 .expect("policies object")
                 .get("output_dir")
                 .is_none(),
-            "the output_dir key is skipped entirely"
+            "the output_dir key is skipped entirely once cleared"
+        );
+        assert_eq!(
+            value["content"]["policies"]["output_mode"],
+            "Directory",
+            "the mode always rides along (plan 15 F16)"
         );
         preset.content.include_output_dir = true;
         let json = export_json(&preset);
@@ -913,7 +928,9 @@ mod tests {
             ..PolicySet::default()
         });
         preset.content.include_output_dir = true;
-        preset.content.policies.as_mut().unwrap().output_dir = Some("/tmp/öut".to_string());
+        preset.content.policies.as_mut().unwrap().output_mode =
+            crate::settings::OutputMode::Directory;
+        preset.content.policies.as_mut().unwrap().output_dir = "/tmp/öut".to_string();
         store.upsert(&preset, None).expect("save");
 
         let contents = store.load_all();
@@ -1051,7 +1068,8 @@ mod tests {
         );
         preset.content.policies = Some(PolicySet {
             collision: crate::settings::CollisionChoice::OverwriteAlways,
-            output_dir: Some("/x".to_string()),
+            output_mode: crate::settings::OutputMode::Directory,
+            output_dir: "/x".to_string(),
             max_animation_memory_mib: 512,
             ..PolicySet::default()
         });
@@ -1061,8 +1079,15 @@ mod tests {
     #[test]
     fn policy_change_count_matches_the_nine_mirrors() {
         assert_eq!(policy_change_count(&PolicySet::default()), 0);
+        // the output target is ONE mirror: mode or path drift count once
+        let dir_only = PolicySet {
+            output_mode: crate::settings::OutputMode::Directory,
+            ..PolicySet::default()
+        };
+        assert_eq!(policy_change_count(&dir_only), 1);
         let all = PolicySet {
-            output_dir: Some("/x".to_string()),
+            output_mode: crate::settings::OutputMode::Directory,
+            output_dir: "/x".to_string(),
             exif: ExifSettings {
                 mode: crate::settings::ExifMode::Keep,
                 ..ExifSettings::default()
@@ -1080,17 +1105,19 @@ mod tests {
 
     #[test]
     fn preset_equality_tolerates_the_excluded_output_dir() {
+        // a "same as input" preset (output path never embedded) applied to
+        // a state with a local directory: apply keeps the local *string*
+        // but switches the mode — the post-apply state must read as clean
         let mut preset = sample_preset("Match");
         preset.content.policies = Some(PolicySet {
-            output_dir: None,
             collision: crate::settings::CollisionChoice::OverwriteAlways,
             ..PolicySet::default()
         });
         let mut current = PolicySet {
-            output_dir: Some("/local/dir".to_string()),
             collision: crate::settings::CollisionChoice::OverwriteAlways,
             ..PolicySet::default()
         };
+        current.output_dir = "/local/dir".to_string();
         assert!(
             preset_matches(&preset, &preset.content.encoder, &current),
             "the excluded output dir must not read as modified"
@@ -1101,6 +1128,13 @@ mod tests {
             "a real policy drift is 'modified'"
         );
         current.collision = crate::settings::CollisionChoice::OverwriteAlways;
+        // the mode is NOT excluded: switching it after the apply is drift
+        current.output_mode = crate::settings::OutputMode::Directory;
+        assert!(
+            !preset_matches(&preset, &preset.content.encoder, &current),
+            "a flipped output mode is 'modified' (the mode always applies)"
+        );
+        current.output_mode = crate::settings::OutputMode::SameAsInput;
         assert!(
             !preset_matches(&preset, &webp_encoder(50.0), &current),
             "an encoder drift is 'modified'"
@@ -1127,7 +1161,8 @@ mod tests {
     #[test]
     fn build_preset_trims_and_normalizes_the_scope() {
         let policies = PolicySet {
-            output_dir: Some("/tmp/out".to_string()),
+            output_mode: crate::settings::OutputMode::Directory,
+            output_dir: "/tmp/out".to_string(),
             ..PolicySet::default()
         };
         let preset = build_preset(
@@ -1150,8 +1185,13 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .output_dir
-                .is_none(),
-            "no opt-in → path stripped at build time"
+                .is_empty(),
+            "no opt-in → path cleared at build time (mode kept, plan 15 F16)"
+        );
+        assert_eq!(
+            preset.content.policies.as_ref().unwrap().output_mode,
+            crate::settings::OutputMode::Directory,
+            "the mode applies even without the path opt-in"
         );
         assert!(!preset.content.include_output_dir);
 
@@ -1163,8 +1203,8 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .output_dir
-                .as_deref(),
-            Some("/tmp/out"),
+                .as_str(),
+            "/tmp/out",
             "opt-in embeds the path"
         );
         assert!(preset.content.include_output_dir);
