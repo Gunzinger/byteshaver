@@ -5,7 +5,7 @@
 //! chips ([`crate::chips`], sourced from the built-in profiles), the
 //! per-encoder options editor ([`crate::options`]) behind a "Custom…"/
 //! "adjust ▾" disclosure, the per-encoder "↺ defaults" button with undo
-//! notice and the global policy mirrors (output directory, EXIF,
+//! notice and the global policy mirrors (output mode + directory, EXIF,
 //! collisions, animation guards — every dropdown maps 1:1 onto a CLI
 //! flag).
 //!
@@ -19,8 +19,8 @@
 //! each frame becomes the next frame's animation target (capped at 60 % of
 //! the viewport; beyond the cap the internal `ScrollArea` keeps the rest
 //! reachable). The two tree collapse states persist in
-//! [`crate::settings::Settings`]; the "Custom…" disclosure and the
-//! "Advanced" sub-header ride on egui's own persisted memory.
+//! [`crate::settings::Settings`]; the "Encoder options" disclosure and
+//! the "Advanced" sub-header ride on egui's own persisted memory.
 
 use std::time::Instant;
 
@@ -483,43 +483,53 @@ fn encoder_picker(ui: &mut egui::Ui, app: &mut App) {
     });
 }
 
-/// Output directory: "same as input" (default) or a browsed path; maps
-/// onto the spec's `output` override (CLI `-o`).
+/// Output target (plan 15 F16): "same as input" or a browsed directory.
+/// The two radio buttons switch `policies.output_mode` only — the stored
+/// path text is **never** touched by a switch (that was the F16 bug: the
+/// old `Option<String>` encoding destroyed the path on every toggle), so
+/// flipping back and forth keeps what the user typed. Maps onto the
+/// spec's `output` override (CLI `-o`).
 fn output_dir_ui(ui: &mut egui::Ui, app: &mut App) {
-    let mut same_as_input = app.settings.policies.output_dir.is_none();
+    use crate::settings::OutputMode;
     ui.horizontal(|ui| {
-        ui.label("Output:");
+        ui.label("Output:").on_hover_text(
+            "where the outputs are written (CLI: -o). Switching the mode never clears the path",
+        );
+        let mut mode = app.settings.policies.output_mode;
         if ui
-            .radio_value(&mut same_as_input, true, "same as input")
+            .radio_value(&mut mode, OutputMode::SameAsInput, "same as input")
             .changed()
         {
-            app.settings.policies.output_dir = None;
+            app.settings.policies.output_mode = mode;
             app.mark_settings_dirty();
         }
         if ui
-            .radio_value(&mut same_as_input, false, "directory:")
+            .radio_value(&mut mode, OutputMode::Directory, "directory:")
             .changed()
         {
-            app.settings.policies.output_dir = Some(String::new());
+            app.settings.policies.output_mode = mode;
             app.mark_settings_dirty();
         }
-        if !same_as_input {
-            if let Some(dir) = app.settings.policies.output_dir.as_mut() {
-                let response = ui.add(
-                    egui::TextEdit::singleline(dir)
-                        .hint_text("/path/to/output")
-                        .desired_width(280.0),
-                );
-                if response.changed() {
-                    app.mark_settings_dirty();
-                }
+        if mode == OutputMode::Directory {
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut app.settings.policies.output_dir)
+                    .hint_text("/path/to/output")
+                    .desired_width(280.0),
+            );
+            if response.changed() {
+                app.mark_settings_dirty();
             }
             if ui.button("Browse…").clicked()
                 && let Some(path) = rfd::FileDialog::new().pick_folder()
             {
-                app.settings.policies.output_dir = Some(path.display().to_string());
+                app.settings.policies.output_dir = path.display().to_string();
                 app.mark_settings_dirty();
             }
+        } else if !app.settings.policies.output_dir.trim().is_empty() {
+            ui.weak("(path kept)").on_hover_text(format!(
+                "the stored path survives mode switches: {}",
+                app.settings.policies.output_dir
+            ));
         }
     });
 }
@@ -910,7 +920,7 @@ pub fn show_save_window(app: &mut App, ctx: &egui::Context) {
             {
                 draft.include_output_dir = false;
             }
-            let has_output_dir = app.settings.policies.output_dir.is_some();
+            let has_output_dir = app.settings.policies.has_output_directory();
             ui.add_enabled_ui(draft.include_policies && has_output_dir, |ui| {
                 let checkbox = ui.checkbox(
                     &mut draft.include_output_dir,
@@ -920,10 +930,11 @@ pub fn show_save_window(app: &mut App, ctx: &egui::Context) {
                     checkbox.on_disabled_hover_text(
                         "no output directory is set (\"same as input\") — nothing to embed",
                     );
-                } else if let Some(dir) = app.settings.policies.output_dir.as_deref() {
+                } else {
                     checkbox.on_hover_text(format!(
                         "off (recommended): the preset file never embeds local paths; \
-                         on: the file will contain {dir:?}"
+                         on: the file will contain {:?}",
+                        app.settings.policies.output_dir
                     ));
                 }
             });

@@ -6,6 +6,15 @@
 //! A corrupt or unreadable file silently falls back to defaults (no panic);
 //! the defaults match the CLI's argument defaults so GUI and CLI agree
 //! out of the box.
+//!
+//! # Output-mode migration (plan 15 F16)
+//!
+//! Files written before plan 15 encoded "same as input" as
+//! `output_dir: null`/absent and "directory" as `output_dir: "…"` (an
+//! `Option<String>`). The new shape stores an explicit
+//! [`OutputMode`] plus the path as a plain `String`; the custom
+//! [`Deserialize`] impl of [`PolicySet`] accepts both shapes (fixture
+//! tested) so old settings **and** old preset files keep loading.
 
 use std::path::PathBuf;
 
@@ -104,20 +113,41 @@ fn split_tags(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Where the conversions of a run are written (plan 15 F16; maps onto the
+/// CLI's `-o` flag being set or not).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OutputMode {
+    /// Write every output next to its input (CLI default, `-o` unset).
+    #[default]
+    SameAsInput,
+    /// Write every output into [`PolicySet::output_dir`].
+    Directory,
+}
+
 /// The output/global policy mirrors shared by [`Settings`] and the
 /// configuration presets (plan 14 §1): every field maps 1:1 onto a CLI
 /// flag, so presets can carry them verbatim.
 ///
-/// Privacy (plan 14 §2): a `None` [`PolicySet::output_dir`] is never
-/// serialized (`skip_serializing_if`); a `Some` path is only written when
-/// a preset explicitly opts in via `include_output_dir` — see
-/// `crate::presets`, which strips the field before writing otherwise.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// The output target is *mode + path* (plan 15 F16): toggling the mode in
+/// the UI never clears the stored path (the old `Option<String>` encoding
+/// destroyed it on every switch).
+///
+/// Privacy (plan 14 §2, adapted by plan 15 F16): an empty
+/// [`PolicySet::output_dir`] is never serialized (`skip_serializing_if`);
+/// a non-empty path is only written when a preset explicitly opts in via
+/// `include_output_dir` — see `crate::presets`, which clears the field
+/// before writing otherwise. The *mode* always rides along.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PolicySet {
-    /// Output directory; `None` = same directory as the input (CLI
-    /// default). Never serialized while unset (privacy, plan 14 §2).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output_dir: Option<String>,
+    /// Where outputs are written (CLI `-o` set or not).
+    pub output_mode: OutputMode,
+    /// The output directory path (kept verbatim while the user edits, even
+    /// when [`OutputMode::SameAsInput`] is selected — switching modes must
+    /// not lose the text). Never serialized while empty (privacy, plan 14
+    /// §2). Empty + [`OutputMode::Directory`] is a *start-blocker*
+    /// (plan 15 F17), never a silent same-as-input fallback.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub output_dir: String,
     /// EXIF policy editor state.
     pub exif: ExifSettings,
     /// Collision/overwrite policy.
@@ -139,7 +169,8 @@ pub struct PolicySet {
 impl Default for PolicySet {
     fn default() -> Self {
         PolicySet {
-            output_dir: None,
+            output_mode: OutputMode::SameAsInput,
+            output_dir: String::new(),
             exif: ExifSettings::default(),
             collision: CollisionChoice::default(),
             animated_input: AnimatedInputPolicy::default(),
@@ -149,6 +180,63 @@ impl Default for PolicySet {
             max_animation_memory_mib: 4096,
             reverse_processing_order: false,
         }
+    }
+}
+
+impl PolicySet {
+    /// Whether a concrete output directory is configured ([`OutputMode::
+    /// Directory`] with a non-blank path) — the save modal's condition for
+    /// offering the embed-the-path opt-in (plan 14 §2 privacy).
+    #[must_use]
+    pub fn has_output_directory(&self) -> bool {
+        self.output_mode == OutputMode::Directory && !self.output_dir.trim().is_empty()
+    }
+}
+
+impl<'de> Deserialize<'de> for PolicySet {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        /// Every field optional so old files load: the pre-plan-15 shape
+        /// has no `output_mode` and encodes the mode *in* `output_dir`
+        /// (`null`/absent = same as input, a string = directory).
+        #[derive(Deserialize, Default)]
+        #[serde(default)]
+        struct PolicySetDe {
+            output_mode: Option<OutputMode>,
+            output_dir: Option<String>,
+            exif: Option<ExifSettings>,
+            collision: Option<CollisionChoice>,
+            animated_input: Option<AnimatedInputPolicy>,
+            heif_image_policy: Option<HeifImagePolicy>,
+            discard_if_larger_than_input: Option<bool>,
+            discard_input_alpha_channel: Option<bool>,
+            max_animation_memory_mib: Option<u64>,
+            reverse_processing_order: Option<bool>,
+        }
+        let de = PolicySetDe::deserialize(deserializer)?;
+        // migration (plan 15 F16): an explicit mode wins; without one the
+        // legacy `Option<String>` decides (`null` and absent both mean
+        // "same as input")
+        let (output_mode, output_dir) = match de.output_mode {
+            Some(mode) => (mode, de.output_dir.unwrap_or_default()),
+            None => match de.output_dir {
+                Some(dir) => (OutputMode::Directory, dir),
+                None => (OutputMode::SameAsInput, String::new()),
+            },
+        };
+        Ok(PolicySet {
+            output_mode,
+            output_dir,
+            exif: de.exif.unwrap_or_default(),
+            collision: de.collision.unwrap_or_default(),
+            animated_input: de.animated_input.unwrap_or_default(),
+            heif_image_policy: de.heif_image_policy.unwrap_or_default(),
+            discard_if_larger_than_input: de.discard_if_larger_than_input.unwrap_or_default(),
+            discard_input_alpha_channel: de.discard_input_alpha_channel.unwrap_or_default(),
+            max_animation_memory_mib: de
+                .max_animation_memory_mib
+                .unwrap_or(PolicySet::default().max_animation_memory_mib),
+            reverse_processing_order: de.reverse_processing_order.unwrap_or_default(),
+        })
     }
 }
 
@@ -261,18 +349,28 @@ impl From<SettingsDe> for Settings {
         // an old file carries the nine mirrors at the top level; a file
         // with an explicit `policies` object wins over any stray flat
         // fields (both shapes never coexist in practice)
-        let policies = de.policies.unwrap_or_else(|| PolicySet {
-            output_dir: de.output_dir,
-            exif: de.exif.unwrap_or_default(),
-            collision: de.collision.unwrap_or_default(),
-            animated_input: de.animated_input.unwrap_or_default(),
-            heif_image_policy: de.heif_image_policy.unwrap_or_default(),
-            discard_if_larger_than_input: de.discard_if_larger_than_input.unwrap_or_default(),
-            discard_input_alpha_channel: de.discard_input_alpha_channel.unwrap_or_default(),
-            max_animation_memory_mib: de
-                .max_animation_memory_mib
-                .unwrap_or(PolicySet::default().max_animation_memory_mib),
-            reverse_processing_order: de.reverse_processing_order.unwrap_or_default(),
+        let policies = de.policies.unwrap_or_else(|| {
+            // legacy flat layout (plan 15 F16 migration): the pre-plan-14
+            // `output_dir` encodes the mode — `Some(path)` → directory
+            let mut legacy = PolicySet::default();
+            if let Some(dir) = de.output_dir {
+                legacy.output_mode = OutputMode::Directory;
+                legacy.output_dir = dir;
+            }
+            PolicySet {
+                output_mode: legacy.output_mode,
+                output_dir: legacy.output_dir,
+                exif: de.exif.unwrap_or_default(),
+                collision: de.collision.unwrap_or_default(),
+                animated_input: de.animated_input.unwrap_or_default(),
+                heif_image_policy: de.heif_image_policy.unwrap_or_default(),
+                discard_if_larger_than_input: de.discard_if_larger_than_input.unwrap_or_default(),
+                discard_input_alpha_channel: de.discard_input_alpha_channel.unwrap_or_default(),
+                max_animation_memory_mib: de
+                    .max_animation_memory_mib
+                    .unwrap_or(PolicySet::default().max_animation_memory_mib),
+                reverse_processing_order: de.reverse_processing_order.unwrap_or_default(),
+            }
         });
         Settings {
             encoder: de
@@ -383,7 +481,8 @@ mod tests {
         let settings = Settings {
             encoder: EncoderConfig::Webp(Default::default()),
             policies: PolicySet {
-                output_dir: Some("/tmp/out".to_string()),
+                output_mode: OutputMode::Directory,
+                output_dir: "/tmp/out".to_string(),
                 exif: ExifSettings {
                     mode: ExifMode::FilterExcept,
                     except_tags: "gps,Orientation".to_string(),
@@ -443,10 +542,8 @@ mod tests {
             "window_size": [1100.0, 720.0],
         });
         let parsed: Settings = serde_json::from_value(old).expect("flat layout loads");
-        assert_eq!(
-            parsed.policies.output_dir.as_deref(),
-            Some("/tmp/legacy-out")
-        );
+        assert_eq!(parsed.policies.output_mode, OutputMode::Directory);
+        assert_eq!(parsed.policies.output_dir, "/tmp/legacy-out");
         assert_eq!(parsed.policies.exif.mode, ExifMode::FilterExcept);
         assert_eq!(parsed.policies.exif.except_tags, "gps");
         assert_eq!(parsed.policies.collision, CollisionChoice::OverwriteIfSmaller);
@@ -482,7 +579,8 @@ mod tests {
     #[test]
     fn embedded_policies_shape_serializes_and_wins_over_flat_fields() {
         let mut settings = Settings::default();
-        settings.policies.output_dir = Some("/tmp/new-shape".to_string());
+        settings.policies.output_mode = OutputMode::Directory;
+        settings.policies.output_dir = "/tmp/new-shape".to_string();
         settings.policies.collision = CollisionChoice::OverwriteAlways;
         let value = serde_json::to_value(&settings).expect("serialize new shape");
         let object = value.as_object().expect("settings object");
@@ -494,21 +592,21 @@ mod tests {
             !object.contains_key("output_dir"),
             "the nine mirrors no longer sit at the top level"
         );
+        let policies_object = object["policies"].as_object().expect("policy object");
         assert!(
-            object["policies"]
-                .as_object()
-                .expect("policy object")
-                .contains_key("output_dir"),
-            "a set output_dir is embedded in the policies object"
+            policies_object.contains_key("output_mode"),
+            "the mode is persisted explicitly (plan 15 F16)"
         );
-        // a None output_dir is skipped on serialization (privacy, plan 14 §2)
+        assert_eq!(policies_object["output_mode"], "Directory");
+        assert_eq!(policies_object["output_dir"], "/tmp/new-shape");
+        // an empty output_dir is skipped on serialization (privacy, plan 14 §2)
         let defaults = serde_json::to_value(Settings::default()).expect("serialize defaults");
+        let default_policies = defaults["policies"].as_object().expect("policy object");
         assert!(
-            !defaults["policies"]
-                .as_object()
-                .expect("policy object")
-                .contains_key("output_dir"),
+            !default_policies.contains_key("output_dir"),
+            "no path is written while unset"
         );
+        assert_eq!(default_policies["output_mode"], "SameAsInput");
         let parsed: Settings = serde_json::from_value(value).expect("new shape loads");
         assert_eq!(parsed, settings);
 
@@ -516,13 +614,130 @@ mod tests {
         let mut both = serde_json::to_value(&settings).expect("new shape");
         both["output_dir"] = serde_json::json!("/tmp/stale-flat");
         let parsed: Settings = serde_json::from_value(both).expect("both shapes load");
-        assert_eq!(parsed.policies.output_dir.as_deref(), Some("/tmp/new-shape"));
+        assert_eq!(parsed.policies.output_dir, "/tmp/new-shape");
+        assert_eq!(parsed.policies.output_mode, OutputMode::Directory);
+    }
+
+    // ---- plan 15 F16: output-mode migration fixtures -------------------------
+
+    #[test]
+    fn legacy_output_dir_string_migrates_to_directory_mode() {
+        // old settings: a `Some(path)` in the embedded policy object
+        let old = serde_json::json!({
+            "encoder": { "Jpeg": null },
+            "policies": {
+                "output_dir": "/tmp/old-out",
+                "collision": "KeepExisting",
+            },
+        });
+        let parsed: Settings = serde_json::from_value(old).expect("old embedded shape loads");
+        assert_eq!(parsed.policies.output_mode, OutputMode::Directory);
+        assert_eq!(parsed.policies.output_dir, "/tmp/old-out");
+    }
+
+    #[test]
+    fn legacy_absent_and_null_output_dirs_migrate_to_same_as_input() {
+        // old settings: `None` was skipped entirely on serialization …
+        let absent = serde_json::json!({
+            "encoder": { "Jpeg": null },
+            "policies": { "collision": "OverwriteAlways" },
+        });
+        let parsed: Settings = serde_json::from_value(absent).expect("absent output_dir");
+        assert_eq!(parsed.policies.output_mode, OutputMode::SameAsInput);
+        assert_eq!(parsed.policies.output_dir, "");
+
+        // … and a hand-edited file may carry an explicit `null`
+        let null = serde_json::json!({
+            "encoder": { "Jpeg": null },
+            "policies": { "output_dir": null },
+        });
+        let parsed: Settings = serde_json::from_value(null).expect("null output_dir");
+        assert_eq!(parsed.policies.output_mode, OutputMode::SameAsInput);
+        assert_eq!(parsed.policies.output_dir, "");
+    }
+
+    #[test]
+    fn legacy_flat_output_dir_string_migrates_to_directory_mode() {
+        // pre-plan-14 flat layout with a set output directory
+        let old = serde_json::json!({
+            "encoder": { "Jpeg": null },
+            "output_dir": "/tmp/flat-out",
+        });
+        let parsed: Settings = serde_json::from_value(old).expect("flat legacy loads");
+        assert_eq!(parsed.policies.output_mode, OutputMode::Directory);
+        assert_eq!(parsed.policies.output_dir, "/tmp/flat-out");
+
+        // pre-plan-14 flat layout with the field absent (the None skip)
+        let old = serde_json::json!({ "encoder": { "Jpeg": null } });
+        let parsed: Settings = serde_json::from_value(old).expect("flat legacy loads");
+        assert_eq!(parsed.policies.output_mode, OutputMode::SameAsInput);
+    }
+
+    #[test]
+    fn both_output_modes_round_trip_through_the_new_shape() {
+        for (mode, dir) in [
+            (OutputMode::SameAsInput, ""),
+            (OutputMode::SameAsInput, "/kept-while-same-as-input"),
+            (OutputMode::Directory, ""),
+            (OutputMode::Directory, "/tmp/real-dir"),
+        ] {
+            let mut settings = Settings::default();
+            settings.policies.output_mode = mode;
+            settings.policies.output_dir = dir.to_string();
+            let json = serde_json::to_string(&settings).expect("serialize");
+            let parsed: Settings = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(parsed.policies.output_mode, mode, "mode survives: {json}");
+            assert_eq!(parsed.policies.output_dir, dir, "path survives: {json}");
+        }
+        // the Directory+empty state (plan 15 F17 blocker) round trips too —
+        // the mode is explicit so it must not degrade to same-as-input
+        let mut blocked = Settings::default();
+        blocked.policies.output_mode = OutputMode::Directory;
+        let json = serde_json::to_string(&blocked).expect("serialize");
+        let parsed: Settings = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.policies.output_mode, OutputMode::Directory);
+        assert!(!json.contains("output_dir"), "empty path stays private");
+    }
+
+    #[test]
+    fn legacy_preset_policy_files_migrate_the_output_mode() {
+        // a preset file written before plan 15 embeds the legacy Option
+        let json = r#"{
+            "schema": 1, "title": "Legacy Out", "description": "",
+            "created_unix": 0, "modified_unix": 0, "core_version": "0.1.0",
+            "content": {
+                "encoder": { "Jpeg": null },
+                "policies": { "output_dir": "/preset/dir", "collision": "KeepExisting" },
+                "include_output_dir": true
+            }
+        }"#;
+        let parsed: crate::presets::Preset = serde_json::from_str(json).expect("legacy preset");
+        let policies = parsed.content.policies.as_ref().expect("policies");
+        assert_eq!(policies.output_mode, OutputMode::Directory);
+        assert_eq!(policies.output_dir, "/preset/dir");
+
+        // … and the privacy-stripped shape (`output_dir` absent/null) too
+        let json = r#"{
+            "schema": 1, "title": "Legacy Stripped", "description": "",
+            "created_unix": 0, "modified_unix": 0, "core_version": "0.1.0",
+            "content": {
+                "encoder": { "Jpeg": null },
+                "policies": { "collision": "OverwriteAlways" },
+                "include_output_dir": false
+            }
+        }"#;
+        let parsed: crate::presets::Preset = serde_json::from_str(json).expect("legacy preset");
+        let policies = parsed.content.policies.as_ref().expect("policies");
+        assert_eq!(policies.output_mode, OutputMode::SameAsInput);
+        assert_eq!(policies.output_dir, "");
     }
 
     #[test]
     fn policy_set_defaults_match_the_cli_defaults() {
         let policies = PolicySet::default();
-        assert_eq!(policies.output_dir, None);
+        assert_eq!(policies.output_mode, OutputMode::SameAsInput);
+        assert_eq!(policies.output_dir, "");
+        assert!(!policies.has_output_directory());
         assert_eq!(policies.collision, CollisionChoice::KeepExisting);
         assert_eq!(
             policies.animated_input,

@@ -43,7 +43,7 @@ use crate::options;
 use crate::presets::PresetRef;
 use crate::queue::Queue;
 use crate::reporter::ChannelReporter;
-use crate::settings::Settings;
+use crate::settings::{OutputMode, Settings};
 use crate::thumb::{ThumbKey, ThumbState};
 
 /// Version of the core the GUI is released with.
@@ -458,10 +458,13 @@ impl App {
 
     /// Applies a preset to the current state (pure, plan 14 §4): the
     /// encoder is replaced (resetting the JXL draft state) and — for
-    /// full-scope presets — the policies too. The output directory is
-    /// **kept** when the preset excluded it (privacy exclusions must not
-    /// wipe the local setting). Queue, table and window state are never
-    /// touched. Settings are marked dirty once.
+    /// full-scope presets — the policies too. The output *mode* of a full
+    /// preset always applies (plan 15 F16); the output directory *string*
+    /// is **kept** when the preset excluded it (privacy exclusions must
+    /// not wipe the local setting, and switching modes never clears the
+    /// stored path). Format-only presets never touch mode/dir at all.
+    /// Queue, table and window state are never touched. Settings are
+    /// marked dirty once.
     ///
     /// # Errors
     ///
@@ -802,30 +805,47 @@ impl App {
     ///
     /// # Errors
     ///
-    /// The EXIF selector parse error.
+    /// The EXIF selector parse error, or the plan-15 F17 output blocker
+    /// (directory mode without a folder — never a silent same-as-input
+    /// fallback).
     pub fn build_job_spec(&self) -> Result<JobSpec, String> {
+        if let Some(message) = self.output_blocker() {
+            return Err(message);
+        }
         let common = self.build_conversion_config()?;
         let mut encoder = self.settings.encoder.clone();
         inject_exif_policy(&mut encoder, &common.exif);
         Ok(JobSpec {
             inputs: InputSelection::Files(self.queue.selection()),
-            output: self
-                .settings
-                .policies
-                .output_dir
-                .as_deref()
-                .filter(|dir| !dir.is_empty())
-                .map(PathBuf::from),
+            output: match self.settings.policies.output_mode {
+                OutputMode::SameAsInput => None,
+                OutputMode::Directory => Some(PathBuf::from(&self.settings.policies.output_dir)),
+            },
             encoder,
             common,
         })
     }
 
     /// Whether a job can start right now (queue non-empty, no job running,
-    /// encoder compiled in, EXIF selectors valid).
+    /// encoder compiled in, EXIF selectors valid, output target resolvable).
     #[must_use]
     pub fn can_start(&self) -> bool {
         self.start_blocker().is_none()
+    }
+
+    /// The plan-15 F17 output blocker (its own accessor so the footer can
+    /// render it in the error line, not only as the button tooltip):
+    /// directory mode with a blank path — never a silent same-as-input
+    /// fallback.
+    #[must_use]
+    pub fn output_blocker(&self) -> Option<String> {
+        (self.settings.policies.output_mode == OutputMode::Directory
+            && self.settings.policies.output_dir.trim().is_empty())
+        .then(|| {
+            "output: directory mode is selected but no folder is set — pick one or switch to \
+             'same as input'"
+                .to_string()
+        })
     }
 
     /// The reason a job cannot start right now (`None` when it can);
@@ -844,12 +864,18 @@ impl App {
                 .unwrap_or("encoder not available in this build");
             return Some(format!("selected encoder is unavailable: {reason}"));
         }
+        if let Some(message) = self.output_blocker() {
+            return Some(message);
+        }
         self.exif_policy().err()
     }
 
     // ---- job lifecycle ----------------------------------------------------
 
-    /// Starts a conversion job over the whole queue.
+    /// Starts a conversion job over the whole queue. A start attempt while
+    /// blocked is surfaced in the footer error line via `start_error`
+    /// (plan 15 F17) instead of failing silently — the button is normally
+    /// disabled, so this is the defense-in-depth path.
     ///
     /// # Panics
     ///
@@ -857,6 +883,10 @@ impl App {
     /// receiver always lives on the same app instance).
     pub fn start_job(&mut self) {
         if self.running.is_some() {
+            return;
+        }
+        if let Some(message) = self.start_blocker() {
+            self.start_error = Some(message);
             return;
         }
         let spec = match self.build_job_spec() {
@@ -1263,7 +1293,7 @@ mod tests {
     use crate::celebrate::ConfettiLevel;
     use crate::presets::{Preset, PresetContent};
     use crate::queue::ItemStatus;
-    use crate::settings::{CollisionChoice, ExifMode, ExifSettings, PolicySet};
+    use crate::settings::{CollisionChoice, ExifMode, ExifSettings, OutputMode, PolicySet};
     use byteshaver::cli::CliArgs;
     use byteshaver::config::ConversionConfig;
     use byteshaver::pipeline::Outcome;
@@ -1339,7 +1369,8 @@ mod tests {
     fn job_spec_uses_files_selection_and_output_override() {
         let mut app = default_app();
         app.queue.add_paths(vec![PathBuf::from("/x/a.png")]);
-        app.settings.policies.output_dir = Some("/tmp/out".to_string());
+        app.settings.policies.output_mode = OutputMode::Directory;
+        app.settings.policies.output_dir = "/tmp/out".to_string();
         let spec = app.build_job_spec().expect("valid settings");
         assert_eq!(
             spec.inputs,
@@ -1350,10 +1381,56 @@ mod tests {
         assert_eq!(spec.common.pattern, "");
         assert_eq!(spec.common.output, "");
 
-        // empty output string means "same as input" (CLI default)
-        app.settings.policies.output_dir = None;
+        // same-as-input mode means "same as input" (CLI default); the
+        // stored path text survives the switch untouched (plan 15 F16)
+        app.settings.policies.output_mode = OutputMode::SameAsInput;
         let spec = app.build_job_spec().expect("valid settings");
         assert_eq!(spec.output, None);
+
+        // plan 15 F17: directory mode with a blank path is an error, never
+        // a silent same-as-input fallback
+        app.settings.policies.output_mode = OutputMode::Directory;
+        app.settings.policies.output_dir = "   ".to_string();
+        let err = app
+            .build_job_spec()
+            .expect_err("blank directory must not fall back");
+        assert!(err.contains("directory mode"), "{err}");
+    }
+
+    #[test]
+    fn output_blocker_matrix_covers_mode_and_path() {
+        let mut app = default_app();
+        app.queue.add_paths(vec![PathBuf::from("/x/a.png")]);
+        let blocker = |app: &App| app.start_blocker().expect("blocked");
+
+        // same as input (with or without a stored path) never blocks
+        app.settings.policies.output_mode = OutputMode::SameAsInput;
+        app.settings.policies.output_dir = String::new();
+        assert!(app.output_blocker().is_none());
+        assert!(app.can_start());
+        app.settings.policies.output_dir = "/kept".to_string();
+        assert!(app.output_blocker().is_none());
+
+        // directory mode: blank/whitespace paths block, non-blank passes
+        app.settings.policies.output_mode = OutputMode::Directory;
+        app.settings.policies.output_dir = String::new();
+        assert!(app.output_blocker().is_some());
+        app.settings.policies.output_dir = "  ".to_string();
+        let message = blocker(&app);
+        assert!(
+            message.contains("directory mode is selected but no folder is set"),
+            "{message}"
+        );
+        assert!(!app.can_start());
+        app.settings.policies.output_dir = "/real/dir".to_string();
+        assert!(app.output_blocker().is_none());
+        assert!(app.can_start());
+
+        // a start attempt while blocked surfaces the message (plan 15 F17)
+        app.settings.policies.output_dir = String::new();
+        app.start_job();
+        assert!(app.running.is_none(), "the blocked start never runs");
+        assert_eq!(app.start_error.as_deref(), Some(&*blocker(&app)));
     }
 
     #[test]
@@ -1766,7 +1843,8 @@ mod tests {
 
         let mut app = default_app();
         app.select_encoder("webp");
-        app.settings.policies.output_dir = Some(out_files.display().to_string());
+        app.settings.policies.output_mode = OutputMode::Directory;
+        app.settings.policies.output_dir = out_files.display().to_string();
         // enqueue the directory only — the core must expand it recursively
         app.queue.add_paths(vec![input_dir.clone()]);
 
@@ -1850,6 +1928,9 @@ mod tests {
         preset.builtin = false;
         preset.title = "Full Shape".to_string();
         preset.content.policies = Some(PolicySet {
+            // saved while directory output was selected (the mode always
+            // applies on apply, plan 15 F16; the path rides only on opt-in)
+            output_mode: OutputMode::Directory,
             collision: CollisionChoice::OverwriteIfSmaller,
             discard_if_larger_than_input: true,
             max_animation_memory_mib: 512,
@@ -1859,7 +1940,8 @@ mod tests {
         if include_output_dir
             && let Some(policies) = &mut preset.content.policies
         {
-            policies.output_dir = Some("/preset/dir".to_string());
+            policies.output_mode = OutputMode::Directory;
+            policies.output_dir = "/preset/dir".to_string();
         }
         preset
     }
@@ -1868,7 +1950,8 @@ mod tests {
     fn applying_a_format_only_preset_touches_only_the_encoder() {
         let mut app = default_app();
         app.settings.policies.collision = CollisionChoice::OverwriteAlways;
-        app.settings.policies.output_dir = Some("/keep/me".to_string());
+        app.settings.policies.output_mode = OutputMode::Directory;
+        app.settings.policies.output_dir = "/keep/me".to_string();
         let preset = builtin_preset("AVIF · Balanced");
         let encoder_before = app.settings.encoder.clone();
 
@@ -1879,7 +1962,12 @@ mod tests {
             CollisionChoice::OverwriteAlways,
             "format-only presets leave the policies untouched"
         );
-        assert_eq!(app.settings.policies.output_dir.as_deref(), Some("/keep/me"));
+        assert_eq!(
+            app.settings.policies.output_mode,
+            OutputMode::Directory,
+            "format-only presets never touch the output mode (plan 15 F16)"
+        );
+        assert_eq!(app.settings.policies.output_dir, "/keep/me");
         assert_ne!(app.settings.encoder, encoder_before);
         assert!(app.settings_dirty(), "dirty marked exactly once");
         app.save_settings();
@@ -1887,11 +1975,12 @@ mod tests {
     }
 
     #[test]
-    fn applying_a_full_preset_replaces_policies_and_keeps_the_excluded_output_dir() {
+    fn applying_a_full_preset_applies_the_mode_and_keeps_the_excluded_dir() {
         let mut app = default_app();
-        app.settings.policies.output_dir = Some("/local/dir".to_string());
+        app.settings.policies.output_mode = OutputMode::Directory;
+        app.settings.policies.output_dir = "/local/dir".to_string();
 
-        // exclusion (the default save shape): policies change, dir stays
+        // exclusion (the default save shape): mode applies, string stays
         let preset = full_preset(false);
         app.apply_preset(&preset).expect("applies");
         assert_eq!(
@@ -1900,15 +1989,39 @@ mod tests {
         );
         assert!(app.settings.policies.discard_if_larger_than_input);
         assert_eq!(
-            app.settings.policies.output_dir.as_deref(),
-            Some("/local/dir"),
+            app.settings.policies.output_mode,
+            OutputMode::Directory,
+            "the preset's output mode always applies (plan 15 F16)"
+        );
+        assert_eq!(
+            app.settings.policies.output_dir, "/local/dir",
             "a privacy-excluded dir must not wipe the local setting"
         );
 
-        // opt-in: the embedded dir replaces the local one
+        // opt-in: the embedded mode+dir replace the local ones
         let preset = full_preset(true);
         app.apply_preset(&preset).expect("applies");
-        assert_eq!(app.settings.policies.output_dir.as_deref(), Some("/preset/dir"));
+        assert_eq!(app.settings.policies.output_mode, OutputMode::Directory);
+        assert_eq!(app.settings.policies.output_dir, "/preset/dir");
+    }
+
+    #[test]
+    fn a_same_as_input_preset_switches_the_mode_without_losing_the_path() {
+        let mut app = default_app();
+        app.settings.policies.output_mode = OutputMode::Directory;
+        app.settings.policies.output_dir = "/local/dir".to_string();
+
+        // a full preset saved while "same as input" was selected (the path
+        // was never embedded): applying flips the mode back but must not
+        // destroy the locally stored directory text (plan 15 F16)
+        let mut preset = builtin_preset("WebP · Balanced");
+        preset.content.policies = Some(PolicySet::default());
+        app.apply_preset(&preset).expect("applies");
+        assert_eq!(app.settings.policies.output_mode, OutputMode::SameAsInput);
+        assert_eq!(
+            app.settings.policies.output_dir, "/local/dir",
+            "mode switches never clear the stored path"
+        );
     }
 
     #[test]
@@ -2089,7 +2202,8 @@ mod tests {
         let app = default_app();
         let mut preset = full_preset(false);
         if let Some(policies) = &mut preset.content.policies {
-            policies.output_dir = Some("/local/secret".to_string());
+            policies.output_mode = OutputMode::Directory;
+            policies.output_dir = "/local/secret".to_string();
         }
         let target = std::env::temp_dir().join(format!(
             "byteshaver-gui-app-export-{}.json",
@@ -2142,7 +2256,8 @@ mod tests {
             mode: ExifMode::Keep,
             ..ExifSettings::default()
         };
-        app.settings.policies.output_dir = Some("/x".to_string());
+        app.settings.policies.output_mode = OutputMode::Directory;
+        app.settings.policies.output_dir = "/x".to_string();
         let format_only = app.preset_from_current(&PresetSaveDraft {
             title: "Only format".to_string(),
             description: String::new(),
@@ -2157,9 +2272,13 @@ mod tests {
             include_output_dir: false,
         });
         assert_eq!(
-            full.content.policies.as_ref().expect("full scope").output_dir,
-            None,
-            "no opt-in → stripped at build time"
+            full.content
+                .policies
+                .as_ref()
+                .expect("full scope")
+                .output_dir,
+            "",
+            "no opt-in → the path is cleared at build time (mode stays)"
         );
         // and the state after an apply matches the preset (equality check;
         // the label only resolves for *stored* presets, so compare directly)

@@ -99,6 +99,14 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         if let Some(error) = &app.start_error {
             ui.colored_label(ui.visuals().error_fg_color, error.clone());
         }
+        // plan 15 F17: the directory-mode-without-folder blocker renders
+        // in the error line while it is the thing preventing a start (a
+        // tooltip alone is too easy to miss — no silent fallback)
+        if let Some(message) = app.output_blocker()
+            && app.start_blocker().as_deref() == Some(message.as_str())
+        {
+            ui.colored_label(ui.visuals().error_fg_color, message);
+        }
         ui.add_space(2.0);
     });
     // celebration overlay above all panels + its repaint budget
