@@ -17,13 +17,6 @@ updates:
       cargo-all:
         patterns:
           - "*"
-    ignore:
-      # held back deliberately: 4.5.41+ changed CLI parser ordering
-      # (see comment in Cargo.toml); update deliberately, not via bot
-      - dependency-name: "clap"
-        update-types:
-          - "version-update:semver-major"
-          - "version-update:semver-minor"
     commit-message:
       prefix: "cargo"
     labels:

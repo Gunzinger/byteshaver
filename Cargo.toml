@@ -57,7 +57,7 @@ anim-apng = []
 logs = ["dep:serde_json"]
 
 [dependencies]
-clap = { version = "4.6.7", features = ["derive"] } # 4.5.41 changes parser ordering; makes command ugly...
+clap = { version = "4.6.7", features = ["derive"] }
 glob = "0.3.4"
 ctrlc = "3.5.2"
 #image = {version = "0.25.8", features = ["avif-native"] } # problematic on windows
