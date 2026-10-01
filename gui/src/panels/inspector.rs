@@ -4,7 +4,9 @@
 //!
 //! Hosted by [`crate::viewports`] (plan 15 F12): an independent OS
 //! viewport with an `Embedded` fallback (`egui::Window`, plan 09
-//! doctrine). Both shapes render the same bounded canvas body below.
+//! doctrine). Both shapes render the same body below: the pan/zoom
+//! canvas fills the remaining window height (plan 16 F20), so it stays
+//! the interaction surface at every window size.
 //!
 //! Memory guardrails: both files are decoded **once per open** on the
 //! metric worker at [`crate::metrics::DISPLAY_MAX_EDGE`] (2048 px longest
@@ -59,11 +61,6 @@ impl InspectorMode {
 /// Zoom bounds (1.0 = zoom-to-fit; the wheel multiplies in these limits).
 const MIN_ZOOM: f32 = 0.2;
 const MAX_ZOOM: f32 = 12.0;
-/// Fixed cap of the image area height (the window itself stays freely
-/// resizable; the canvas never grows past this — the plan-09 lesson).
-const MAX_CANVAS_HEIGHT: f32 = 560.0;
-/// Reserved height for the controls row (mode tabs + slider + caption).
-const CONTROLS_RESERVE: f32 = 64.0;
 
 /// Fit scale of an image inside an area (aspect preserved; zero-sized
 /// inputs yield 1.0 — no division by zero, textures upload later anyway).
@@ -261,7 +258,8 @@ fn upload(ctx: &egui::Context, name: &str, image: &RgbaImage) -> TextureHandle {
     ctx.load_texture(name, color, egui::TextureOptions::LINEAR)
 }
 
-/// The window body: controls row, caption, bounded canvas.
+/// The window body: controls row, caption, canvas filling the remaining
+/// height.
 fn body(ui: &mut egui::Ui, state: &mut InspectorState, metric_caption: Option<&str>) {
     // controls ------------------------------------------------------------
     ui.horizontal(|ui| {
@@ -332,8 +330,11 @@ fn body(ui: &mut egui::Ui, state: &mut InspectorState, metric_caption: Option<&s
     });
     ui.add_space(4.0);
 
-    // canvas (explicitly bounded: window height minus the rows above)
-    let canvas_height = (ui.available_height() - CONTROLS_RESERVE).clamp(200.0, MAX_CANVAS_HEIGHT);
+    // canvas (plan 16 F20: no fixed cap — the controls/caption rows are
+    // laid out first, so `available_height` *is* the remaining space; the
+    // canvas fills it exactly and is the pan/zoom surface everywhere it
+    // is drawn)
+    let canvas_height = ui.available_height();
     let (canvas, response) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), canvas_height), egui::Sense::drag());
     let painter = ui.painter_at(canvas);

@@ -9,10 +9,12 @@
 //! re-open. This module keeps the viewport *contents* (CentralPanel
 //! body, close handling, geometry persistence), the `Embedded` fallback
 //! (a bounded `egui::Window` for backends without multi-viewport
-//! support) and the shared body. In both shapes every scroll area
-//! carries an explicit height bound — an unbounded `auto_shrink` list
-//! made the old in-viewport window expand to the full row count and snap
-//! back on every resize attempt.
+//! support) and the shared body. In both shapes the file list is
+//! `.auto_shrink([false, true])`: it takes min(content, available)
+//! height, so it never requests more than the window can give (the
+//! plan-09 resize lesson) while growing with the window and keeping the
+//! notices block directly beneath it, with no reserved grey strip
+//! (plan 16 F20).
 
 use std::time::Duration;
 
@@ -22,14 +24,6 @@ use byteshaver::pipeline::Outcome;
 use crate::app::App;
 use crate::queue::{ItemStatus, format_size};
 use crate::viewports::PopupKind;
-
-/// Height reserved below the file table for the separator, the "Notices"
-/// heading and the notices block (which itself caps at 120 px).
-const NOTICES_RESERVE: f32 = 150.0;
-
-/// Lower bound of the file-table scroll height so the table stays usable
-/// in a heavily shrunk window (`available_height` can go negative there).
-const MIN_TABLE_HEIGHT: f32 = 60.0;
 
 /// Max height of the notices scroll area.
 const NOTICES_MAX_HEIGHT: f32 = 120.0;
@@ -121,15 +115,14 @@ fn report_body(app: &mut App, ui: &mut egui::Ui) {
     // per-file results (virtualized; the row count can be large).
     // Rows are exactly ROW_HEIGHT tall (no per-row separator) and
     // use proportional widths so no column is clipped off-window.
-    // The scroll height is explicitly **bounded** (window height minus
-    // the blocks below it): an unbounded `auto_shrink` list requested the
-    // full content height, so the window's minimum size equaled the whole
-    // list and every drag-resize snapped back (the plan-09 bug).
+    // The scroll height is auto-shrunk vertically: min(content,
+    // available), so the table never requests more height than the
+    // window offers (no plan-09 resize snap-back), grows with the
+    // window and leaves no reserved grey strip above the notices
+    // (plan 16 F20).
     let rows = report.files.len();
-    let remaining = ui.available_height();
     egui::ScrollArea::vertical()
-        .max_height((remaining - NOTICES_RESERVE).max(MIN_TABLE_HEIGHT))
-        .auto_shrink([false, false])
+        .auto_shrink([false, true])
         .show_rows(ui, ROW_HEIGHT, rows, |ui, range| {
             for index in range {
                 let Some(result) = report.files.get(index) else {
