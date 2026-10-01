@@ -89,6 +89,7 @@ pub fn show_window(app: &mut App, ctx: &egui::Context) {
                                 Outcome::SkippedExisting {
                                     input_size,
                                     existing_size,
+                                    ..
                                 }
                                 | Outcome::DiscardedLargerThanExisting {
                                     input_size,

@@ -708,6 +708,7 @@ mod tests {
                 input_size: 10,
                 output_size: 5,
                 metadata_dropped: false,
+                output_path: PathBuf::from("/x/a.webp"),
             },
         });
         app.apply_event(JobEvent::ProgressStats {
@@ -750,6 +751,7 @@ mod tests {
                 input_size: 4,
                 output_size: 2,
                 metadata_dropped: false,
+                output_path: PathBuf::from("/x/out/inner.webp"),
             },
         });
         assert_eq!(app.queue.len(), 2, "discovered rows are appended");

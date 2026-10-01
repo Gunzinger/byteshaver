@@ -297,6 +297,7 @@ impl QueueItem {
                 input_size,
                 output_size,
                 metadata_dropped,
+                ..
             } => {
                 self.input_size = Some(*input_size);
                 self.output_size = Some(*output_size);
@@ -305,6 +306,7 @@ impl QueueItem {
             Outcome::SkippedExisting {
                 input_size,
                 existing_size,
+                ..
             }
             | Outcome::DiscardedLargerThanExisting {
                 input_size,
@@ -506,6 +508,7 @@ mod tests {
             input_size: 100,
             output_size: 50,
             metadata_dropped: true,
+            output_path: PathBuf::from("/x/a.out"),
         }
     }
 
@@ -520,7 +523,8 @@ mod tests {
         assert_eq!(
             ItemStatus::from_outcome(&Outcome::SkippedExisting {
                 input_size: 10,
-                existing_size: 5
+                existing_size: 5,
+                output_path: PathBuf::from("/x/a.out"),
             }),
             ItemStatus::SkippedExisting
         );

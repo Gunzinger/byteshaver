@@ -42,6 +42,9 @@ pub enum Outcome {
         /// EXIF metadata existed and was requested, but the target format
         /// cannot carry it (e.g. AVIF) — counted for the summary.
         metadata_dropped: bool,
+        /// Path the output was written to (HEIF multi-image `_N` suffixes
+        /// included) — consumed by front-ends for open/reveal actions.
+        output_path: PathBuf,
     },
     /// Skipped because an output file already exists (no overwrite policy
     /// active, or the overwrite-if-smaller policy found no improvement).
@@ -50,6 +53,8 @@ pub enum Outcome {
         input_size: u64,
         /// Size of the preexisting output file in bytes.
         existing_size: u64,
+        /// Path of the kept preexisting output file.
+        output_path: PathBuf,
     },
     /// Skipped because another input already maps to the same output path.
     SkippedCollision {
@@ -181,6 +186,7 @@ fn buckets_for(outcome: &Outcome) -> StatBuckets {
             input_size,
             output_size,
             metadata_dropped,
+            ..
         } => StatBuckets {
             successful: 1,
             metadata_dropped: u64::from(*metadata_dropped),
@@ -191,6 +197,7 @@ fn buckets_for(outcome: &Outcome) -> StatBuckets {
         Outcome::SkippedExisting {
             input_size,
             existing_size,
+            ..
         }
         | Outcome::DiscardedLargerThanExisting {
             input_size,
@@ -574,6 +581,7 @@ fn convert_file(
         return Outcome::SkippedExisting {
             input_size,
             existing_size,
+            output_path: output_path.clone(),
         };
     }
 
@@ -667,6 +675,7 @@ fn convert_file(
                     return Outcome::SkippedExisting {
                         input_size,
                         existing_size,
+                        output_path: output_path.clone(),
                     };
                 }
             }
@@ -685,6 +694,7 @@ fn convert_file(
                 input_size,
                 output_size,
                 metadata_dropped,
+                output_path: output_path.clone(),
             }
         }
         Err(err) => Outcome::Error(format!("Image encoding failed: {:?}", err)),
@@ -997,6 +1007,7 @@ mod tests {
             input_size: 100,
             output_size: 50,
             metadata_dropped: false,
+            output_path: PathBuf::from("out/a.bin"),
         });
         assert_eq!(
             (
@@ -1015,6 +1026,7 @@ mod tests {
             input_size: 100,
             output_size: 50,
             metadata_dropped: true,
+            output_path: PathBuf::from("out/a.bin"),
         });
         assert_eq!(encoded_dropped.metadata_dropped, 1);
         assert_eq!(encoded_dropped.successful, 1);
@@ -1022,6 +1034,7 @@ mod tests {
         let skipped = buckets_for(&Outcome::SkippedExisting {
             input_size: 100,
             existing_size: 40,
+            output_path: PathBuf::from("out/a.bin"),
         });
         assert_eq!((skipped.successful, skipped.skipped), (0, 1));
         assert_eq!((skipped.input_size, skipped.output_size), (100, 40));
@@ -1087,10 +1100,12 @@ mod tests {
             input_size: 10,
             output_size: 5,
             metadata_dropped: true,
+            output_path: PathBuf::from("out/a.bin"),
         }));
         counters.add(&buckets_for(&Outcome::SkippedExisting {
             input_size: 20,
             existing_size: 8,
+            output_path: PathBuf::from("out/b.bin"),
         }));
         counters.add(&buckets_for(&Outcome::DiscardedLargerThanInput {
             input_size: 30,

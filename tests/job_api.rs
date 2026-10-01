@@ -662,6 +662,7 @@ fn serde_round_trip_outcome_and_run_stats() {
         input_size: 100,
         output_size: 42,
         metadata_dropped: true,
+        output_path: std::path::PathBuf::from("out/img.webp"),
     };
     let json = serde_json::to_string(&outcome).expect("serialize");
     assert_eq!(outcome, serde_json::from_str(&json).expect("deserialize"));
