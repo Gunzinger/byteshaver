@@ -77,12 +77,19 @@ Shared hot files and who may edit them:
 
 # GUI improvement suite — Implementation Plan Suite 2
 
-> **STATUS: planned** (not yet implemented) on branch
-> `plans/gui-ux-improvements`, based on `main` (the repo has no `master`
-> branch; `main` is the default). Plans 09–14 cover the GUI feedback,
-> file-table, options-UX, presets and report-window workstreams. Each is
-> sized to be implementable by a single agent; shared-file ownership is
-> mapped inside each plan.
+> **STATUS: implemented** on branch `plans/gui-ux-improvements` (plans 09–14
+> done; decision gates resolved per each plan's recommendation: 13 shipped
+> **approach B** — quality-ladder chips with the aligned form as the
+> custom interior; 10 shipped DSSIM 3.5 + PSNR with `Manual` default;
+> 11 adopted `egui_extras` 0.32.3). Notable deviations: 11's column
+> *widths* persist per session only (visible set/sort/thumbnail mode
+> persist in settings.json); the Modified column renders UTC (std has no
+> portable local-time conversion); 14 migrates old flat settings layouts
+> via a manual `Deserialize` and ships a built-in profile superset that
+> covers every encoder (plan §5's format list subsumed); 10's metric
+> settings live in settings.json with the row context menu as their UI.
+> Deviations that landed differently than specced are noted in the merge
+> commits. The plans remain as historical specification + decision record.
 
 | Plan | Workstream | Size | Depends on | Parallelizable with |
 |------|-----------|------|------------|---------------------|
