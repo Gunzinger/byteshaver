@@ -132,7 +132,8 @@ pub struct App {
     /// Final report of the last run (`None` while a job runs or when no
     /// run happened yet).
     pub report: Option<RunReport>,
-    /// Whether the report window is open.
+    /// Whether the report viewport is open (its own OS window, plan 09);
+    /// closing it via the OS title bar flips this off.
     pub show_report: bool,
     /// Whether the about window is open.
     pub show_about: bool,

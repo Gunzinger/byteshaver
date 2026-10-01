@@ -6,7 +6,7 @@
 //!
 //! Layout (top to bottom): header bar, drop-zone banner + file table
 //! (central), options & policies panel, run footer. Optional windows:
-//! report and about.
+//! about; the report renders in its own OS viewport (plan 09).
 
 pub mod about;
 pub mod drop_zone;
@@ -31,7 +31,12 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         drop_zone::show(app, ui);
         file_table::show(app, ui);
     });
-    report::show_window(app, ctx);
+    // the run report lives in its own OS viewport (plan 09); starting a
+    // new run clears `report`, which hides the viewport until the run
+    // finishes, then re-renders the same viewport id with fresh contents
+    if app.show_report && app.report.is_some() {
+        report::show_window(app, ctx);
+    }
     about::show_window(app, ctx);
 }
 

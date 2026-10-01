@@ -126,6 +126,11 @@ pub struct Settings {
     pub reverse_processing_order: bool,
     /// Last window size in points (restored on startup).
     pub window_size: Option<[f32; 2]>,
+    /// Last report-window geometry in points as `[x, y, width, height]`
+    /// (outer-rect position, inner-rect size), restored when the report
+    /// viewport opens.
+    #[serde(default)]
+    pub report_window_geometry: Option<[f32; 4]>,
 }
 
 impl Default for Settings {
@@ -142,6 +147,7 @@ impl Default for Settings {
             max_animation_memory_mib: 4096,
             reverse_processing_order: false,
             window_size: None,
+            report_window_geometry: None,
         }
     }
 }
@@ -211,10 +217,23 @@ mod tests {
             max_animation_memory_mib: 1024,
             reverse_processing_order: true,
             window_size: Some([1100.0, 720.0]),
+            report_window_geometry: Some([12.0, 34.0, 760.0, 480.0]),
         };
         let json = serde_json::to_string(&settings).expect("serialize settings");
         let parsed: Settings = serde_json::from_str(&json).expect("deserialize settings");
         assert_eq!(parsed, settings);
+    }
+
+    #[test]
+    fn settings_without_report_geometry_load_from_the_old_schema() {
+        // settings files written before the report viewport existed lack
+        // the field; `#[serde(default)]` must keep them loadable
+        let mut json = serde_json::to_value(Settings::default()).expect("serialize defaults");
+        if let Some(object) = json.as_object_mut() {
+            object.remove("report_window_geometry");
+        }
+        let parsed: Settings = serde_json::from_value(json).expect("old schema still loads");
+        assert_eq!(parsed.report_window_geometry, None);
     }
 
     #[test]
