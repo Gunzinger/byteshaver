@@ -124,8 +124,21 @@ pub struct Settings {
     pub max_animation_memory_mib: u64,
     /// CLI `--reverse-processing-order` mirror.
     pub reverse_processing_order: bool,
+    /// Whether the "Target format & options" tree of the options panel was
+    /// open at the end of the last session (seeds the collapse state).
+    #[serde(default = "default_true")]
+    pub options_tree_open: bool,
+    /// Whether the "Output & global policies" tree of the options panel
+    /// was open at the end of the last session (seeds the collapse state).
+    #[serde(default = "default_true")]
+    pub policies_tree_open: bool,
     /// Last window size in points (restored on startup).
     pub window_size: Option<[f32; 2]>,
+}
+
+/// Serde default for the tree collapse states (open, like the GUI default).
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -141,6 +154,8 @@ impl Default for Settings {
             discard_input_alpha_channel: false,
             max_animation_memory_mib: 4096,
             reverse_processing_order: false,
+            options_tree_open: true,
+            policies_tree_open: true,
             window_size: None,
         }
     }
@@ -210,11 +225,35 @@ mod tests {
             discard_input_alpha_channel: true,
             max_animation_memory_mib: 1024,
             reverse_processing_order: true,
+            options_tree_open: false,
+            policies_tree_open: true,
             window_size: Some([1100.0, 720.0]),
         };
         let json = serde_json::to_string(&settings).expect("serialize settings");
         let parsed: Settings = serde_json::from_str(&json).expect("deserialize settings");
         assert_eq!(parsed, settings);
+    }
+
+    #[test]
+    fn collapse_tree_states_default_open_when_absent_and_round_trip() {
+        let mut settings = Settings::default();
+        assert!(settings.options_tree_open);
+        assert!(settings.policies_tree_open);
+        settings.options_tree_open = false;
+        settings.policies_tree_open = false;
+        let json = serde_json::to_string(&settings).expect("serialize settings");
+        let parsed: Settings = serde_json::from_str(&json).expect("deserialize settings");
+        assert!(!parsed.options_tree_open);
+        assert!(!parsed.policies_tree_open);
+
+        // a settings file written before the fields existed defaults to open
+        let mut legacy = serde_json::to_value(&settings).expect("settings value");
+        let object = legacy.as_object_mut().expect("settings object");
+        object.remove("options_tree_open");
+        object.remove("policies_tree_open");
+        let parsed: Settings = serde_json::from_value(legacy).expect("legacy settings");
+        assert!(parsed.options_tree_open);
+        assert!(parsed.policies_tree_open);
     }
 
     #[test]

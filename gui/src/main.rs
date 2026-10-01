@@ -16,6 +16,7 @@
 )]
 
 mod app;
+mod chips;
 mod options;
 mod panels;
 mod queue;
