@@ -93,8 +93,9 @@ pub fn swipe_fraction(width: f32, x: f32) -> f32 {
 /// (± [`HANDLE_RADIUS`] px — a generous touch target).
 pub const HANDLE_RADIUS: f32 = 12.0;
 
+/// Hit test of the swipe handle (pure, unit-tested).
 #[must_use]
-fn handle_grab(split: f32, x: f32) -> bool {
+pub fn handle_grab(x: f32, split: f32) -> bool {
     (x - split).abs() <= HANDLE_RADIUS
 }
 
@@ -113,14 +114,8 @@ mod tests {
 
     #[test]
     fn amplified_differences_light_up_the_map() {
-        // right half shifted by 30 per channel
-        let a = RgbaImage::from_fn(4, 4, |x, _| {
-            if x < 2 {
-                Rgba([100, 100, 100, 255])
-            } else {
-                Rgba([100, 100, 100, 255])
-            }
-        });
+        // right half shifted by 30 in red only
+        let a = RgbaImage::from_pixel(4, 4, Rgba([100, 100, 100, 255]));
         let b = RgbaImage::from_fn(4, 4, |x, _| {
             if x < 2 {
                 Rgba([100, 100, 100, 255])

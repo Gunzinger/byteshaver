@@ -301,6 +301,8 @@ fn render_table(app: &mut App, ui: &mut egui::Ui, columns: &[Column]) {
     // context menus, applied after the table borrow ends
     let mut measure_requests: Vec<(PathBuf, PathBuf)> = Vec::new();
     let metric_off = app.settings.quality_metric == crate::metrics::MetricMode::Off;
+    // plan 10 §phase 3: "Inspect visual difference" requests likewise
+    let mut inspect_requests: Vec<(PathBuf, PathBuf)> = Vec::new();
 
     let builder = TableBuilder::new(ui)
         .id_salt("byteshaver-file-table")
@@ -385,11 +387,19 @@ fn render_table(app: &mut App, ui: &mut egui::Ui, columns: &[Column]) {
                 }
             }
 
-            // right-click menu (plan 10 §phase 2/3 extends it)
+            // right-click menu (plan 10 §phase 2/3)
             row.response().context_menu(|ui| {
                 output_action_buttons(ui, &snapshot, &mut action_error);
                 ui.separator();
                 measure_quality_button(ui, &snapshot, running, metric_off, &mut measure_requests);
+                inspect_difference_button(
+                    ui,
+                    &snapshot,
+                    heif_enabled,
+                    running,
+                    &mut inspect_requests,
+                );
+                ui.separator();
                 ui.add_enabled_ui(!running, |ui| {
                     if ui.button("✕ remove from queue").clicked() {
                         row_remove = Some(queue_index);
@@ -418,6 +428,9 @@ fn render_table(app: &mut App, ui: &mut egui::Ui, columns: &[Column]) {
     }
     for (input, output) in measure_requests {
         app.measure_quality(&input, &output);
+    }
+    for (input, output) in inspect_requests {
+        app.open_inspector(&input, &output);
     }
     app.action_error = action_error;
     app.thumbs.set_visible(visible_keys.clone());
@@ -654,6 +667,49 @@ fn measure_quality_button(
         "compare input and output (bounded decode) — the reading lands in the status tooltip"
     };
     let button = ui.add_enabled(enabled, egui::Button::new("Measure quality"));
+    let button = if enabled {
+        button.on_hover_text(hint)
+    } else {
+        button.on_disabled_hover_text(hint)
+    };
+    if button.clicked()
+        && let Some(output) = &snapshot.output_path
+    {
+        requests.push((snapshot.path.clone(), output.clone()));
+        ui.close();
+    }
+}
+
+/// The plan-10 "Inspect visual difference…" context-menu action: enabled
+/// iff the row has a written output and no job is running; HEIF *input*
+/// rows are grayed with the queue's unsupported-extension reason when
+/// `dec-heif` is missing. The bounded decode runs on the metric worker.
+fn inspect_difference_button(
+    ui: &mut egui::Ui,
+    snapshot: &RowSnapshot,
+    heif_enabled: bool,
+    running: bool,
+    requests: &mut Vec<(PathBuf, PathBuf)>,
+) {
+    let heif_blocked = !heif_enabled
+        && snapshot
+            .unsupported_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("dec-heif"));
+    let enabled = snapshot.output_path.is_some() && !running && !heif_blocked;
+    let hint = if heif_blocked {
+        snapshot.unsupported_reason.clone().unwrap_or_default()
+    } else if running {
+        "a conversion job is running".to_string()
+    } else if snapshot.output_path.is_none() {
+        "no output was written".to_string()
+    } else {
+        "bounded decode of both files (2048 px) in a swipe/side-by-side/difference view".to_string()
+    };
+    let button = ui.add_enabled(
+        enabled,
+        egui::Button::new("Inspect visual difference…"),
+    );
     let button = if enabled {
         button.on_hover_text(hint)
     } else {

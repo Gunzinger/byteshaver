@@ -275,6 +275,9 @@ pub struct App {
     /// Quality-metric background worker (plan 10 §phase 2): measurement
     /// requests/results cache, same pause policy as the thumbs worker.
     pub metrics: MetricState,
+    /// Open visual difference inspector (plan 10 §phase 3): `None` when
+    /// closed — buffers and textures are dropped with it.
+    pub inspector: Option<crate::panels::inspector::InspectorState>,
     /// Last row-action failure (spawn errors surface as row tooltips,
     /// plan 11 §5 — never dialogs).
     pub action_error: Option<String>,
@@ -309,6 +312,7 @@ impl App {
                 metrics.engine = metric_engine;
                 metrics
             },
+            inspector: None,
             action_error: None,
             settings_dirty: false,
         }
@@ -537,6 +541,17 @@ impl App {
             self.settings.metric_engine,
             self.settings.metric_max_edge_clamped(),
         );
+    }
+
+    /// Opens the visual difference inspector for a converted pair (plan
+    /// 10 §phase 3): the bounded decode (2048 px) runs on the metric
+    /// worker — the UI thread only uploads the returned buffers as
+    /// textures when they arrive.
+    pub fn open_inspector(&mut self, input: &std::path::Path, output: &std::path::Path) {
+        let input = input.to_path_buf();
+        let output = output.to_path_buf();
+        self.metrics.request_inspect(input.clone(), output.clone());
+        self.inspector = Some(crate::panels::inspector::InspectorState::new(input, output));
     }
     /// Drains the event channel of the running job into the UI state.
     pub fn drain_events(&mut self) {
@@ -814,8 +829,8 @@ impl eframe::App for App {
         }
         self.thumbs.set_paused(self.running.is_some());
 
-        // 2.6 metric worker results (plan 10 §phase 2): measurements land
-        // in the cache, inspector buffers become textures via the
+        // 2.6 metric worker results (plan 10 §phase 2/3): measurements
+        // land in the cache, inspector buffers become textures in the
         // callback; the worker pauses while a job runs (same policy as
         // the thumbnail worker). An engine-settings change invalidates
         // the cache so rows/aggregate never mix engines silently.
@@ -823,7 +838,18 @@ impl eframe::App for App {
             self.metrics.engine = self.settings.metric_engine;
             self.metrics.clear_results();
         }
-        self.metrics.poll();
+        self.metrics.poll(|input, output, a, b| {
+            let Some(state) = &mut self.inspector else {
+                return; // window closed meanwhile → buffers dropped
+            };
+            if !state.matches(&input, &output) {
+                return; // stale result of an earlier pair
+            }
+            match (a, b) {
+                (Some(a), Some(b)) => state.receive(ctx, a, b),
+                _ => state.receive_failed(),
+            }
+        });
         self.metrics.set_paused(self.running.is_some());
 
         // 3. panels

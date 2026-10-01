@@ -18,6 +18,7 @@
 //! risk (surfaced in the table tooltip).
 
 pub mod decode;
+pub mod diff;
 pub mod dssim;
 pub mod psnr;
 pub mod worker;
@@ -34,6 +35,11 @@ pub use self::worker::{MetricEntry, MetricState};
 /// Longest edge metrics are computed at by default (settings-exposed,
 /// clamped to 256..=16384). 4096 px ≈ 67 MiB per RGBA buffer.
 pub const DEFAULT_METRIC_MAX_EDGE: u32 = 4096;
+
+/// Longest edge of the *visual difference inspector* decodes (plan 10
+/// §phase 3 feasibility table: 3 buffers ≈ 3 × 16 MiB). Separate from the
+/// metric bound — the inspector favors responsiveness over fidelity.
+pub const DISPLAY_MAX_EDGE: u32 = 2048;
 
 /// Clamp for the settings-exposed metric edge (very small values make the
 /// numbers meaningless, huge ones defeat the guardrail).
@@ -346,5 +352,76 @@ mod tests {
             auto_measure_pairs(&report, MetricMode::AutoAfterRun),
             vec![(PathBuf::from("/x/a.png"), PathBuf::from("/x/out/a.webp"))]
         );
+    }
+
+    // ---- integration: metric pipeline over a real conversion (plan 10
+    // §Testing: JobHandle harness pattern from app.rs) -----------------------
+
+    /// Minimal valid 8×8 RGB PNG (same fixture as the app parity tests).
+    const TEST_PNG: [u8; 74] = [
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 8, 0, 0, 0, 8, 8,
+        2, 0, 0, 0, 75, 109, 41, 220, 0, 0, 0, 17, 73, 68, 65, 84, 120, 218, 99, 120, 32, 160,
+        128, 21, 49, 12, 45, 9, 0, 194, 78, 68, 1, 198, 78, 54, 47, 0, 0, 0, 0, 73, 69, 78, 68,
+        174, 66, 96, 130,
+    ];
+
+    #[test]
+    fn metrics_on_a_real_lossless_conversion_read_identical() {
+        use byteshaver::cli::CliArgs;
+        use byteshaver::config::{ConversionConfig, EncoderConfig};
+        use byteshaver::job::{JobHandle, JobSpec, NullReporter, Session, StopFlag};
+        use clap::Parser;
+
+        let dir =
+            std::env::temp_dir().join(format!("byteshaver-metric-e2e-{}", std::process::id()));
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).expect("fixture dirs");
+        let input = dir.join("in.png");
+        std::fs::write(&input, TEST_PNG).expect("write fixture png");
+
+        // lossless target (oxipng): the re-encode must be pixel-identical
+        let args =
+            CliArgs::parse_from(["byteshaver", input.to_string_lossy().as_ref(), "oxipng"]);
+        let mut common = ConversionConfig::from_args(&args);
+        common.output = out.to_string_lossy().to_string();
+        let spec = JobSpec::from_conversion(common, EncoderConfig::Oxipng(Default::default()));
+        let session = Session::new();
+        let report = JobHandle::start(
+            spec,
+            Box::new(NullReporter::new()),
+            StopFlag::new(),
+            &session,
+        )
+        .join();
+        assert!(report.error.is_none(), "{:?}", report.error);
+        assert_eq!(report.totals.successful, 1);
+        let output = report
+            .files
+            .first()
+            .and_then(|file| match &file.outcome {
+                byteshaver::pipeline::Outcome::Encoded { output_path, .. } => {
+                    Some(output_path.clone())
+                }
+                _ => None,
+            })
+            .expect("one encoded output");
+
+        // bounded metric pipeline on the produced pair
+        let (a, b) = decode::load_pair(&input, &output, 256).expect("both files decode");
+        assert_eq!(a.dimensions(), b.dimensions());
+        let psnr = Psnr.compare(&a, &b);
+        assert!(
+            psnr.score >= 99.0,
+            "lossless re-encode must read as identical: {}",
+            psnr.pretty
+        );
+        let dssim = DssimEngine::new().compare(&a, &b);
+        assert!(
+            dssim.score < 0.001,
+            "lossless re-encode must score ≈ 0 dssim: {}",
+            dssim.pretty
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -15,8 +15,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{Duration, SystemTime};
 
+use image::RgbaImage;
+
 use super::decode;
-use super::{MetricEngineChoice, MetricResult, QualityMetric, clamp_metric_max_edge};
+use super::{
+    MetricEngineChoice, MetricResult, QualityMetric, DISPLAY_MAX_EDGE, clamp_metric_max_edge,
+};
 
 /// Worker poll interval while paused / idle.
 const POLL_INTERVAL: Duration = Duration::from_millis(150);
@@ -44,6 +48,13 @@ pub enum MetricJob {
         /// Longest edge to decode at (settings' clamped value).
         max_edge: u32,
     },
+    /// Decode a pair for the visual difference inspector (display bound).
+    Inspect {
+        /// Input path.
+        input: PathBuf,
+        /// Converted output path.
+        output: PathBuf,
+    },
 }
 
 /// Result produced by the metric thread.
@@ -57,6 +68,18 @@ pub enum MetricOutcome {
         output_mtime: Option<SystemTime>,
         /// The comparison result.
         result: Option<MetricResult>,
+    },
+    /// Decoded inspector pair (`None`s = decode failed — the inspector
+    /// shows an explanatory message, never an error path).
+    Inspected {
+        /// Input path (matches the open inspector).
+        input: PathBuf,
+        /// Output path.
+        output: PathBuf,
+        /// Bounded RGBA of the input.
+        a: Option<RgbaImage>,
+        /// Bounded RGBA of the output.
+        b: Option<RgbaImage>,
     },
 }
 
@@ -157,6 +180,26 @@ impl MetricState {
         self.pending.insert(input);
     }
 
+    /// Requests the bounded decode pair of the open inspector (deduped;
+    /// [`super::DISPLAY_MAX_EDGE`] display bound, separate from the
+    /// metric's settings bound).
+    pub fn request_inspect(&mut self, input: PathBuf, output: PathBuf) {
+        if self.pending.contains(&input) {
+            return;
+        }
+        if self
+            .jobs
+            .send(MetricJob::Inspect {
+                input: input.clone(),
+                output,
+            })
+            .is_err()
+        {
+            return;
+        }
+        self.pending.insert(input);
+    }
+
     /// Drops every cached result (e.g. when the engine choice changed so
     /// the map cannot mix engines for the aggregate display).
     pub fn clear_results(&mut self) {
@@ -170,8 +213,12 @@ impl MetricState {
         super::aggregate_line(&self.measured)
     }
 
-    /// Drains the worker results: measurements land in the map.
-    pub fn poll(&mut self) {
+    /// Drains the worker results: measurements land in the map, inspector
+    /// buffers go to `apply_inspection` (the app uploads the textures).
+    pub fn poll(
+        &mut self,
+        mut apply_inspection: impl FnMut(PathBuf, PathBuf, Option<RgbaImage>, Option<RgbaImage>),
+    ) {
         loop {
             match self.results.try_recv() {
                 Ok(MetricOutcome::Measured {
@@ -184,6 +231,10 @@ impl MetricState {
                         self.measured
                             .insert(input, MetricEntry { output_mtime, result });
                     }
+                }
+                Ok(MetricOutcome::Inspected { input, output, a, b }) => {
+                    self.pending.remove(&input);
+                    apply_inspection(input, output, a, b);
                 }
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => return,
             }
@@ -228,6 +279,14 @@ fn worker_loop(
                             result,
                         }
                     }
+                    MetricJob::Inspect { input, output } => {
+                        let pair = decode::load_pair(&input, &output, DISPLAY_MAX_EDGE);
+                        let (a, b) = match pair {
+                            Some((a, b)) => (Some(a), Some(b)),
+                            None => (None, None),
+                        };
+                        MetricOutcome::Inspected { input, output, a, b }
+                    }
                 };
                 if results.send(outcome).is_err() {
                     return;
@@ -242,6 +301,11 @@ fn worker_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_edge_is_below_the_metric_default() {
+        assert!(DISPLAY_MAX_EDGE <= clamp_metric_max_edge(4096));
+    }
 
     #[test]
     fn measure_request_dedups_and_mtime_invalidates() {
@@ -293,7 +357,7 @@ mod tests {
         state.set_paused(false);
         // poll may need a beat for the worker; bounded wait loop
         for _ in 0..100 {
-            state.poll();
+            state.poll(|_, _, _, _| panic!("no inspection was requested"));
             if !state.is_pending(&input) {
                 break;
             }

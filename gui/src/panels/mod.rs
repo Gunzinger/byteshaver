@@ -12,6 +12,7 @@ pub mod about;
 pub mod drop_zone;
 pub mod file_table;
 pub mod footer;
+pub mod inspector;
 pub mod options_panel;
 pub mod report;
 
@@ -36,6 +37,12 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     // finishes, then re-renders the same viewport id with fresh contents
     if app.show_report && app.report.is_some() {
         report::show_window(app, ctx);
+    }
+    // the visual difference inspector (plan 10 §phase 3): a bounded
+    // window whose state (buffers + textures) lives on the app and is
+    // dropped when the window closes
+    if app.inspector.is_some() {
+        inspector::InspectorState::show(app, ctx);
     }
     about::show_window(app, ctx);
 }
