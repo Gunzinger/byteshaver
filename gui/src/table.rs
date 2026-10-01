@@ -90,7 +90,7 @@ impl Column {
             Column::ExifTaken => "taken",
             Column::ExifIso => "iso",
             Column::ExifExposure => "exposure",
-            Column::Actions => "",
+            Column::Actions => "Actions",
         }
     }
 
@@ -117,21 +117,38 @@ pub struct ColumnState {
     pub visible: Vec<Column>,
 }
 
+/// The pre-plan-15 default column order (F7 migration reference): exactly
+/// what plan 11 §1 shipped.
+pub const LEGACY_DEFAULT_COLUMNS: [Column; 8] = [
+    Column::Status,
+    Column::Name,
+    Column::SourceFormat,
+    Column::MergedSize,
+    Column::Ratio,
+    Column::TargetFormat,
+    Column::Modified,
+    Column::Actions,
+];
+
+/// The plan-15 default column order (F7): `Dimensions` moves up beside
+/// the name so the pixel size reads with the file.
+pub const DEFAULT_COLUMNS: [Column; 9] = [
+    Column::Status,
+    Column::Name,
+    Column::Dimensions,
+    Column::SourceFormat,
+    Column::MergedSize,
+    Column::Ratio,
+    Column::TargetFormat,
+    Column::Modified,
+    Column::Actions,
+];
+
 impl Default for ColumnState {
     fn default() -> Self {
-        // plan 11 §1: exactly the pre-plan columns plus Ratio and
-        // TargetFormat (the merged size column keeps the familiar shape)
+        // plan 15 F7: Dimensions joins the default set right after Name
         ColumnState {
-            visible: vec![
-                Column::Status,
-                Column::Name,
-                Column::SourceFormat,
-                Column::MergedSize,
-                Column::Ratio,
-                Column::TargetFormat,
-                Column::Modified,
-                Column::Actions,
-            ],
+            visible: DEFAULT_COLUMNS.to_vec(),
         }
     }
 }
@@ -152,6 +169,32 @@ impl ColumnState {
             self.visible.push(column);
         }
     }
+}
+
+/// F7 migration of a persisted `table_columns` order: an order that is
+/// exactly the **pre-plan-15 default** ([`LEGACY_DEFAULT_COLUMNS`]) is
+/// silently upgraded to the new default; any other stored order (user
+/// customization, hidden columns) is respected — `None` = keep as is.
+#[must_use]
+pub fn migrate_legacy_columns(visible: &[Column]) -> Option<Vec<Column>> {
+    (visible == LEGACY_DEFAULT_COLUMNS.as_slice()).then(|| DEFAULT_COLUMNS.to_vec())
+}
+
+/// Moves one visible column (F8 header drag): `from` and `to` are
+/// positions in the given order, with `to` the **insertion position**
+/// (`to == len` appends at the end, `to == target` inserts before the
+/// target column, `to == target + 1` after it). No-ops (self-drop, equal
+/// indices, out-of-range `from`) return the order unchanged; `to` beyond
+/// the end clamps to the end.
+#[must_use]
+pub fn reorder(mut visible: Vec<Column>, from: usize, to: usize) -> Vec<Column> {
+    if from >= visible.len() || from == to {
+        return visible;
+    }
+    let column = visible.remove(from);
+    let insert_at = if from < to { to - 1 } else { to };
+    visible.insert(insert_at.min(visible.len()), column);
+    visible
 }
 
 /// Current sort of the table (view-only; persisted in the settings).
@@ -190,15 +233,17 @@ impl SortKey {
             SortKey::Asc(column) | SortKey::Desc(column) => Some(column),
         }
     }
+}
 
-    /// Header indicator glyph (`▲` ascending, `▼` descending).
-    #[must_use]
-    pub fn indicator(self) -> &'static str {
-        match self {
-            SortKey::Asc(_) => "▲",
-            SortKey::Desc(_) => "▼",
-            SortKey::None => "",
-        }
+/// Header arrow glyph for `column` (F11): `▲`/`▼` only when the active
+/// sort is **exactly this column** — every other header renders without
+/// an indicator (the old code showed the arrow on all columns).
+#[must_use]
+pub fn sort_indicator(sort: SortKey, column: Column) -> Option<&'static str> {
+    match sort {
+        SortKey::Asc(sorted) if sorted == column => Some("▲"),
+        SortKey::Desc(sorted) if sorted == column => Some("▼"),
+        _ => None,
     }
 }
 
@@ -401,6 +446,75 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     (if month <= 2 { year + 1 } else { year }, month, day)
+}
+
+/// Formats an EXIF `DateTimeOriginal` (F6): the raw camera form
+/// `2020:01:31 14:22:05` renders as `2020.01.31 14:22:05` (dots between
+/// the date fields, colons in the time). Values without the EXIF colon
+/// date pass through unchanged.
+#[must_use]
+pub fn format_exif_taken(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    if bytes.len() >= 10 && bytes[4] == b':' && bytes[7] == b':' {
+        let (date, rest) = raw.split_at(10);
+        let date = date.replace(':', ".");
+        let rest = rest.trim();
+        if rest.is_empty() {
+            date
+        } else {
+            format!("{date} {rest}")
+        }
+    } else {
+        raw.to_owned()
+    }
+}
+
+/// Visible per-row quality-metric state (F19 display half): rendered in
+/// the status cell instead of being tooltip-only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MetricStatus {
+    /// A measurement is in flight.
+    Measuring,
+    /// A finished reading (the formatted `engine score · reading` line).
+    Reading(String),
+    /// The measurement failed — the row shows the message in red.
+    Error(String),
+}
+
+impl MetricStatus {
+    /// The line rendered into the status cell.
+    #[must_use]
+    pub fn line(&self) -> &str {
+        match self {
+            MetricStatus::Measuring => "…measuring",
+            MetricStatus::Reading(line) | MetricStatus::Error(line) => line,
+        }
+    }
+
+    /// Whether the state is a failure (rendered in the error color).
+    #[must_use]
+    pub fn is_error(&self) -> bool {
+        matches!(self, MetricStatus::Error(_))
+    }
+}
+
+/// Assembles the visible metric state (F19): an error (when the metric
+/// state reports one) wins over the pending marker, which wins over a
+/// finished reading; with no pending request and no reading there is no
+/// state.
+#[must_use]
+pub fn metric_status(
+    pending: bool,
+    reading: Option<&str>,
+    error: Option<&str>,
+) -> Option<MetricStatus> {
+    if let Some(message) = error {
+        return Some(MetricStatus::Error(message.to_owned()));
+    }
+    if pending {
+        return Some(MetricStatus::Measuring);
+    }
+    reading.map(|line| MetricStatus::Reading(line.to_owned()))
 }
 
 #[cfg(test)]
@@ -662,16 +776,42 @@ mod tests {
         let mut sort = SortKey::None;
         sort = sort.cycle(Column::Name);
         assert_eq!(sort, SortKey::Asc(Column::Name));
-        assert_eq!(sort.indicator(), "▲");
+        assert_eq!(sort_indicator(sort, Column::Name), Some("▲"));
         sort = sort.cycle(Column::Name);
         assert_eq!(sort, SortKey::Desc(Column::Name));
-        assert_eq!(sort.indicator(), "▼");
+        assert_eq!(sort_indicator(sort, Column::Name), Some("▼"));
         sort = sort.cycle(Column::Name);
         assert_eq!(sort, SortKey::None);
         // switching columns starts fresh at ascending
         let sort = SortKey::Desc(Column::Ratio);
         assert_eq!(sort.cycle(Column::Name), SortKey::Asc(Column::Name));
         assert_eq!(sort.column(), Some(Column::Ratio));
+    }
+
+    // ---- sort indicator (F11) ----------------------------------------------
+
+    #[test]
+    fn sort_indicator_shows_only_on_the_active_column() {
+        assert_eq!(sort_indicator(SortKey::None, Column::Name), None);
+        // the old bug: the arrow showed on every column
+        assert_eq!(
+            sort_indicator(SortKey::Desc(Column::Ratio), Column::Name),
+            None,
+            "no arrow on a column the sort is not keyed to"
+        );
+        assert_eq!(
+            sort_indicator(SortKey::Asc(Column::Ratio), Column::Ratio),
+            Some("▲")
+        );
+        assert_eq!(
+            sort_indicator(SortKey::Desc(Column::Ratio), Column::Ratio),
+            Some("▼")
+        );
+        // a non-sortable column never carries the arrow
+        assert_eq!(
+            sort_indicator(SortKey::Asc(Column::Name), Column::Actions),
+            None
+        );
     }
 
     // ---- column state --------------------------------------------------------
@@ -684,22 +824,85 @@ mod tests {
             vec![
                 Column::Status,
                 Column::Name,
+                Column::Dimensions,
                 Column::SourceFormat,
                 Column::MergedSize,
                 Column::Ratio,
                 Column::TargetFormat,
                 Column::Modified,
                 Column::Actions,
-            ]
+            ],
+            "plan 15 F7 default order"
         );
         assert!(state.is_visible(Column::Name));
         // hide appends nothing, show appends at the end
         state.toggle(Column::Name);
         assert!(!state.is_visible(Column::Name));
-        state.toggle(Column::Dimensions);
-        assert_eq!(*state.visible.last().expect("appended"), Column::Dimensions);
+        state.toggle(Column::ExifIso);
+        assert_eq!(*state.visible.last().expect("appended"), Column::ExifIso);
         state.toggle(Column::Name);
         assert_eq!(*state.visible.last().expect("re-appended"), Column::Name);
+    }
+
+    // ---- legacy-default migration (F7) ---------------------------------------
+
+    #[test]
+    fn legacy_default_column_order_upgrades_to_the_new_default() {
+        // exactly the old default → silently upgraded
+        assert_eq!(
+            migrate_legacy_columns(&LEGACY_DEFAULT_COLUMNS),
+            Some(DEFAULT_COLUMNS.to_vec())
+        );
+        // the new default itself is respected (already migrated)
+        assert_eq!(migrate_legacy_columns(&DEFAULT_COLUMNS), None);
+        // any custom order is respected
+        assert_eq!(
+            migrate_legacy_columns(&[Column::Name, Column::Status, Column::Actions]),
+            None
+        );
+        // a subset of the old default is a user choice (hidden columns), not
+        // the default — respected
+        assert_eq!(migrate_legacy_columns(&LEGACY_DEFAULT_COLUMNS[..4]), None);
+    }
+
+    // ---- header drag reorder (F8) --------------------------------------------
+
+    #[test]
+    fn reorder_moves_a_column_to_the_insertion_position() {
+        let order = |from, to| reorder(vec![Column::Status, Column::Name, Column::Ratio], from, to);
+        // insert-before the target (left half of the header)
+        assert_eq!(
+            order(0, 2),
+            vec![Column::Name, Column::Status, Column::Ratio]
+        );
+        // insert-after the target (right half), to == len appends at the end
+        assert_eq!(
+            order(0, 3),
+            vec![Column::Name, Column::Ratio, Column::Status]
+        );
+        // backwards move
+        assert_eq!(
+            order(2, 0),
+            vec![Column::Ratio, Column::Status, Column::Name]
+        );
+        // self-drops and equal indices are no-ops
+        assert_eq!(
+            order(1, 1),
+            vec![Column::Status, Column::Name, Column::Ratio]
+        );
+        assert_eq!(
+            order(0, 0),
+            vec![Column::Status, Column::Name, Column::Ratio]
+        );
+        // out-of-range from is a no-op, out-of-range to clamps to the end
+        assert_eq!(
+            order(3, 0),
+            vec![Column::Status, Column::Name, Column::Ratio]
+        );
+        assert_eq!(
+            order(0, 99),
+            vec![Column::Name, Column::Ratio, Column::Status]
+        );
     }
 
     #[test]
@@ -722,7 +925,7 @@ mod tests {
         // every column has a header label and appears exactly once
         let mut seen = Vec::new();
         for column in Column::ALL {
-            assert!(!column.header().is_empty() || column == Column::Actions);
+            assert!(!column.header().is_empty(), "{column:?} needs a header");
             assert!(!seen.contains(&column));
             seen.push(column);
         }
@@ -751,5 +954,66 @@ mod tests {
         // before the epoch clamps instead of panicking
         let before = UNIX_EPOCH - std::time::Duration::from_secs(86_400 * 5);
         assert_eq!(format_system_time(before), "1969-12-27 00:00");
+    }
+
+    // ---- EXIF taken timestamp (F6) -------------------------------------------
+
+    #[test]
+    fn exif_taken_renders_as_dotted_civil_timestamp() {
+        assert_eq!(
+            format_exif_taken("2020:01:31 14:22:05"),
+            "2020.01.31 14:22:05"
+        );
+        assert_eq!(
+            format_exif_taken("2024:12:01 07:03:59"),
+            "2024.12.01 07:03:59"
+        );
+        // date-only values keep the dotted form without a trailing space
+        assert_eq!(format_exif_taken("2020:01:31"), "2020.01.31");
+        // anything not in the EXIF colon-date form passes through unchanged
+        assert_eq!(
+            format_exif_taken("2020-01-31 14:22:05"),
+            "2020-01-31 14:22:05"
+        );
+        assert_eq!(format_exif_taken(""), "");
+    }
+
+    // ---- visible metric state (F19 display half) ------------------------------
+
+    #[test]
+    fn metric_state_prefers_error_then_pending_then_reading() {
+        assert_eq!(
+            metric_status(true, None, None),
+            Some(MetricStatus::Measuring)
+        );
+        assert_eq!(
+            metric_status(false, Some("dssim 0.0120 · excellent match"), None),
+            Some(MetricStatus::Reading(
+                "dssim 0.0120 · excellent match".to_owned()
+            ))
+        );
+        assert_eq!(
+            metric_status(false, None, None),
+            None,
+            "no state without a pending request or a reading"
+        );
+        // errors shadow everything and render red in the row
+        assert_eq!(
+            metric_status(
+                true,
+                Some("dssim 0.0120 · excellent match"),
+                Some("could not decode")
+            ),
+            Some(MetricStatus::Error("could not decode".to_owned()))
+        );
+        // rendering hooks
+        assert_eq!(MetricStatus::Measuring.line(), "…measuring");
+        assert_eq!(
+            MetricStatus::Reading("psnr 41.2dB".to_owned()).line(),
+            "psnr 41.2dB"
+        );
+        assert!(MetricStatus::Error("boom".to_owned()).is_error());
+        assert!(!MetricStatus::Measuring.is_error());
+        assert!(!MetricStatus::Reading("x".to_owned()).is_error());
     }
 }
