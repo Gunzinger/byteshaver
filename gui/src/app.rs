@@ -41,7 +41,7 @@ use crate::celebrate::{Confetti, RectPx, TextFlourish};
 use crate::metrics::{MetricMode, MetricState};
 use crate::options;
 use crate::presets::PresetRef;
-use crate::queue::Queue;
+use crate::queue::{ItemStatus, Queue};
 use crate::reporter::ChannelReporter;
 use crate::settings::{OutputMode, Settings};
 use crate::thumb::{ThumbKey, ThumbState};
@@ -267,9 +267,11 @@ pub struct App {
     /// Reduced-motion text flourish of the last finished run (plan 12
     /// §3).
     pub flourish: Option<TextFlourish>,
-    /// Last known viewport size in points (refreshed every frame; anchors
-    /// the confetti emission at the Convert-button corner).
-    pub viewport_size: [f32; 2],
+    /// Screen-space rect of each visible row's size/ratio cell in the
+    /// file table (plan 16 F21): the table refreshes this map every frame
+    /// and the celebration trigger reads it once to anchor the burst on
+    /// the freshly converted rows (same paint space as the overlay).
+    pub celebrate_cell_rects: std::collections::HashMap<PathBuf, RectPx>,
     /// Thumbnail/EXIF background worker: request dedup, texture cache
     /// and the pause flag (plan 11 §6; paused while a job runs).
     pub thumbs: ThumbState,
@@ -375,7 +377,7 @@ impl App {
             jxl_draft: JxlAdvancedDraft::default(),
             confetti: None,
             flourish: None,
-            viewport_size: [1100.0, 720.0],
+            celebrate_cell_rects: std::collections::HashMap::new(),
             thumbs: ThumbState::new(),
             metrics: {
                 let mut metrics = MetricState::new();
@@ -1144,10 +1146,11 @@ impl App {
         }
     }
 
-    /// Decides and arms the post-run celebration (plan 12 §3): a
-    /// compression-ratio-scaled confetti burst emitted at the
-    /// Convert-button corner — or, under `reduced_motion`, a fading text
-    /// flourish with the same percentage. Pure trigger decision in
+    /// Decides and arms the post-run celebration (plan 12 §3, plan 16
+    /// F21): a compression-ratio-scaled confetti burst emitted from the
+    /// size/ratio cells of the rows that finished `Encoded` in this run —
+    /// or, under `reduced_motion`, a fading text flourish with the same
+    /// percentage. Pure trigger decision in
     /// [`crate::celebrate::should_celebrate`].
     fn celebrate_run(&mut self, report: &RunReport) {
         let summary = crate::celebrate::RunSummary {
@@ -1168,27 +1171,39 @@ impl App {
             self.flourish = Some(TextFlourish::new(percent));
         } else {
             let count = crate::celebrate::confetti_count(self.settings.confetti, ratio);
-            if count == 0 {
+            let origins = self.celebrate_origins();
+            // no visible converted rows → nowhere to burst from: no party
+            if count == 0 || origins.is_empty() {
                 return;
             }
-            let [_, height] = self.viewport_size;
-            let origin = RectPx {
-                x: 12.0,
-                y: (height - 84.0).max(0.0),
-                w: 240.0,
-                h: 48.0,
-            };
             // deterministic seed per run → identical replays
             let totals = &report.totals;
             let seed = totals.input_size
                 ^ totals.output_size.rotate_left(17)
                 ^ totals.successful.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-            self.confetti = Some(Confetti::burst(
+            self.confetti = Some(Confetti::burst_multi(
                 count,
-                origin,
+                &origins,
                 &mut crate::celebrate::Lcg::new(seed),
             ));
         }
+    }
+
+    /// The burst origins of this run (plan 16 F21): the recorded cell
+    /// rects of rows with [`ItemStatus::Encoded`] — exactly this run's
+    /// successes, since `Queue::begin_run` resets every row's status — in
+    /// queue order, capped at [`crate::celebrate::MAX_ORIGINS`]. Rows
+    /// scrolled out of view (or behind a hidden size column) have no rect
+    /// and simply don't emit.
+    #[must_use]
+    fn celebrate_origins(&self) -> Vec<RectPx> {
+        self.queue
+            .items()
+            .iter()
+            .filter(|item| item.status == ItemStatus::Encoded)
+            .filter_map(|item| self.celebrate_cell_rects.get(&item.path).copied())
+            .take(crate::celebrate::MAX_ORIGINS)
+            .collect()
     }
 }
 
@@ -1279,15 +1294,13 @@ impl eframe::App for App {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
 
-        // 5. remember the window size for the next launch (and keep the
-        // confetti origin anchored to the current window)
+        // 5. remember the window size for the next launch
         let size = ctx.input(|input| input.viewport().inner_rect.map(|rect| rect.size()));
-        if let Some([width, height]) = size.map(|size| [size.x, size.y]) {
-            self.viewport_size = [width, height];
-            if self.settings.window_size != Some([width, height]) {
-                self.settings.window_size = Some([width, height]);
-                self.settings_dirty = true;
-            }
+        if let Some([width, height]) = size.map(|size| [size.x, size.y])
+            && self.settings.window_size != Some([width, height])
+        {
+            self.settings.window_size = Some([width, height]);
+            self.settings_dirty = true;
         }
 
         // 6. persist changed settings (cheap JSON write, at most per change);
@@ -1767,10 +1780,36 @@ mod tests {
         }
     }
 
+    /// Enqueues `count` rows, marks them `Encoded` (as a run would) and
+    /// plants their celebration cell rects, so `celebrate_run` finds
+    /// burst origins (plan 16 F21). Returns the paths.
+    fn arm_visible_rows(app: &mut App, count: usize) -> Vec<PathBuf> {
+        let paths: Vec<PathBuf> = (0..count)
+            .map(|index| PathBuf::from(format!("/x/row{index}.png")))
+            .collect();
+        app.queue.add_paths(paths.clone());
+        app.queue.begin_run(Some("webp"));
+        for path in &paths {
+            app.queue
+                .apply_file_finished(path, &encoded_outcome(100, 40));
+            app.celebrate_cell_rects.insert(
+                path.clone(),
+                RectPx {
+                    x: 10.0,
+                    y: 20.0,
+                    w: 100.0,
+                    h: 20.0,
+                },
+            );
+        }
+        paths
+    }
+
     #[test]
     fn celebration_arms_per_report_and_settings() {
         // Regular + a real gain → confetti (ratio 0.4 → factor 1.12 → 134)
         let mut app = default_app();
+        arm_visible_rows(&mut app, 2);
         app.celebrate_run(&run_report(2, 100, 40));
         let confetti = app.confetti.as_ref().expect("confetti burst");
         assert_eq!(confetti.visible(), 134);
@@ -1778,6 +1817,7 @@ mod tests {
 
         // Off → nothing at all
         let mut app = default_app();
+        arm_visible_rows(&mut app, 1);
         app.settings.confetti = ConfettiLevel::Off;
         app.celebrate_run(&run_report(1, 100, 40));
         assert!(app.confetti.is_none());
@@ -1785,6 +1825,7 @@ mod tests {
 
         // reduced motion → the text flourish with the saved percentage
         let mut app = default_app();
+        arm_visible_rows(&mut app, 1);
         app.settings.reduced_motion = true;
         app.celebrate_run(&run_report(1, 100, 38));
         let flourish = app.flourish.as_ref().expect("flourish");
@@ -1793,6 +1834,7 @@ mod tests {
 
         // grew / no gain / nothing successful → no celebration
         let mut app = default_app();
+        arm_visible_rows(&mut app, 1);
         app.celebrate_run(&run_report(1, 100, 120));
         assert!(app.confetti.is_none() && app.flourish.is_none());
         app.celebrate_run(&run_report(1, 100, 100));
@@ -1817,6 +1859,72 @@ mod tests {
         partial.totals.input_files = 2;
         app.celebrate_run(&partial);
         assert!(app.confetti.is_some(), "partial success still celebrates");
+    }
+
+    // ---- plan 16 F21: bursts from the converted rows' cells ------------------
+
+    #[test]
+    fn celebration_bursts_from_the_encoded_rows_cells() {
+        let mut app = default_app();
+        let paths = arm_visible_rows(&mut app, 3);
+        // row 1 scrolled out of view (no rect), row 2 skipped (not Encoded)
+        app.celebrate_cell_rects.remove(&paths[1]);
+        app.queue.items_mut()[2].status = ItemStatus::SkippedExisting;
+        let only_visible = app.celebrate_origins();
+        assert_eq!(only_visible.len(), 1, "only the encoded+visible row");
+        assert_eq!(only_visible[0].x, 10.0);
+
+        app.celebrate_run(&run_report(2, 100, 40));
+        let confetti = app.confetti.as_ref().expect("confetti burst");
+        // every piece is born inside the single origin (± piece jitter)
+        let origin = only_visible[0];
+        for (piece, _rot, _color) in confetti.rects() {
+            let center = piece.x + piece.w * 0.5;
+            assert!(
+                (origin.x - 5.0..=origin.x + origin.w + 5.0).contains(&center),
+                "piece center {center} outside the origin cell"
+            );
+        }
+
+        // nothing visible at all → no party (rows scrolled out simply
+        // don't emit, plan 16 F21)
+        let mut app = default_app();
+        arm_visible_rows(&mut app, 2);
+        app.celebrate_cell_rects.clear();
+        app.celebrate_run(&run_report(2, 100, 40));
+        assert!(
+            app.confetti.is_none(),
+            "no visible converted rows → no burst"
+        );
+    }
+
+    #[test]
+    fn celebrate_origins_follow_queue_order_and_cap() {
+        let mut app = default_app();
+        let paths = arm_visible_rows(&mut app, 26);
+        // per-row distinct rects so the order is observable
+        for (index, path) in paths.iter().enumerate() {
+            app.celebrate_cell_rects.insert(
+                path.clone(),
+                RectPx {
+                    x: index as f32,
+                    y: 0.0,
+                    w: 1.0,
+                    h: 1.0,
+                },
+            );
+        }
+        // a non-encoded row in between drops out (begin_run reset makes
+        // post-run Encoded rows exactly this run's successes)
+        app.queue.items_mut()[5].status = ItemStatus::Error;
+        let origins = app.celebrate_origins();
+        assert_eq!(origins.len(), crate::celebrate::MAX_ORIGINS, "capped");
+        assert_eq!(origins.len(), 24);
+        // queue order, minus the error row at position 5
+        for (slot, origin) in origins.iter().enumerate() {
+            let expected = if slot < 5 { slot } else { slot + 1 };
+            assert_eq!(origin.x, expected as f32, "queue order preserved");
+        }
     }
 
     // ---- files-vs-pattern run parity (headless, uses the real core) --------

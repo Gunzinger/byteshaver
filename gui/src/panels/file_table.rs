@@ -31,6 +31,7 @@ use egui::TextureHandle;
 use egui_extras::TableBuilder;
 
 use crate::app::App;
+use crate::celebrate::RectPx;
 use crate::platform;
 use crate::queue::{ItemStatus, format_size};
 use crate::table::{self, Column, SortKey};
@@ -68,6 +69,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         app.mark_settings_dirty();
     }
     if app.queue.is_empty() {
+        app.celebrate_cell_rects.clear();
         return;
     }
     chooser_bar(app, ui);
@@ -75,6 +77,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     // at least one data cell is required (the row hover detection and the
     // whole-row context menu anchor on a data cell's rect)
     if columns.iter().all(|&column| column == Column::Actions) {
+        app.celebrate_cell_rects.clear();
         ui.weak("all columns hidden — reopen them from Columns ▾");
         return;
     }
@@ -384,6 +387,10 @@ fn render_table(app: &mut App, ui: &mut egui::Ui, columns: &[Column]) {
     let metric_off = app.settings.quality_metric == crate::metrics::MetricMode::Off;
     // plan 10 §phase 3: "Inspect visual difference" requests likewise
     let mut inspect_requests: Vec<(PathBuf, PathBuf)> = Vec::new();
+    // plan 16 F21: screen-space rect of each visible row's size/ratio
+    // cell, swapped into `App::celebrate_cell_rects` after the render
+    // (fresh every frame; rows scrolled out of view simply drop out)
+    let mut cell_rects: Vec<(PathBuf, RectPx)> = Vec::new();
 
     // plan 15 F9: egui_extras 0.32's TableBuilder hard-codes its scroll
     // area to `[false, vscroll]`, so the horizontal scroll bar lives on
@@ -464,6 +471,9 @@ fn render_table(app: &mut App, ui: &mut egui::Ui, columns: &[Column]) {
                     visible_keys.push((item.path.clone(), item.modified));
                     let mut row_remove: Option<usize> = None;
                     let mut row_top: Option<f32> = None;
+                    // this row's size/ratio cell (celebration origin,
+                    // plan 16 F21)
+                    let mut celebrate_rect: Option<egui::Rect> = None;
 
                     for &column in columns {
                         if column == Column::Actions {
@@ -496,12 +506,19 @@ fn render_table(app: &mut App, ui: &mut egui::Ui, columns: &[Column]) {
                                 );
                             });
                             row_top.get_or_insert(response.rect.top());
+                            if column == Column::MergedSize {
+                                celebrate_rect = Some(response.rect);
+                            }
                         }
+                    }
+
+                    if let Some(rect) = celebrate_rect {
+                        cell_rects.push((snapshot.path.clone(), RectPx::from_egui(rect)));
                     }
 
                     // right-click menu (plan 10 §phase 2/3)
                     row.response().context_menu(|ui| {
-                        output_action_buttons(ui, &snapshot, &mut action_error);
+                        output_action_buttons(ui, &snapshot, &mut action_error, true);
                         ui.separator();
                         measure_quality_button(
                             ui,
@@ -554,6 +571,9 @@ fn render_table(app: &mut App, ui: &mut egui::Ui, columns: &[Column]) {
     app.action_error = action_error;
     app.thumbs.set_visible(visible_keys.clone());
     app.request_row_data(&visible_keys, &need_dimensions, &need_exif);
+    // plan 16 F21: per-frame refresh — the map is always exactly this
+    // frame's visible size/ratio cells
+    app.celebrate_cell_rects = cell_rects.into_iter().collect();
 }
 
 /// Whether a row shows a thumbnail under the current mode (plan 11 §6:
@@ -897,7 +917,7 @@ fn actions_cell(
         ui.weak("⋯").on_hover_text("row actions");
         return;
     }
-    output_action_buttons(ui, snapshot, error_slot);
+    output_action_buttons(ui, snapshot, error_slot, false);
     ui.add_enabled_ui(!running, |ui| {
         if ui
             .add(egui::Button::new("✕").small())
@@ -910,15 +930,48 @@ fn actions_cell(
     });
 }
 
+/// Labels + tooltips of the two output actions (plan 16 F23): the row
+/// context menu carries the explicit full wording; the hover-revealed
+/// buttons stay compact (the actions column is narrow) while their
+/// tooltips always spell the action out.
+struct OutputActionLabels {
+    open: &'static str,
+    folder: &'static str,
+    open_tooltip: &'static str,
+    folder_tooltip: &'static str,
+}
+
+#[must_use]
+fn output_action_labels(in_menu: bool) -> OutputActionLabels {
+    if in_menu {
+        OutputActionLabels {
+            open: "open converted file",
+            folder: "open output folder",
+            open_tooltip: "open converted file with the OS default viewer",
+            folder_tooltip: "open output folder in the file manager",
+        }
+    } else {
+        OutputActionLabels {
+            open: "open file",
+            folder: "output folder",
+            open_tooltip: "open converted file (with the OS default viewer)",
+            folder_tooltip: "open output folder (reveal it in the file manager)",
+        }
+    }
+}
+
 /// The two output actions (shared by the hover reveal and the context
-/// menu): enabled iff a run actually wrote an output for this row;
-/// otherwise a disabled tooltip explains why. Spawn errors surface as
-/// row tooltips via [`App::action_error`], never dialogs.
+/// menu — `in_menu` picks the label set, see [`output_action_labels`]):
+/// enabled iff a run actually wrote an output for this row; otherwise a
+/// disabled tooltip explains why. Spawn errors surface as row tooltips
+/// via [`App::action_error`], never dialogs.
 fn output_action_buttons(
     ui: &mut egui::Ui,
     snapshot: &RowSnapshot,
     error_slot: &mut Option<String>,
+    in_menu: bool,
 ) {
+    let labels = output_action_labels(in_menu);
     let action_error = error_slot.clone();
     let convertible = matches!(
         snapshot.status,
@@ -932,8 +985,8 @@ fn output_action_buttons(
     };
     ui.add_enabled_ui(enabled, |ui| {
         let open = ui
-            .button("open")
-            .on_hover_text("open the output with the OS default viewer")
+            .button(labels.open)
+            .on_hover_text(labels.open_tooltip)
             .on_disabled_hover_text(disabled_reason);
         if open.clicked()
             && let Some(output) = &snapshot.output_path
@@ -944,8 +997,8 @@ fn output_action_buttons(
             }
         }
         let reveal = ui
-            .button("folder")
-            .on_hover_text("reveal the output in the file manager")
+            .button(labels.folder)
+            .on_hover_text(labels.folder_tooltip)
             .on_disabled_hover_text(disabled_reason);
         if reveal.clicked()
             && let Some(output) = &snapshot.output_path
@@ -989,5 +1042,35 @@ fn status_color(ui: &egui::Ui, status: ItemStatus, unsupported: bool) -> egui::C
         ItemStatus::Encoded => egui::Color32::from_rgb(90, 190, 110),
         ItemStatus::Error => ui.visuals().error_fg_color,
         _ => ui.visuals().weak_text_color(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- plan 16 F23: explicit action labels ---------------------------------
+
+    #[test]
+    fn output_action_labels_carry_the_explicit_wording() {
+        // context menu: the full wording
+        let menu = output_action_labels(true);
+        assert_eq!(menu.open, "open converted file");
+        assert_eq!(menu.folder, "open output folder");
+        assert!(menu.open_tooltip.contains("open converted file"));
+        assert!(menu.folder_tooltip.contains("open output folder"));
+
+        // hover buttons: compact but explicit, tooltips always spell it out
+        let hover = output_action_labels(false);
+        assert_eq!(hover.open, "open file");
+        assert_eq!(hover.folder, "output folder");
+        assert!(hover.open_tooltip.contains("open converted file"));
+        assert!(hover.folder_tooltip.contains("open output folder"));
+
+        // no fallback to the old bare labels anywhere
+        assert_ne!(hover.open, "open");
+        assert_ne!(hover.folder, "folder");
+        assert_ne!(menu.open, hover.open);
+        assert_ne!(menu.folder, hover.folder);
     }
 }

@@ -32,6 +32,11 @@ const DRAG: f32 = 1.1;
 /// stalled frame teleporting every piece to the ceiling).
 const MAX_DT: f32 = 0.1;
 
+/// Maximum number of row-cell origins honored per burst (plan 16 F21):
+/// rows beyond the cap — or scrolled out of view, which never had a rect
+/// — simply don't emit.
+pub const MAX_ORIGINS: usize = 24;
+
 /// Number of colors in the celebration palette (see [`palette`]).
 const PALETTE_LEN: u8 = 6;
 
@@ -183,6 +188,21 @@ pub struct RectPx {
     pub h: f32,
 }
 
+impl RectPx {
+    /// Paint-glue conversion from an `egui::Rect` (the file table records
+    /// row-cell rects in the main viewport's paint space, the same space
+    /// the overlay paints in; plan 16 F21).
+    #[must_use]
+    pub fn from_egui(rect: egui::Rect) -> Self {
+        Self {
+            x: rect.left(),
+            y: rect.top(),
+            w: rect.width(),
+            h: rect.height(),
+        }
+    }
+}
+
 /// Rotation in radians.
 pub type RotRad = f32;
 
@@ -217,13 +237,24 @@ pub struct Confetti {
 }
 
 impl Confetti {
-    /// Ejects `count` pieces from the Convert-button corner area upward
-    /// (celebrating *the run that just finished*, next to where its
-    /// button lives). Deterministic for a given seed.
+    /// Ejects `count` pieces distributed round-robin over `origins`
+    /// (plan 16 F21: the size/ratio cells of the rows that finished
+    /// `Encoded` in this run), each spraying upward from inside its
+    /// origin rect. A single-origin slice reproduces the plan-12 burst
+    /// semantics piece-for-piece; an empty origin slice yields an empty
+    /// (dead) burst — rows scrolled out of view simply don't emit.
+    /// Deterministic for a given seed.
     #[must_use]
-    pub fn burst(count: usize, origin_area: RectPx, rng: &mut impl Rng) -> Self {
+    pub fn burst_multi(count: usize, origins: &[RectPx], rng: &mut impl Rng) -> Self {
+        if origins.is_empty() {
+            return Self {
+                parts: Vec::new(),
+                t_left: LIFETIME_CAP,
+            };
+        }
         let parts = (0..count)
-            .map(|_| {
+            .map(|index| {
+                let origin_area = origins[index % origins.len()];
                 // spray cone around straight-up (±~52°)
                 let angle = rng.next_range(-0.9, 0.9);
                 let speed = rng.next_range(240.0, 540.0);
@@ -435,14 +466,14 @@ mod tests {
     #[test]
     fn burst_yields_requested_pieces_with_expected_geometry() {
         let mut rng = Lcg::new(42);
-        let confetti = Confetti::burst(
+        let confetti = Confetti::burst_multi(
             50,
-            RectPx {
+            &[RectPx {
                 x: 10.0,
                 y: 100.0,
                 w: 40.0,
                 h: 20.0,
-            },
+            }],
             &mut rng,
         );
         assert_eq!(confetti.visible(), 50);
@@ -464,8 +495,8 @@ mod tests {
         };
         let mut rng_a = Lcg::new(7);
         let mut rng_b = Lcg::new(7);
-        let a = Confetti::burst(30, origin, &mut rng_a);
-        let b = Confetti::burst(30, origin, &mut rng_b);
+        let a = Confetti::burst_multi(30, &[origin], &mut rng_a);
+        let b = Confetti::burst_multi(30, &[origin], &mut rng_b);
         assert_eq!(a.rects().collect::<Vec<_>>(), b.rects().collect::<Vec<_>>());
     }
 
@@ -477,7 +508,7 @@ mod tests {
             w: 1.0,
             h: 1.0,
         };
-        let mut confetti = Confetti::burst(1, origin, &mut Lcg::new(2));
+        let mut confetti = Confetti::burst_multi(1, &[origin], &mut Lcg::new(2));
         let p0 = confetti.parts[0];
         let dt = 0.05;
         confetti.step(dt);
@@ -512,7 +543,7 @@ mod tests {
             w: 1.0,
             h: 1.0,
         };
-        let mut confetti = Confetti::burst(1, origin, &mut Lcg::new(2));
+        let mut confetti = Confetti::burst_multi(1, &[origin], &mut Lcg::new(2));
         let v0 = confetti.parts[0].vy;
         let dt = 0.05;
         for _ in 0..20 {
@@ -534,7 +565,7 @@ mod tests {
             w: 1.0,
             h: 1.0,
         };
-        let mut confetti = Confetti::burst(10, origin, &mut Lcg::new(3));
+        let mut confetti = Confetti::burst_multi(10, &[origin], &mut Lcg::new(3));
         let mut total = 0.0;
         while confetti.is_alive() {
             confetti.step(0.016);
@@ -600,7 +631,7 @@ mod tests {
             w: 1.0,
             h: 1.0,
         };
-        let mut confetti = Confetti::burst(2, origin, &mut Lcg::new(11));
+        let mut confetti = Confetti::burst_multi(2, &[origin], &mut Lcg::new(11));
         let (y0, life0) = (confetti.parts[0].y, confetti.parts[0].life);
         confetti.step(0.0);
         assert_eq!(confetti.parts[0].y, y0, "zero dt changes nothing");
@@ -622,9 +653,105 @@ mod tests {
             w: 1.0,
             h: 1.0,
         };
-        let confetti = Confetti::burst(0, origin, &mut Lcg::new(1));
+        let confetti = Confetti::burst_multi(0, &[origin], &mut Lcg::new(1));
         assert!(!confetti.is_alive());
         assert_eq!(confetti.rects().count(), 0);
+    }
+
+    // ---- multi-origin bursts (plan 16 F21) ---------------------------------
+
+    fn rect(x: f32, y: f32, w: f32, h: f32) -> RectPx {
+        RectPx { x, y, w, h }
+    }
+
+    #[test]
+    fn burst_multi_single_origin_keeps_the_plan12_burst_semantics() {
+        // the historic plan-12 single burst lives on as the one-element
+        // slice: the full budget spawns, every piece is born inside the
+        // origin rect (± half a piece of size jitter)
+        let origin = rect(10.0, 100.0, 40.0, 20.0);
+        let confetti = Confetti::burst_multi(60, &[origin], &mut Lcg::new(9));
+        assert_eq!(confetti.visible(), 60);
+        for (piece, _rot, _color) in confetti.rects() {
+            let center = (piece.x + piece.w * 0.5, piece.y + piece.h * 0.5);
+            assert!(
+                (origin.x - 4.0..=origin.x + origin.w + 4.0).contains(&center.0)
+                    && (origin.y - 4.0..=origin.y + origin.h + 4.0).contains(&center.1),
+                "piece center {center:?} outside the single origin"
+            );
+        }
+    }
+
+    #[test]
+    fn burst_multi_distributes_round_robin_over_origins() {
+        let origins = [rect(0.0, 0.0, 10.0, 10.0), rect(1000.0, 0.0, 10.0, 10.0)];
+        let confetti = Confetti::burst_multi(20, &origins, &mut Lcg::new(13));
+        assert_eq!(confetti.visible(), 20, "the full budget spawns");
+        // pieces are unstepped at birth: each one sits inside its origin
+        // rect (± half a piece of size jitter), so clustering per origin
+        // proves the round-robin spread
+        let mut counts = [0usize; 2];
+        for (piece, _rot, _color) in confetti.rects() {
+            let center = (piece.x + piece.w * 0.5, piece.y + piece.h * 0.5);
+            let slot = origins
+                .iter()
+                .position(|origin| {
+                    center.0 >= origin.x - 4.0
+                        && center.0 <= origin.x + origin.w + 4.0
+                        && center.1 >= origin.y - 4.0
+                        && center.1 <= origin.y + origin.h + 4.0
+                })
+                .expect("piece born inside one of the origins");
+            counts[slot] += 1;
+        }
+        assert_eq!(
+            counts,
+            [10, 10],
+            "round-robin splits the budget evenly for divisible counts"
+        );
+
+        // a remainder gives the leading origins one extra piece each
+        let confetti = Confetti::burst_multi(7, &origins, &mut Lcg::new(13));
+        let mut counts = [0usize; 2];
+        for (piece, _rot, _color) in confetti.rects() {
+            let center = (piece.x + piece.w * 0.5, piece.y + piece.h * 0.5);
+            let slot = origins
+                .iter()
+                .position(|origin| {
+                    center.0 >= origin.x - 4.0
+                        && center.0 <= origin.x + origin.w + 4.0
+                        && center.1 >= origin.y - 4.0
+                        && center.1 <= origin.y + origin.h + 4.0
+                })
+                .expect("piece born inside one of the origins");
+            counts[slot] += 1;
+        }
+        assert_eq!(counts, [4, 3], "round-robin leaves the remainder up front");
+
+        // more origins than pieces: every origin gets at most one piece
+        let many: Vec<RectPx> = (0..12).map(|i| rect(i as f32 * 100.0, 0.0, 10.0, 10.0)).collect();
+        let confetti = Confetti::burst_multi(5, &many, &mut Lcg::new(17));
+        assert_eq!(confetti.visible(), 5);
+        let mut used = Vec::new();
+        for (piece, _rot, _color) in confetti.rects() {
+            let center = piece.x + piece.w * 0.5;
+            let slot = (center / 100.0).round() as usize;
+            assert!(!used.contains(&slot), "no origin hosts two pieces");
+            used.push(slot);
+        }
+    }
+
+    #[test]
+    fn burst_multi_empty_origins_fall_back_to_no_party() {
+        let confetti = Confetti::burst_multi(50, &[], &mut Lcg::new(5));
+        assert!(!confetti.is_alive(), "no origins → nothing to celebrate on");
+        assert_eq!(confetti.rects().count(), 0);
+    }
+
+    #[test]
+    fn from_egui_maps_the_same_pixel_space() {
+        let egui_rect = egui::Rect::from_min_size(egui::pos2(3.0, 7.0), egui::vec2(30.0, 12.0));
+        assert_eq!(RectPx::from_egui(egui_rect), rect(3.0, 7.0, 30.0, 12.0));
     }
 
     // ---- count mapping (setting × ratio) ----------------------------------
