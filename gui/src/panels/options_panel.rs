@@ -10,11 +10,12 @@
 //! (output mode + directory, EXIF, collisions, animation guards — every
 //! dropdown maps 1:1 onto a CLI flag).
 //!
-//! This module also renders the two preset windows (registered from
-//! `panels::show`, both bounded like report.rs's doctrine): the "save
-//! current as preset" modal ([`show_save_window`]) and the manage window
-//! ([`show_manage_window`]) with apply/duplicate/rename/edit/export/
-//! delete(inline confirm) actions.
+//! This module also renders the two preset windows (plan 15 F12: hosted
+//! by [`crate::viewports`] as independent OS viewports, with bounded
+//! `egui::Window` embedded fallbacks like report.rs's doctrine): the
+//! "save current as preset" modal ([`show_save_window`]) and the manage
+//! window ([`show_manage_window`]) with apply/duplicate/rename/edit/
+//! export/delete(inline confirm) actions.
 //!
 //! The panel height tracks its content: the measured content height of
 //! each frame becomes the next frame's animation target (capped at 60 % of
@@ -893,87 +894,128 @@ fn import_presets_dialog(app: &mut App) {
 /// (required + unique, validated live), description, the scope toggle
 /// (default per decision 1) and the output-dir opt-in (disabled with a
 /// privacy note unless a directory is set).
+///
+/// Hosted by [`crate::viewports`] (plan 15 F12): an independent OS
+/// viewport ([`show_save_viewport_contents`]) with an `Embedded` fallback
+/// (plan 09 doctrine) — both shapes share [`save_body`] / [`save_actions`].
+/// The form has no list/scroll ceiling to begin with (plan 15 F13: it is
+/// a short fixed form, so the bounded-layout doctrine is trivially met).
 pub fn show_save_window(app: &mut App, ctx: &egui::Context) {
-    let Some(draft) = app.preset_save.clone() else {
+    let Some(mut draft) = app.preset_save.clone() else {
         return;
     };
     let mut open = true;
-    let mut draft = draft;
     let mut cancel = false;
     let mut save: Option<PresetSaveDraft> = None;
-
-    egui::Window::new("Save current as preset")
+    egui::Window::new(crate::viewports::PopupKind::PresetSave.title())
         .open(&mut open)
         .default_width(SAVE_WINDOW_WIDTH)
-        .show(ctx, |ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut draft.title)
-                    .hint_text("title (required)")
-                    .desired_width(f32::INFINITY),
-            );
-            ui.add(
-                egui::TextEdit::multiline(&mut draft.description)
-                    .hint_text("description (optional, one line about the why)")
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(2),
-            );
-            ui.add_space(4.0);
-            let policy_changes = presets::policy_change_count(&app.settings.policies);
-            if ui
-                .checkbox(
-                    &mut draft.include_policies,
-                    format!("also save output & global policies ({policy_changes} changed)"),
-                )
-                .on_hover_text(
-                    "off = format-only preset: applying it leaves your policies untouched",
-                )
-                .changed()
-                && !draft.include_policies
-            {
-                draft.include_output_dir = false;
-            }
-            let has_output_dir = app.settings.policies.has_output_directory();
-            ui.add_enabled_ui(draft.include_policies && has_output_dir, |ui| {
-                let checkbox = ui.checkbox(
-                    &mut draft.include_output_dir,
-                    "include the output directory path",
-                );
-                if !has_output_dir {
-                    checkbox.on_disabled_hover_text(
-                        "no output directory is set (\"same as input\") — nothing to embed",
-                    );
-                } else {
-                    checkbox.on_hover_text(format!(
-                        "off (recommended): the preset file never embeds local paths; \
-                         on: the file will contain {:?}",
-                        app.settings.policies.output_dir
-                    ));
-                }
-            });
-            ui.add_space(4.0);
-            let titles: Vec<String> = app
-                .user_presets
-                .iter()
-                .map(|stored| stored.preset.title.clone())
-                .collect();
-            if let Err(message) = presets::validate_draft(&draft.title, &draft.description, &titles)
-            {
-                ui.colored_label(ui.visuals().warn_fg_color, message);
-            }
-            if let Some(status) = &app.preset_status {
-                ui.colored_label(ui.visuals().error_fg_color, status);
-            }
-            ui.separator();
-            ui.horizontal(|ui| {
-                if ui.button("Save").clicked() {
-                    save = Some(draft.clone());
-                }
-                if ui.button("Cancel").clicked() {
-                    cancel = true;
-                }
-            });
-        });
+        .show(ctx, |ui| save_body(app, ui, &mut draft, &mut cancel, &mut save));
+    save_actions(app, save, cancel);
+    if !open {
+        app.preset_save = None;
+    }
+}
 
+/// The standalone-viewport shape of the save modal (called by
+/// [`crate::viewports`] while a draft is pending): the same form in a
+/// `CentralPanel` of the viewport's own context, plus the OS-title-bar
+/// close handling (same semantics as the embedded window's ✕).
+pub fn show_save_viewport_contents(app: &mut App, ctx: &egui::Context) {
+    let Some(mut draft) = app.preset_save.clone() else {
+        return;
+    };
+    if ctx.input(|input| input.viewport().close_requested()) {
+        app.preset_save = None;
+        return;
+    }
+    let mut cancel = false;
+    let mut save: Option<PresetSaveDraft> = None;
+    egui::CentralPanel::default()
+        .show(ctx, |ui| save_body(app, ui, &mut draft, &mut cancel, &mut save));
+    save_actions(app, save, cancel);
+}
+
+/// The form body shared by the embedded window and the viewport shape:
+/// draws into `ui`, collects the clicked intent into `save`/`cancel`.
+fn save_body(
+    app: &App,
+    ui: &mut egui::Ui,
+    draft: &mut PresetSaveDraft,
+    cancel: &mut bool,
+    save: &mut Option<PresetSaveDraft>,
+) {
+    ui.add(
+        egui::TextEdit::singleline(&mut draft.title)
+            .hint_text("title (required)")
+            .desired_width(f32::INFINITY),
+    );
+    ui.add(
+        egui::TextEdit::multiline(&mut draft.description)
+            .hint_text("description (optional, one line about the why)")
+            .desired_width(f32::INFINITY)
+            .desired_rows(2),
+    );
+    ui.add_space(4.0);
+    let policy_changes = presets::policy_change_count(&app.settings.policies);
+    if ui
+        .checkbox(
+            &mut draft.include_policies,
+            format!("also save output & global policies ({policy_changes} changed)"),
+        )
+        .on_hover_text(
+            "off = format-only preset: applying it leaves your policies untouched",
+        )
+        .changed()
+        && !draft.include_policies
+    {
+        draft.include_output_dir = false;
+    }
+    let has_output_dir = app.settings.policies.has_output_directory();
+    ui.add_enabled_ui(draft.include_policies && has_output_dir, |ui| {
+        let checkbox = ui.checkbox(
+            &mut draft.include_output_dir,
+            "include the output directory path",
+        );
+        if !has_output_dir {
+            checkbox.on_disabled_hover_text(
+                "no output directory is set (\"same as input\") — nothing to embed",
+            );
+        } else {
+            checkbox.on_hover_text(format!(
+                "off (recommended): the preset file never embeds local paths; \
+                 on: the file will contain {:?}",
+                app.settings.policies.output_dir
+            ));
+        }
+    });
+    ui.add_space(4.0);
+    let titles: Vec<String> = app
+        .user_presets
+        .iter()
+        .map(|stored| stored.preset.title.clone())
+        .collect();
+    if let Err(message) = presets::validate_draft(&draft.title, &draft.description, &titles) {
+        ui.colored_label(ui.visuals().warn_fg_color, message);
+    }
+    if let Some(status) = &app.preset_status {
+        ui.colored_label(ui.visuals().error_fg_color, status);
+    }
+    ui.separator();
+    ui.horizontal(|ui| {
+        if ui.button("Save").clicked() {
+            *save = Some(draft.clone());
+        }
+        if ui.button("Cancel").clicked() {
+            *cancel = true;
+        }
+    });
+}
+
+/// The action pass after the save body ran (shared): persists the draft
+/// carried in `save`, or closes the modal on cancel — mutating `app`
+/// outside the ui closure.
+fn save_actions(app: &mut App, save: Option<PresetSaveDraft>, cancel: bool) {
     if let Some(draft) = save {
         match app.save_preset_from_current(&draft) {
             Ok(()) => {
@@ -985,9 +1027,6 @@ pub fn show_save_window(app: &mut App, ctx: &egui::Context) {
     } else if cancel {
         app.preset_save = None;
         app.preset_status = None;
-    }
-    if !open {
-        app.preset_save = None;
     }
 }
 
@@ -1001,224 +1040,267 @@ struct ManageRow {
     newer: bool,
 }
 
+/// What the user clicked in the manage window this frame (collected while
+/// drawing, executed after the draw pass — `app` is mutated outside the
+/// ui closure).
+#[derive(Default)]
+struct ManageIntents {
+    import_clicked: bool,
+    unreadable_remove: Option<String>,
+    apply: Option<PresetRef>,
+    duplicate: Option<Preset>,
+    export: Option<Preset>,
+    delete: Option<String>,
+    delete_confirmed: Option<String>,
+    rename_start: Option<String>,
+    rename_submit: Option<(String, String)>, // (old, new)
+    description_start: Option<String>,
+    description_submit: Option<(String, String)>, // (title, text)
+}
+
+/// The row snapshots of the manage window (draw + action passes share
+/// them).
+struct ManageRows {
+    builtin: Vec<ManageRow>,
+    user: Vec<ManageRow>,
+    unreadable: Vec<presets::Unreadable>,
+}
+
 /// The bounded manage-presets window (plan 14 §4): grouped list with
 /// title, description preview, scope badge and modified date; actions
 /// apply / duplicate / rename / edit description / export / delete
-/// (delete confirms inline). Follows report.rs's bounded-layout doctrine:
-/// the list scrolls inside an explicit height bound.
+/// (delete confirms inline).
+///
+/// Hosted by [`crate::viewports`] (plan 15 F12): an independent OS
+/// viewport ([`show_manage_viewport_contents`]) with an `Embedded`
+/// fallback (plan 09 doctrine) — both shapes share [`manage_body`] /
+/// [`manage_actions`]. Follows report.rs's bounded-layout doctrine: the
+/// list scrolls inside an explicit height bound.
 pub fn show_manage_window(app: &mut App, ctx: &egui::Context) {
     if !app.show_preset_manager {
         return;
     }
+    let rows = manage_rows(app);
+    let mut intents = ManageIntents::default();
     let mut open = true;
-    let mut import_clicked = false;
-
-    // snapshots for the action pass (the closure borrows ui/app-data only)
-    let builtin_rows: Vec<ManageRow> = app
-        .builtins
-        .iter()
-        .map(manage_row_of)
-        .collect();
-    let user_rows: Vec<ManageRow> = app
-        .user_presets
-        .iter()
-        .map(|stored| manage_row_of(&stored.preset))
-        .collect();
-    let unreadable: Vec<presets::Unreadable> = app.unreadable_presets.clone();
-
-    // action intents collected while drawing
-    let mut unreadable_remove: Option<String> = None;
-    let mut apply: Option<PresetRef> = None;
-    let mut duplicate: Option<Preset> = None;
-    let mut export: Option<Preset> = None;
-    let mut delete: Option<String> = None;
-    let mut delete_confirmed: Option<String> = None;
-    let mut rename_start: Option<String> = None;
-    let mut rename_submit: Option<(String, String)> = None; // (old, new)
-    let mut description_start: Option<String> = None;
-    let mut description_submit: Option<(String, String)> = None; // (title, text)
-
-    egui::Window::new("Manage presets")
+    egui::Window::new(crate::viewports::PopupKind::PresetManage.title())
         .open(&mut open)
         .default_width(MANAGE_WINDOW_WIDTH)
-        .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                if ui.button("Import…").clicked() {
-                    import_clicked = true;
-                }
-                ui.weak(format!(
-                    "{} user preset(s) in {}",
-                    user_rows.len(),
-                    app.preset_store
-                        .as_ref()
-                        .map_or_else(|| "?".to_string(), |store| store.dir().display().to_string())
-                ));
-            });
-            ui.separator();
+        .show(ctx, |ui| manage_body(app, ui, &rows, &mut intents));
+    manage_actions(app, ctx, intents);
+    app.show_preset_manager = open;
+}
 
-            egui::ScrollArea::vertical()
-                .max_height(MANAGE_LIST_MAX_HEIGHT)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    ui.strong("Built-in (read-only)");
-                    for row in &builtin_rows {
-                        manage_row_ui(
-                            ui,
-                            row,
-                            &mut apply,
-                            &mut duplicate,
-                            &mut export,
-                            &mut rename_start,
-                            &mut description_start,
-                            &mut delete,
-                        );
-                        ui.separator();
-                    }
-                    ui.strong("User presets");
-                    if user_rows.is_empty() {
-                        ui.weak("(none yet — save the current configuration as a preset)");
-                    }
-                    for row in &user_rows {
-                        manage_row_ui(
-                            ui,
-                            row,
-                            &mut apply,
-                            &mut duplicate,
-                            &mut export,
-                            &mut rename_start,
-                            &mut description_start,
-                            &mut delete,
-                        );
-                        ui.separator();
-                    }
-                    if !unreadable.is_empty() {
-                        ui.strong("Unreadable files");
-                        for unreadable in &unreadable {
-                            ui.horizontal_wrapped(|ui| {
-                                let name = ui
-                                    .label(
-                                        egui::RichText::new(unreadable.file_name.clone())
-                                            .weak()
-                                            .strikethrough(),
-                                    )
-                                    .on_hover_text(unreadable.reason.clone());
-                                if let Some(raw) = &unreadable.raw_json {
-                                    let preview: String =
-                                        raw.to_string().chars().take(400).collect();
-                                    name.on_hover_text(format!(
-                                        "raw content (kept for recovery):\n{preview}"
-                                    ));
-                                }
-                                if ui.button("Remove file").clicked() {
-                                    unreadable_remove = Some(unreadable.file_name.clone());
-                                }
-                            });
+/// The standalone-viewport shape of the manage window (called by
+/// [`crate::viewports`] while open): the same body in a `CentralPanel` of
+/// the viewport's own context, plus the OS-title-bar close handling.
+pub fn show_manage_viewport_contents(app: &mut App, ctx: &egui::Context) {
+    if !app.show_preset_manager {
+        return;
+    }
+    if ctx.input(|input| input.viewport().close_requested()) {
+        app.show_preset_manager = false;
+        return;
+    }
+    let rows = manage_rows(app);
+    let mut intents = ManageIntents::default();
+    egui::CentralPanel::default()
+        .show(ctx, |ui| manage_body(app, ui, &rows, &mut intents));
+    manage_actions(app, ctx, intents);
+}
+
+/// Snapshots the manage-window row models (pure reads; the draw and
+/// action passes work off the same snapshot).
+fn manage_rows(app: &App) -> ManageRows {
+    ManageRows {
+        builtin: app.builtins.iter().map(manage_row_of).collect(),
+        user: app
+            .user_presets
+            .iter()
+            .map(|stored| manage_row_of(&stored.preset))
+            .collect(),
+        unreadable: app.unreadable_presets.clone(),
+    }
+}
+
+/// The window body shared by the embedded window and the viewport shape:
+/// toolbar, height-bounded grouped preset list, the transient inline
+/// editors (rename/description/delete-confirm) and the status line.
+fn manage_body(app: &App, ui: &mut egui::Ui, rows: &ManageRows, intents: &mut ManageIntents) {
+    ui.horizontal(|ui| {
+        if ui.button("Import…").clicked() {
+            intents.import_clicked = true;
+        }
+        ui.weak(format!(
+            "{} user preset(s) in {}",
+            rows.user.len(),
+            app.preset_store
+                .as_ref()
+                .map_or_else(|| "?".to_string(), |store| store.dir().display().to_string())
+        ));
+    });
+    ui.separator();
+
+    // bounded list (plan 09's doctrine): the list scrolls inside an
+    // explicit height bound
+    egui::ScrollArea::vertical()
+        .max_height(MANAGE_LIST_MAX_HEIGHT)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            ui.strong("Built-in (read-only)");
+            for row in &rows.builtin {
+                manage_row_ui(ui, row, intents);
+                ui.separator();
+            }
+            ui.strong("User presets");
+            if rows.user.is_empty() {
+                ui.weak("(none yet — save the current configuration as a preset)");
+            }
+            for row in &rows.user {
+                manage_row_ui(ui, row, intents);
+                ui.separator();
+            }
+            if !rows.unreadable.is_empty() {
+                ui.strong("Unreadable files");
+                for unreadable in &rows.unreadable {
+                    ui.horizontal_wrapped(|ui| {
+                        let name = ui
+                            .label(
+                                egui::RichText::new(unreadable.file_name.clone())
+                                    .weak()
+                                    .strikethrough(),
+                            )
+                            .on_hover_text(unreadable.reason.clone());
+                        if let Some(raw) = &unreadable.raw_json {
+                            let preview: String = raw.to_string().chars().take(400).collect();
+                            name.on_hover_text(format!(
+                                "raw content (kept for recovery):\n{preview}"
+                            ));
                         }
-                    }
-                });
-
-            // inline rename editor (draft prefilled with the current title)
-            let rename = ui
-                .ctx()
-                .data_mut(|data| data.get_temp::<String>(egui::Id::new(RENAME_EDIT_ID)));
-            if let Some(old) = rename {
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label("New title:");
-                    let mut draft = ui
-                        .ctx()
-                        .data_mut(|data| data.get_temp::<String>(egui::Id::new(RENAME_DRAFT_ID)))
-                        .unwrap_or_else(|| old.clone());
-                    let response = ui.text_edit_singleline(&mut draft);
-                    ui.ctx().data_mut(|data| {
-                        data.insert_temp(egui::Id::new(RENAME_DRAFT_ID), draft.clone())
+                        if ui.button("Remove file").clicked() {
+                            intents.unreadable_remove = Some(unreadable.file_name.clone());
+                        }
                     });
-                    if ui.button("Rename").clicked() || response.lost_focus() {
-                        rename_submit = Some((old.clone(), draft));
-                        ui.ctx().data_mut(|data| {
-                            data.remove::<String>(egui::Id::new(RENAME_EDIT_ID));
-                            data.remove::<String>(egui::Id::new(RENAME_DRAFT_ID));
-                        });
-                    }
-                    if ui.button("Cancel").clicked() {
-                        ui.ctx().data_mut(|data| {
-                            data.remove::<String>(egui::Id::new(RENAME_EDIT_ID));
-                            data.remove::<String>(egui::Id::new(RENAME_DRAFT_ID));
-                        });
-                    }
-                });
-            }
-
-            // inline description editor (draft prefilled with the current text)
-            let description_edit = ui
-                .ctx()
-                .data_mut(|data| data.get_temp::<String>(egui::Id::new(DESCRIPTION_EDIT_ID)));
-            if let Some(title) = description_edit {
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label(format!("Description of {title:?}:"));
-                    let mut draft = ui
-                        .ctx()
-                        .data_mut(|data| {
-                            data.get_temp::<String>(egui::Id::new(DESCRIPTION_DRAFT_ID))
-                        })
-                        .unwrap_or_else(|| {
-                            app_user_description(&user_rows, &title)
-                        });
-                    ui.add(
-                        egui::TextEdit::multiline(&mut draft)
-                            .desired_width(340.0)
-                            .desired_rows(2),
-                    );
-                    ui.ctx().data_mut(|data| {
-                        data.insert_temp(egui::Id::new(DESCRIPTION_DRAFT_ID), draft.clone());
-                    });
-                    if ui.button("Save").clicked() {
-                        description_submit = Some((title.clone(), draft.clone()));
-                        ui.ctx().data_mut(|data| {
-                            data.remove::<String>(egui::Id::new(DESCRIPTION_EDIT_ID));
-                            data.remove::<String>(egui::Id::new(DESCRIPTION_DRAFT_ID));
-                        });
-                    }
-                    if ui.button("Cancel").clicked() {
-                        ui.ctx().data_mut(|data| {
-                            data.remove::<String>(egui::Id::new(DESCRIPTION_EDIT_ID));
-                            data.remove::<String>(egui::Id::new(DESCRIPTION_DRAFT_ID));
-                        });
-                    }
-                });
-            }
-
-            // inline delete confirm swap
-            let confirming = ui
-                .ctx()
-                .data_mut(|data| data.get_temp::<String>(egui::Id::new(DELETE_CONFIRM_ID)));
-            if let Some(title) = confirming {
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.colored_label(
-                        ui.visuals().warn_fg_color,
-                        format!("delete {title:?} permanently?"),
-                    );
-                    if ui.button("Yes, delete").clicked() {
-                        delete_confirmed = Some(title.clone());
-                        ui.ctx()
-                            .data_mut(|data| data.remove::<String>(egui::Id::new(DELETE_CONFIRM_ID)));
-                    }
-                    if ui.button("Keep").clicked() {
-                        ui.ctx()
-                            .data_mut(|data| data.remove::<String>(egui::Id::new(DELETE_CONFIRM_ID)));
-                    }
-                });
-            }
-
-            if let Some(status) = &app.preset_status {
-                ui.separator();
-                ui.weak(status);
+                }
             }
         });
 
-    // ---- action pass (app mutated outside the window closure) -----------------
+    // inline rename editor (draft prefilled with the current title)
+    let rename = ui
+        .ctx()
+        .data_mut(|data| data.get_temp::<String>(egui::Id::new(RENAME_EDIT_ID)));
+    if let Some(old) = rename {
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("New title:");
+            let mut draft = ui
+                .ctx()
+                .data_mut(|data| data.get_temp::<String>(egui::Id::new(RENAME_DRAFT_ID)))
+                .unwrap_or_else(|| old.clone());
+            let response = ui.text_edit_singleline(&mut draft);
+            ui.ctx().data_mut(|data| {
+                data.insert_temp(egui::Id::new(RENAME_DRAFT_ID), draft.clone())
+            });
+            if ui.button("Rename").clicked() || response.lost_focus() {
+                intents.rename_submit = Some((old.clone(), draft));
+                ui.ctx().data_mut(|data| {
+                    data.remove::<String>(egui::Id::new(RENAME_EDIT_ID));
+                    data.remove::<String>(egui::Id::new(RENAME_DRAFT_ID));
+                });
+            }
+            if ui.button("Cancel").clicked() {
+                ui.ctx().data_mut(|data| {
+                    data.remove::<String>(egui::Id::new(RENAME_EDIT_ID));
+                    data.remove::<String>(egui::Id::new(RENAME_DRAFT_ID));
+                });
+            }
+        });
+    }
+
+    // inline description editor (draft prefilled with the current text)
+    let description_edit = ui
+        .ctx()
+        .data_mut(|data| data.get_temp::<String>(egui::Id::new(DESCRIPTION_EDIT_ID)));
+    if let Some(title) = description_edit {
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label(format!("Description of {title:?}:"));
+            let mut draft = ui
+                .ctx()
+                .data_mut(|data| {
+                    data.get_temp::<String>(egui::Id::new(DESCRIPTION_DRAFT_ID))
+                })
+                .unwrap_or_else(|| app_user_description(&rows.user, &title));
+            ui.add(
+                egui::TextEdit::multiline(&mut draft)
+                    .desired_width(340.0)
+                    .desired_rows(2),
+            );
+            ui.ctx().data_mut(|data| {
+                data.insert_temp(egui::Id::new(DESCRIPTION_DRAFT_ID), draft.clone());
+            });
+            if ui.button("Save").clicked() {
+                intents.description_submit = Some((title.clone(), draft.clone()));
+                ui.ctx().data_mut(|data| {
+                    data.remove::<String>(egui::Id::new(DESCRIPTION_EDIT_ID));
+                    data.remove::<String>(egui::Id::new(DESCRIPTION_DRAFT_ID));
+                });
+            }
+            if ui.button("Cancel").clicked() {
+                ui.ctx().data_mut(|data| {
+                    data.remove::<String>(egui::Id::new(DESCRIPTION_EDIT_ID));
+                    data.remove::<String>(egui::Id::new(DESCRIPTION_DRAFT_ID));
+                });
+            }
+        });
+    }
+
+    // inline delete confirm swap
+    let confirming = ui
+        .ctx()
+        .data_mut(|data| data.get_temp::<String>(egui::Id::new(DELETE_CONFIRM_ID)));
+    if let Some(title) = confirming {
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                format!("delete {title:?} permanently?"),
+            );
+            if ui.button("Yes, delete").clicked() {
+                intents.delete_confirmed = Some(title.clone());
+                ui.ctx()
+                    .data_mut(|data| data.remove::<String>(egui::Id::new(DELETE_CONFIRM_ID)));
+            }
+            if ui.button("Keep").clicked() {
+                ui.ctx()
+                    .data_mut(|data| data.remove::<String>(egui::Id::new(DELETE_CONFIRM_ID)));
+            }
+        });
+    }
+
+    if let Some(status) = &app.preset_status {
+        ui.separator();
+        ui.weak(status);
+    }
+}
+
+/// The action pass after the manage body ran (shared): resolves the
+/// collected intents against the store — `app` is mutated outside the ui
+/// closure.
+fn manage_actions(app: &mut App, ctx: &egui::Context, intents: ManageIntents) {
+    let ManageIntents {
+        import_clicked,
+        unreadable_remove,
+        apply,
+        duplicate,
+        export,
+        delete,
+        delete_confirmed,
+        rename_start,
+        rename_submit,
+        description_start,
+        description_submit,
+    } = intents;
     if let Some(reference) = apply
         && let Some(preset) =
             presets::find_preset(&app.builtins, &app.user_presets, &reference).cloned()
@@ -1288,7 +1370,6 @@ pub fn show_manage_window(app: &mut App, ctx: &egui::Context) {
     if import_clicked {
         import_presets_dialog(app);
     }
-    app.show_preset_manager = open;
 }
 
 /// Small helper for the temp-memory one-shot states (rename/description/
@@ -1324,17 +1405,7 @@ fn manage_row_of(preset: &Preset) -> ManageRow {
 
 /// One manage-window row: title + badges, description preview + meta, and
 /// the action buttons (read-only rows keep apply/duplicate/export).
-#[allow(clippy::too_many_arguments)]
-fn manage_row_ui(
-    ui: &mut egui::Ui,
-    row: &ManageRow,
-    apply: &mut Option<PresetRef>,
-    duplicate: &mut Option<Preset>,
-    export: &mut Option<Preset>,
-    rename_start: &mut Option<String>,
-    description_start: &mut Option<String>,
-    delete: &mut Option<String>,
-) {
+fn manage_row_ui(ui: &mut egui::Ui, row: &ManageRow, intents: &mut ManageIntents) {
     ui.vertical(|ui| {
         ui.horizontal_wrapped(|ui| {
             let title_response = ui.strong(row.preset.title.clone());
@@ -1355,23 +1426,23 @@ fn manage_row_ui(
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let reference = manage_reference(row);
                 if ui.add_enabled(!row.newer, egui::Button::new("Apply")).clicked() {
-                    *apply = Some(reference);
+                    intents.apply = Some(reference);
                 }
                 if ui.button("Duplicate").clicked() {
-                    *duplicate = Some(row.preset.clone());
+                    intents.duplicate = Some(row.preset.clone());
                 }
                 if ui.button("Export…").clicked() {
-                    *export = Some(row.preset.clone());
+                    intents.export = Some(row.preset.clone());
                 }
                 if !row.read_only {
                     if ui.button("Rename").clicked() {
-                        *rename_start = Some(row.preset.title.clone());
+                        intents.rename_start = Some(row.preset.title.clone());
                     }
                     if ui.button("Edit description").clicked() {
-                        *description_start = Some(row.preset.title.clone());
+                        intents.description_start = Some(row.preset.title.clone());
                     }
                     if ui.button("Delete").clicked() {
-                        *delete = Some(row.preset.title.clone());
+                        intents.delete = Some(row.preset.title.clone());
                     }
                 }
             });

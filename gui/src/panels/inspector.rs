@@ -1,7 +1,10 @@
-//! Visual difference inspector (plan 10 §phase 3): a bounded
-//! `egui::Window` comparing a converted pair in three modes —
-//! side-by-side, swipe (clip-rect split with a draggable handle) and an
-//! amplified abs-difference heatmap.
+//! Visual difference inspector (plan 10 §phase 3): comparing a converted
+//! pair in three modes — side-by-side, swipe (clip-rect split with a
+//! draggable handle) and an amplified abs-difference heatmap.
+//!
+//! Hosted by [`crate::viewports`] (plan 15 F12): an independent OS
+//! viewport with an `Embedded` fallback (`egui::Window`, plan 09
+//! doctrine). Both shapes render the same bounded canvas body below.
 //!
 //! Memory guardrails: both files are decoded **once per open** on the
 //! metric worker at [`crate::metrics::DISPLAY_MAX_EDGE`] (2048 px longest
@@ -199,9 +202,10 @@ impl InspectorState {
         self.texture_diff = Some(upload(ctx, "inspector-diff", &heat));
     }
 
-    /// Renders the inspector window (called every frame while open).
-    /// Dropping the state (window closed) frees buffers and textures.
-    pub fn show(app: &mut crate::app::App, ctx: &egui::Context) {
+    /// Renders the embedded fallback window (`ViewportClass::Embedded`
+    /// backends, plan 09 doctrine). Dropping the state (window closed)
+    /// frees buffers and textures.
+    pub fn show_embedded_window(app: &mut crate::app::App, ctx: &egui::Context) {
         let Some(state) = &mut app.inspector else {
             return;
         };
@@ -211,15 +215,42 @@ impl InspectorState {
             format!("{} — {}", entry.result.pretty, entry.result.interpretation())
         });
         let mut open = state.open;
-        egui::Window::new(egui::RichText::new(&state.title).small())
+        let title = state.title.clone();
+        egui::Window::new(egui::RichText::new(title).small())
             .open(&mut open)
             .resizable(true)
-            .default_width(880.0)
-            .default_height(620.0)
-            .show(ctx, |ui| body(ui, state, metric_caption.as_deref()));
+            .default_width(crate::viewports::PopupKind::Inspector.default_size()[0])
+            .default_height(crate::viewports::PopupKind::Inspector.default_size()[1])
+            .show(ctx, |ui| {
+                let state = app.inspector.as_mut().expect("checked above");
+                body(ui, state, metric_caption.as_deref());
+            });
         if !open {
             app.inspector = None; // textures + buffers dropped here
         }
+    }
+
+    /// Renders the contents of the standalone viewport (called by
+    /// [`crate::viewports`] while open): the inspector body in a
+    /// `CentralPanel` of the viewport's own context, plus the OS-title-bar
+    /// close handling (closing drops buffers and textures).
+    pub fn show_viewport_contents(app: &mut crate::app::App, ctx: &egui::Context) {
+        let Some(state) = &mut app.inspector else {
+            return;
+        };
+        if ctx.input(|input| input.viewport().close_requested()) {
+            app.inspector = None; // textures + buffers dropped here
+            return;
+        }
+        // cloned out before the mutable state borrow (metric caption of
+        // this pair, if already measured)
+        let metric_caption = app.metrics.cached(&state.input).map(|entry| {
+            format!("{} — {}", entry.result.pretty, entry.result.interpretation())
+        });
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let state = app.inspector.as_mut().expect("checked above");
+            body(ui, state, metric_caption.as_deref());
+        });
     }
 }
 

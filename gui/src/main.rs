@@ -29,6 +29,7 @@ mod reporter;
 mod settings;
 mod table;
 mod thumb;
+mod viewports;
 
 use eframe::egui;
 

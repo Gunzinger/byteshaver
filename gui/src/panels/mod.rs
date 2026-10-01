@@ -5,9 +5,10 @@
 //! headless.
 //!
 //! Layout (top to bottom): header bar, drop-zone banner + file table
-//! (central), options & policies panel, run footer. Optional windows:
-//! about, the preset save/manage windows (plan 14 §4, rendered by the
-//! options panel); the report renders in its own OS viewport (plan 09).
+//! (central), options & policies panel, run footer. Every popup window
+//! (report, about, inspector, preset save/manage) is hosted by
+//! [`crate::viewports`] as an independent OS viewport (plan 15 F12),
+//! each with a bounded `egui::Window` embedded fallback (plan 09).
 
 pub mod about;
 pub mod drop_zone;
@@ -19,12 +20,15 @@ pub mod report;
 
 use crate::app::App;
 
-/// Renders one full frame: all panels plus the optional windows.
+/// Renders one full frame: all panels plus the hosted popup viewports.
 ///
 /// Panel order: header (top), footer + options (bottom), central panel
 /// with the drop-zone banner and the queue table. Both central pieces
 /// render inside **one** `CentralPanel` (egui gives each `CentralPanel`
-/// the whole remaining rect, so a second one would be invisible).
+/// the whole remaining rect, so a second one would be invisible). The
+/// popups are hosted last, every frame, regardless of open state — that
+/// is what keeps their OS windows alive from startup (no creation flash,
+/// plan 15 F12).
 pub fn show(app: &mut App, ctx: &egui::Context) {
     header(app, ctx);
     footer::show(app, ctx);
@@ -33,23 +37,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         drop_zone::show(app, ui);
         file_table::show(app, ui);
     });
-    // the run report lives in its own OS viewport (plan 09); starting a
-    // new run clears `report`, which hides the viewport until the run
-    // finishes, then re-renders the same viewport id with fresh contents
-    if app.show_report && app.report.is_some() {
-        report::show_window(app, ctx);
-    }
-    // the visual difference inspector (plan 10 §phase 3): a bounded
-    // window whose state (buffers + textures) lives on the app and is
-    // dropped when the window closes
-    if app.inspector.is_some() {
-        inspector::InspectorState::show(app, ctx);
-    }
-    about::show_window(app, ctx);
-    // the preset save modal + manage window (plan 14 §4): bounded windows
-    // owned by the options panel, rendered like the about window
-    options_panel::show_save_window(app, ctx);
-    options_panel::show_manage_window(app, ctx);
+    crate::viewports::show_all(app, ctx);
 }
 
 /// Header bar: app title plus report/about toggles.

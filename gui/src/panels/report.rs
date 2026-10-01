@@ -3,14 +3,16 @@
 //! export — one JSON object per retained [`JobEvent`], byte-compatible
 //! with the core's `JsonlReporter` format (WS7 `--json-log`).
 //!
-//! The report renders in its **own OS viewport** (plan 09), so it can be
-//! dragged outside the main window, resized and maximized. When the
-//! backend cannot spawn multiple viewports, egui invokes the viewport
-//! callback with [`egui::ViewportClass::Embedded`] and the body degrades
-//! to a plain `egui::Window` inside the main viewport. In both shapes
-//! every scroll area carries an explicit height bound — an unbounded
-//! `auto_shrink` list made the old in-viewport window expand to the full
-//! row count and snap back on every resize attempt.
+//! The report renders in its **own OS viewport** (plan 09), hosted by
+//! [`crate::viewports`] (plan 15 F12): the OS window is created once at
+//! startup and toggled visible/hidden — no more creation flash on
+//! re-open. This module keeps the viewport *contents* (CentralPanel
+//! body, close handling, geometry persistence), the `Embedded` fallback
+//! (a bounded `egui::Window` for backends without multi-viewport
+//! support) and the shared body. In both shapes every scroll area
+//! carries an explicit height bound — an unbounded `auto_shrink` list
+//! made the old in-viewport window expand to the full row count and snap
+//! back on every resize attempt.
 
 use std::time::Duration;
 
@@ -19,17 +21,7 @@ use byteshaver::pipeline::Outcome;
 
 use crate::app::App;
 use crate::queue::{ItemStatus, format_size};
-use crate::settings::Settings;
-
-/// Stable viewport id: re-opening re-renders the same viewport, so egui
-/// reuses the OS window instead of churning a new one per run.
-const VIEWPORT_ID: &str = "run-report";
-
-/// OS window title of the report viewport.
-const WINDOW_TITLE: &str = "byteshaver — run report";
-
-/// Default inner size, used before any geometry has been persisted.
-const DEFAULT_INNER_SIZE: [f32; 2] = [760.0, 480.0];
+use crate::viewports::PopupKind;
 
 /// Height reserved below the file table for the separator, the "Notices"
 /// heading and the notices block (which itself caps at 120 px).
@@ -49,55 +41,21 @@ const ROW_HEIGHT: f32 = 20.0;
 /// after a run finishes).
 const REPAINT_INTERVAL: Duration = Duration::from_millis(200);
 
-/// Spawns the report viewport when open (called every pass from
-/// `panels::show`). On backends without multi-viewport support egui calls
-/// the callback with `ViewportClass::Embedded` and the body renders in a
-/// plain window inside the main viewport instead.
-pub fn show_window(app: &mut App, ctx: &egui::Context) {
-    let builder = viewport_builder(&app.settings);
-    ctx.show_viewport_immediate(
-        egui::ViewportId::from_hash_of(VIEWPORT_ID),
-        builder,
-        move |vctx, class| {
-            if class == egui::ViewportClass::Embedded {
-                // graceful degradation: a plain (bounded!) egui::Window —
-                // still trapped in the main window, but sized sanely
-                show_embedded_window(app, vctx);
-            } else {
-                show_viewport_contents(app, vctx);
-                vctx.request_repaint_after(REPAINT_INTERVAL);
-            }
-        },
-    );
-}
-
-/// Builds the viewport builder: title, default size and the geometry
-/// persisted from a previous session, if any.
-fn viewport_builder(settings: &Settings) -> egui::ViewportBuilder {
-    let mut builder = egui::ViewportBuilder::default()
-        .with_title(WINDOW_TITLE)
-        .with_inner_size(DEFAULT_INNER_SIZE);
-    if let Some([x, y, width, height]) = settings.report_window_geometry {
-        builder = builder
-            .with_position(egui::Pos2::new(x, y))
-            .with_inner_size([width, height]);
-    }
-    builder
-}
-
-/// Renders the contents of the standalone viewport: the report body in a
+/// Renders the contents of the standalone viewport (called by
+/// [`crate::viewports`] while the report is open): the report body in a
 /// `CentralPanel` of the viewport's own context, plus the OS-title-bar
-/// close handling and the geometry persistence.
+/// close handling, the geometry persistence and the lazy self-repaint
+/// cadence (the report is static after a run finishes).
 pub fn show_viewport_contents(app: &mut App, ctx: &egui::Context) {
-    // closing via the OS title bar hides the viewport for good (it is not
-    // spawned again while `show_report` is false, so the header button
-    // reflects the reset state)
+    // closing via the OS title bar flips the flag off; the host hides the
+    // viewport on the next frame and the header button reflects the state
     if ctx.input(|input| input.viewport().close_requested()) {
         app.show_report = false;
         return;
     }
     persist_geometry(app, ctx);
     egui::CentralPanel::default().show(ctx, |ui| report_body(app, ui));
+    ctx.request_repaint_after(REPAINT_INTERVAL);
 }
 
 /// Embedded fallback for backends without multi-viewport support: the same
@@ -105,10 +63,11 @@ pub fn show_viewport_contents(app: &mut App, ctx: &egui::Context) {
 /// window, but with sane sizing).
 pub fn show_embedded_window(app: &mut App, ctx: &egui::Context) {
     let mut open = app.show_report;
+    let [width, height] = PopupKind::Report.default_size();
     egui::Window::new("Run report")
         .open(&mut open)
-        .default_width(DEFAULT_INNER_SIZE[0])
-        .default_height(DEFAULT_INNER_SIZE[1])
+        .default_width(width)
+        .default_height(height)
         .show(ctx, |ui| report_body(app, ui));
     app.show_report = open;
 }
@@ -350,29 +309,5 @@ fn status_color(ui: &egui::Ui, status: ItemStatus) -> egui::Color32 {
         ItemStatus::Encoded => egui::Color32::from_rgb(90, 190, 110),
         ItemStatus::Error => ui.visuals().error_fg_color,
         _ => ui.visuals().weak_text_color(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn viewport_builder_restores_persisted_geometry() {
-        let plain = viewport_builder(&Settings::default());
-        assert_eq!(plain.title.as_deref(), Some(WINDOW_TITLE));
-        assert_eq!(plain.position, None);
-        assert_eq!(
-            plain.inner_size,
-            Some(egui::vec2(DEFAULT_INNER_SIZE[0], DEFAULT_INNER_SIZE[1]))
-        );
-
-        let settings = Settings {
-            report_window_geometry: Some([12.0, 34.0, 800.0, 600.0]),
-            ..Settings::default()
-        };
-        let restored = viewport_builder(&settings);
-        assert_eq!(restored.position, Some(egui::Pos2::new(12.0, 34.0)));
-        assert_eq!(restored.inner_size, Some(egui::vec2(800.0, 600.0)));
     }
 }
