@@ -681,7 +681,7 @@ dependencies = [
  "jxl-oxide",
  "kamadak-exif",
  "libheif-rs",
- "moxcms 0.8.1",
+ "moxcms 0.9.1",
  "mozjpeg",
  "oxipng",
  "png",
