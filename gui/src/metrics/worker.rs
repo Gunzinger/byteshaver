@@ -5,8 +5,9 @@
 //!
 //! Results are drained each frame from the UI thread
 //! ([`MetricState::poll`]): measurement scores land in a per-input-path
-//! map (invalidated by the output's mtime), inspector buffers are handed
-//! to the callback for texture upload.
+//! map (invalidated by the output's mtime), decode/compare failures land
+//! in a parallel error map so rows render an explicit failure (plan 15
+//! F19), inspector buffers are handed to the callback for texture upload.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -35,6 +36,17 @@ pub struct MetricEntry {
     pub result: MetricResult,
 }
 
+/// A failed measurement (plan 15 F19): decode/compare errors are stored
+/// per input path so rows render an explicit failure instead of silently
+/// staying empty. Invalidated by the output's mtime like results.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MetricError {
+    /// Output mtime at failure time (cache invalidation).
+    pub output_mtime: Option<SystemTime>,
+    /// Human-readable failure reason (unsupported format, decode caps, …).
+    pub message: String,
+}
+
 /// Work item handed to the metric thread.
 pub enum MetricJob {
     /// Compare a converted pair with the selected engine.
@@ -59,15 +71,15 @@ pub enum MetricJob {
 
 /// Result produced by the metric thread.
 pub enum MetricOutcome {
-    /// `None` = unmeasurable (decode failure etc.) — surfaced as a row
-    /// tooltip, never an error path.
+    /// `Err(reason)` = unmeasurable — the reason is stored per row and
+    /// rendered (plan 15 F19), never silently dropped.
     Measured {
         /// Input path (map key).
         input: PathBuf,
         /// Output mtime at measurement time (cache invalidation).
         output_mtime: Option<SystemTime>,
-        /// The comparison result.
-        result: Option<MetricResult>,
+        /// The comparison result, or the failure reason.
+        result: Result<MetricResult, String>,
     },
     /// Decoded inspector pair (`None`s = decode failed — the inspector
     /// shows an explanatory message, never an error path).
@@ -93,6 +105,9 @@ pub struct MetricState {
     pending: HashSet<PathBuf>,
     /// Measured results, keyed by input path.
     measured: HashMap<PathBuf, MetricEntry>,
+    /// Stored failures, keyed by input path (plan 15 F19: errors are
+    /// surfaced, not dropped; mtime-invalidated like results).
+    errors: HashMap<PathBuf, MetricError>,
     /// Engine the cached results were measured with (app-mirrored from
     /// the settings; a change invalidates the cache).
     pub engine: MetricEngineChoice,
@@ -124,6 +139,7 @@ impl MetricState {
             paused,
             pending: HashSet::new(),
             measured: HashMap::new(),
+            errors: HashMap::new(),
             engine: MetricEngineChoice::default(),
         }
     }
@@ -137,6 +153,13 @@ impl MetricState {
     #[must_use]
     pub fn cached(&self, input: &Path) -> Option<&MetricEntry> {
         self.measured.get(input)
+    }
+
+    /// Stored failure for an input path (plan 15 F19: a decode/compare
+    /// error is an explicit per-row state, not a silent nothing).
+    #[must_use]
+    pub fn error(&self, input: &Path) -> Option<&MetricError> {
+        self.errors.get(input)
     }
 
     /// Whether `input` has a request in flight.
@@ -164,6 +187,12 @@ impl MetricState {
                 return; // fresh cache hit, nothing changed on disk
             }
             self.measured.remove(&input); // stale output → re-measure
+        }
+        if let Some(error) = self.errors.get(&input) {
+            if error.output_mtime == mtime {
+                return; // already failed for this exact output
+            }
+            self.errors.remove(&input); // stale failure → re-measure
         }
         if self
             .jobs
@@ -204,6 +233,7 @@ impl MetricState {
     /// the map cannot mix engines for the aggregate display).
     pub fn clear_results(&mut self) {
         self.measured.clear();
+        self.errors.clear();
     }
 
     /// The aggregate line for the report totals (see
@@ -213,8 +243,9 @@ impl MetricState {
         super::aggregate_line(&self.measured)
     }
 
-    /// Drains the worker results: measurements land in the map, inspector
-    /// buffers go to `apply_inspection` (the app uploads the textures).
+    /// Drains the worker results: measurements land in the result map (or
+    /// the error map, plan 15 F19), inspector buffers go to
+    /// `apply_inspection` (the app uploads the textures).
     pub fn poll(
         &mut self,
         mut apply_inspection: impl FnMut(PathBuf, PathBuf, Option<RgbaImage>, Option<RgbaImage>),
@@ -227,9 +258,22 @@ impl MetricState {
                     result,
                 }) => {
                     self.pending.remove(&input);
-                    if let Some(result) = result {
-                        self.measured
-                            .insert(input, MetricEntry { output_mtime, result });
+                    match result {
+                        Ok(result) => {
+                            self.errors.remove(&input);
+                            self.measured
+                                .insert(input, MetricEntry { output_mtime, result });
+                        }
+                        Err(message) => {
+                            self.measured.remove(&input);
+                            self.errors.insert(
+                                input,
+                                MetricError {
+                                    output_mtime,
+                                    message,
+                                },
+                            );
+                        }
                     }
                 }
                 Ok(MetricOutcome::Inspected { input, output, a, b }) => {
@@ -268,13 +312,13 @@ fn worker_loop(
                         engine,
                         max_edge,
                     } => {
-                        let result =
-                            decode::load_pair(&input, &output, max_edge)
-                                .ok()
-                                .map(|(a, b)| {
-                                    let metric: Box<dyn QualityMetric> = engine.engine();
-                                    metric.compare(&a, &b)
-                                });
+                        let result = match decode::load_pair(&input, &output, max_edge) {
+                            Ok((a, b)) => {
+                                let metric: Box<dyn QualityMetric> = engine.engine();
+                                Ok(metric.compare(&a, &b))
+                            }
+                            Err(reason) => Err(reason),
+                        };
                         MetricOutcome::Measured {
                             output_mtime: file_mtime(&output),
                             input,
@@ -350,7 +394,7 @@ mod tests {
     #[test]
     fn poll_routes_measured_and_inspected_results() {
         // drain a real worker: feed it a measure job for a missing file
-        // (unmeasurable → no entry) and verify pending clears
+        // (unmeasurable → stored error, plan 15 F19) and verify pending clears
         let mut state = MetricState::new();
         let input = PathBuf::from("/definitely/missing/input.png");
         let output = PathBuf::from("/definitely/missing/output.webp");
@@ -365,6 +409,63 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(!state.is_pending(&input));
-        assert!(state.cached(&input).is_none(), "failure → no entry");
+        assert!(state.cached(&input).is_none(), "failure → no result entry");
+        let error = state.error(&input).expect("failure → stored error entry");
+        assert!(error.message.contains("input.png"), "{}", error.message);
+    }
+
+    /// Real files: a junk output measures as an explicit error; a re-request
+    /// for the same output is deduped (cached failure); rewriting the output
+    /// (newer mtime) makes it re-measurable.
+    #[test]
+    fn decode_errors_surface_and_remeasure_on_a_newer_output() {
+        let dir = std::env::temp_dir().join(format!("byteshaver-metric-error-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let input = dir.join("in.png");
+        let output = dir.join("out.png");
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            4,
+            4,
+            image::Rgba([1, 2, 3, 255]),
+        ))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .expect("encode fixture");
+        std::fs::write(&input, &png).expect("write input");
+        std::fs::write(&output, b"not an image at all").expect("write junk output");
+
+        let mut state = MetricState::new();
+        state.set_paused(false);
+        state.request_measure(input.clone(), output.clone(), MetricEngineChoice::Psnr, 4096);
+        for _ in 0..100 {
+            state.poll(|_, _, _, _| panic!("no inspection was requested"));
+            if !state.is_pending(&input) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let error = state.error(&input).expect("junk output → stored error");
+        assert!(error.message.to_lowercase().contains("format"), "{}", error.message);
+        // a second request for the same output is a cached-failure hit
+        state.request_measure(input.clone(), output.clone(), MetricEngineChoice::Psnr, 4096);
+        assert!(!state.is_pending(&input), "failure deduped like a result");
+
+        // rewriting the output (newer mtime) drops the stale failure and
+        // the re-request is accepted
+        std::thread::sleep(Duration::from_millis(5));
+        std::fs::write(&output, &png).expect("rewrite output as a real png");
+        state.request_measure(input.clone(), output.clone(), MetricEngineChoice::Psnr, 4096);
+        assert!(state.is_pending(&input), "stale error → re-measure");
+        for _ in 0..100 {
+            state.poll(|_, _, _, _| panic!("no inspection was requested"));
+            if !state.is_pending(&input) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(state.error(&input).is_none(), "failure replaced by a result");
+        assert!(state.cached(&input).is_some(), "now it measured");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

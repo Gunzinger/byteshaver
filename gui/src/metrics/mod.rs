@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 
 pub use self::dssim::DssimEngine;
 pub use self::psnr::Psnr;
-pub use self::worker::{MetricEntry, MetricState};
+pub use self::worker::{MetricEntry, MetricError, MetricState};
 
 /// Longest edge metrics are computed at by default (settings-exposed,
 /// clamped to 256..=16384). 4096 px ≈ 67 MiB per RGBA buffer.

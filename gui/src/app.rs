@@ -2198,4 +2198,22 @@ mod tests {
         assert!(policies.is_some());
         assert!(include_output_dir);
     }
+
+    #[test]
+    fn manual_measure_request_enqueues_immediately_and_off_is_a_noop() {
+        // plan 15 F19: a manual request while Manual mode is set enqueues
+        // right away (the worker unpauses whenever no job runs — the
+        // per-frame `set_paused(running.is_some())` refresh); Off ignores.
+        let mut app = default_app();
+        assert_eq!(app.settings.quality_metric, MetricMode::Manual);
+        let input = Path::new("/x/in.png");
+        let output = Path::new("/x/out.webp");
+        app.measure_quality(input, output);
+        assert!(app.metrics.is_pending(input), "Manual mode enqueues");
+        // Off mode: nothing enqueued
+        let mut app = default_app();
+        app.settings.quality_metric = MetricMode::Off;
+        app.measure_quality(input, output);
+        assert!(!app.metrics.is_pending(input), "Off mode ignores requests");
+    }
 }
