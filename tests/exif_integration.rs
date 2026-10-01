@@ -565,10 +565,12 @@ fn png_exif_source_round_trip() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// AVIF cannot embed: one warning per file and the counter increments.
+/// AVIF embeds EXIF via ravif (round-trip coverage in
+/// `tests/avif_metadata.rs`); the `gif` target remains the only still target
+/// that reports dropped metadata — one warning per file, counter increments.
 #[test]
-fn avif_reports_dropped_metadata() {
-    let dir = temp_dir("avif-drop");
+fn gif_reports_dropped_metadata() {
+    let dir = temp_dir("gif-drop");
     let input = dir.join("photo.jpg");
     let output = dir.join("out");
     let source_payload = build_exif_payload(1, false);
@@ -576,13 +578,13 @@ fn avif_reports_dropped_metadata() {
 
     let stats = run(
         single_file_config(&input, &output, ExifPolicy::Keep),
-        EncoderConfig::Avif(byteshaver::config::AvifOptions::default()),
+        EncoderConfig::Gif(byteshaver::config::GifOptions::default()),
     )
     .expect("run");
     assert_eq!(stats.successful, 1);
     assert_eq!(
         stats.metadata_dropped, 1,
-        "avif output must count as metadata-dropped"
+        "gif output must count as metadata-dropped"
     );
     let _ = fs::remove_dir_all(&dir);
 }

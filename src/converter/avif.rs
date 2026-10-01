@@ -140,18 +140,24 @@ impl super::ImageEncoder for AvifEncoder {
         false
     }
 
-    /// ravif has no metadata API, so EXIF cannot be embedded into avif
-    /// outputs (the pipeline warns and counts these files).
-    fn supports_metadata(&self) -> bool {
-        false
-    }
-
     fn adjust_threading(&mut self, budget: ThreadBudget) {
         self.num_threads = budget.threads_per_encoder;
     }
 
     fn encode_still_image(&self, image: &DynamicImage) -> Result<Vec<u8>, Error> {
-        encode_avif(image, &self.options, self.num_threads)
+        encode_avif(image, &self.options, self.num_threads, None)
+    }
+
+    fn encode_still_image_with_metadata(
+        &self,
+        image: &DynamicImage,
+        metadata: &crate::metadata::ImageMetadata,
+    ) -> Result<Vec<u8>, Error> {
+        // ravif >= 0.13 serializes the resolved EXIF payload (raw TIFF
+        // convention) as a standard HEIF Exif item (infe/iloc + iref 'cdsc')
+        // after the AV1 encode — the pixels are unaffected.
+        let exif = metadata.exif.as_deref();
+        encode_avif(image, &self.options, self.num_threads, exif)
     }
 }
 
@@ -184,18 +190,25 @@ fn encoder_info(
     )
 }
 
-/// Encodes a `DynamicImage` to bytes of avif format
+/// Encodes a `DynamicImage` to bytes of avif format; an optional EXIF payload
+/// (raw TIFF stream) is embedded as a standard HEIF Exif item (ravif >= 0.13,
+/// `Encoder::with_exif`) — for bare TIFF streams avif-serialize prepends the
+/// 4-byte `exif_tiff_header_offset` (zero) itself.
 fn encode_avif(
     image: &DynamicImage,
     options: &AvifOptions,
     num_threads: Option<usize>,
+    exif: Option<&[u8]>,
 ) -> Result<Vec<u8>, Error> {
-    let encoder = Encoder::new()
+    let mut encoder = Encoder::new()
         .with_quality(options.quality)
         .with_speed(options.speed) // speed: 1-10, 10 is fastest, but still slow
         .with_num_threads(num_threads) // explicit budget; None = shared global rayon pool
         .with_bit_depth(convert_bit_depth_to_ext(options.bit_depth))
         .with_internal_color_model(convert_color_model_to_ext(options.color_model));
+    if let Some(exif) = exif.filter(|payload| !payload.is_empty()) {
+        encoder = encoder.with_exif(exif);
+    }
     let avif_res: EncodedImage = if image.color().has_alpha() {
         let source_image = image.to_rgba8();
         let image = Img::new(
