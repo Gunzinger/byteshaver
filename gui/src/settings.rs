@@ -104,14 +104,20 @@ fn split_tags(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Persisted GUI state (see module docs).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Settings {
-    /// Output directory; `None` = same directory as the input (CLI default).
+/// The output/global policy mirrors shared by [`Settings`] and the
+/// configuration presets (plan 14 §1): every field maps 1:1 onto a CLI
+/// flag, so presets can carry them verbatim.
+///
+/// Privacy (plan 14 §2): a `None` [`PolicySet::output_dir`] is never
+/// serialized (`skip_serializing_if`); a `Some` path is only written when
+/// a preset explicitly opts in via `include_output_dir` — see
+/// `crate::presets`, which strips the field before writing otherwise.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicySet {
+    /// Output directory; `None` = same directory as the input (CLI
+    /// default). Never serialized while unset (privacy, plan 14 §2).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub output_dir: Option<String>,
-    /// Selected target encoder with its options (serde of the core's
-    /// [`EncoderConfig`], WS7 C6).
-    pub encoder: EncoderConfig,
     /// EXIF policy editor state.
     pub exif: ExifSettings,
     /// Collision/overwrite policy.
@@ -128,6 +134,37 @@ pub struct Settings {
     pub max_animation_memory_mib: u64,
     /// CLI `--reverse-processing-order` mirror.
     pub reverse_processing_order: bool,
+}
+
+impl Default for PolicySet {
+    fn default() -> Self {
+        PolicySet {
+            output_dir: None,
+            exif: ExifSettings::default(),
+            collision: CollisionChoice::default(),
+            animated_input: AnimatedInputPolicy::default(),
+            heif_image_policy: HeifImagePolicy::default(),
+            discard_if_larger_than_input: false,
+            discard_input_alpha_channel: false,
+            max_animation_memory_mib: 4096,
+            reverse_processing_order: false,
+        }
+    }
+}
+
+/// Persisted GUI state (see module docs).
+///
+/// The nine policy mirrors live in the embedded [`PolicySet`] (plan 14
+/// §1). Serialization writes the new shape (`"policies": {…}`); the
+/// custom [`Deserialize`] impl additionally accepts the pre-plan-14
+/// layout where the nine fields sit at the top level (see [`SettingsDe`]).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Settings {
+    /// Selected target encoder with its options (serde of the core's
+    /// [`EncoderConfig`], WS7 C6).
+    pub encoder: EncoderConfig,
+    /// Output/global policy mirrors (plan 14 §1).
+    pub policies: PolicySet,
     /// Confetti intensity of the post-run celebration (plan 12 §3,
     /// decision D1: default Regular).
     #[serde(default)]
@@ -185,19 +222,92 @@ fn default_true() -> bool {
     true
 }
 
+/// Deserialization intermediate of [`Settings`]: every field optional so
+/// both the current layout (nine policy mirrors embedded under
+/// `"policies"`, plan 14 §1) and the pre-plan-14 layout (the nine fields
+/// at the top level) load; missing fields fall back to their defaults.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct SettingsDe {
+    encoder: Option<EncoderConfig>,
+    policies: Option<PolicySet>,
+    // pre-plan-14 flat layout (top-level policy mirrors)
+    output_dir: Option<String>,
+    exif: Option<ExifSettings>,
+    collision: Option<CollisionChoice>,
+    animated_input: Option<AnimatedInputPolicy>,
+    heif_image_policy: Option<HeifImagePolicy>,
+    discard_if_larger_than_input: Option<bool>,
+    discard_input_alpha_channel: Option<bool>,
+    max_animation_memory_mib: Option<u64>,
+    reverse_processing_order: Option<bool>,
+    // everything after the policy block (unchanged by the refactor)
+    confetti: Option<ConfettiLevel>,
+    reduced_motion: Option<bool>,
+    options_tree_open: Option<bool>,
+    policies_tree_open: Option<bool>,
+    window_size: Option<[f32; 2]>,
+    report_window_geometry: Option<[f32; 4]>,
+    table_columns: Option<ColumnState>,
+    table_sort: Option<SortKey>,
+    thumbnails: Option<ThumbMode>,
+    quality_metric: Option<crate::metrics::MetricMode>,
+    metric_engine: Option<crate::metrics::MetricEngineChoice>,
+    metric_max_edge: Option<u32>,
+}
+
+impl From<SettingsDe> for Settings {
+    fn from(de: SettingsDe) -> Self {
+        // an old file carries the nine mirrors at the top level; a file
+        // with an explicit `policies` object wins over any stray flat
+        // fields (both shapes never coexist in practice)
+        let policies = de.policies.unwrap_or_else(|| PolicySet {
+            output_dir: de.output_dir,
+            exif: de.exif.unwrap_or_default(),
+            collision: de.collision.unwrap_or_default(),
+            animated_input: de.animated_input.unwrap_or_default(),
+            heif_image_policy: de.heif_image_policy.unwrap_or_default(),
+            discard_if_larger_than_input: de.discard_if_larger_than_input.unwrap_or_default(),
+            discard_input_alpha_channel: de.discard_input_alpha_channel.unwrap_or_default(),
+            max_animation_memory_mib: de
+                .max_animation_memory_mib
+                .unwrap_or(PolicySet::default().max_animation_memory_mib),
+            reverse_processing_order: de.reverse_processing_order.unwrap_or_default(),
+        });
+        Settings {
+            encoder: de
+                .encoder
+                .unwrap_or_else(|| EncoderConfig::Webp(Default::default())),
+            policies,
+            confetti: de.confetti.unwrap_or_default(),
+            reduced_motion: de.reduced_motion.unwrap_or_default(),
+            options_tree_open: de.options_tree_open.unwrap_or_else(default_true),
+            policies_tree_open: de.policies_tree_open.unwrap_or_else(default_true),
+            window_size: de.window_size,
+            report_window_geometry: de.report_window_geometry,
+            table_columns: de.table_columns.unwrap_or_default(),
+            table_sort: de.table_sort.unwrap_or_default(),
+            thumbnails: de.thumbnails.unwrap_or_default(),
+            quality_metric: de.quality_metric.unwrap_or_default(),
+            metric_engine: de.metric_engine.unwrap_or_default(),
+            metric_max_edge: de
+                .metric_max_edge
+                .unwrap_or_else(default_metric_max_edge),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Settings {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(SettingsDe::deserialize(deserializer)?.into())
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            output_dir: None,
             encoder: EncoderConfig::Webp(Default::default()),
-            exif: ExifSettings::default(),
-            collision: CollisionChoice::default(),
-            animated_input: AnimatedInputPolicy::default(),
-            heif_image_policy: HeifImagePolicy::default(),
-            discard_if_larger_than_input: false,
-            discard_input_alpha_channel: false,
-            max_animation_memory_mib: 4096,
-            reverse_processing_order: false,
+            policies: PolicySet::default(),
             confetti: ConfettiLevel::default(),
             reduced_motion: false,
             options_tree_open: true,
@@ -271,20 +381,22 @@ mod tests {
     #[test]
     fn settings_round_trip_through_json() {
         let settings = Settings {
-            output_dir: Some("/tmp/out".to_string()),
             encoder: EncoderConfig::Webp(Default::default()),
-            exif: ExifSettings {
-                mode: ExifMode::FilterExcept,
-                except_tags: "gps,Orientation".to_string(),
-                only_tags: String::new(),
+            policies: PolicySet {
+                output_dir: Some("/tmp/out".to_string()),
+                exif: ExifSettings {
+                    mode: ExifMode::FilterExcept,
+                    except_tags: "gps,Orientation".to_string(),
+                    only_tags: String::new(),
+                },
+                collision: CollisionChoice::OverwriteIfSmaller,
+                animated_input: AnimatedInputPolicy::Error,
+                heif_image_policy: HeifImagePolicy::All,
+                discard_if_larger_than_input: true,
+                discard_input_alpha_channel: true,
+                max_animation_memory_mib: 1024,
+                reverse_processing_order: true,
             },
-            collision: CollisionChoice::OverwriteIfSmaller,
-            animated_input: AnimatedInputPolicy::Error,
-            heif_image_policy: HeifImagePolicy::All,
-            discard_if_larger_than_input: true,
-            discard_input_alpha_channel: true,
-            max_animation_memory_mib: 1024,
-            reverse_processing_order: true,
             confetti: ConfettiLevel::Excessive,
             reduced_motion: true,
             options_tree_open: false,
@@ -308,6 +420,120 @@ mod tests {
         let json = serde_json::to_string(&settings).expect("serialize settings");
         let parsed: Settings = serde_json::from_str(&json).expect("deserialize settings");
         assert_eq!(parsed, settings);
+    }
+
+    // ---- plan 14 §1: PolicySet extraction + layout migration -----------------
+
+    #[test]
+    fn pre_policieset_settings_files_load_from_the_flat_layout() {
+        // settings written before plan 14 carry the nine policy mirrors at
+        // the top level; they must migrate into the embedded PolicySet
+        let old = serde_json::json!({
+            "output_dir": "/tmp/legacy-out",
+            "encoder": { "Webp": { "lossless": false, "quality": 80.0 } },
+            "exif": { "mode": "FilterExcept", "except_tags": "gps", "only_tags": "" },
+            "collision": "OverwriteIfSmaller",
+            "animated_input": "Error",
+            "heif_image_policy": "All",
+            "discard_if_larger_than_input": true,
+            "discard_input_alpha_channel": true,
+            "max_animation_memory_mib": 512,
+            "reverse_processing_order": true,
+            "reduced_motion": true,
+            "window_size": [1100.0, 720.0],
+        });
+        let parsed: Settings = serde_json::from_value(old).expect("flat layout loads");
+        assert_eq!(
+            parsed.policies.output_dir.as_deref(),
+            Some("/tmp/legacy-out")
+        );
+        assert_eq!(parsed.policies.exif.mode, ExifMode::FilterExcept);
+        assert_eq!(parsed.policies.exif.except_tags, "gps");
+        assert_eq!(parsed.policies.collision, CollisionChoice::OverwriteIfSmaller);
+        assert_eq!(
+            parsed.policies.animated_input,
+            AnimatedInputPolicy::Error
+        );
+        assert_eq!(parsed.policies.heif_image_policy, HeifImagePolicy::All);
+        assert!(parsed.policies.discard_if_larger_than_input);
+        assert!(parsed.policies.discard_input_alpha_channel);
+        assert_eq!(parsed.policies.max_animation_memory_mib, 512);
+        assert!(parsed.policies.reverse_processing_order);
+        assert!(parsed.reduced_motion, "non-policy fields migrate too");
+        assert_eq!(
+            parsed.encoder,
+            EncoderConfig::Webp(byteshaver::config::WebpOptions {
+                lossless: false,
+                quality: 80.0
+            })
+        );
+    }
+
+    #[test]
+    fn flat_layout_defaults_apply_where_the_file_is_silent() {
+        // an old file missing most fields still loads with defaults
+        let old = serde_json::json!({
+            "encoder": { "Jpeg": null },
+        });
+        let parsed: Settings = serde_json::from_value(old).expect("minimal flat file loads");
+        assert_eq!(parsed.policies, PolicySet::default());
+    }
+
+    #[test]
+    fn embedded_policies_shape_serializes_and_wins_over_flat_fields() {
+        let mut settings = Settings::default();
+        settings.policies.output_dir = Some("/tmp/new-shape".to_string());
+        settings.policies.collision = CollisionChoice::OverwriteAlways;
+        let value = serde_json::to_value(&settings).expect("serialize new shape");
+        let object = value.as_object().expect("settings object");
+        assert!(
+            object.contains_key("policies"),
+            "the embedded policy object is the new on-disk shape"
+        );
+        assert!(
+            !object.contains_key("output_dir"),
+            "the nine mirrors no longer sit at the top level"
+        );
+        assert!(
+            object["policies"]
+                .as_object()
+                .expect("policy object")
+                .contains_key("output_dir"),
+            "a set output_dir is embedded in the policies object"
+        );
+        // a None output_dir is skipped on serialization (privacy, plan 14 §2)
+        let defaults = serde_json::to_value(Settings::default()).expect("serialize defaults");
+        assert!(
+            !defaults["policies"]
+                .as_object()
+                .expect("policy object")
+                .contains_key("output_dir"),
+        );
+        let parsed: Settings = serde_json::from_value(value).expect("new shape loads");
+        assert_eq!(parsed, settings);
+
+        // a hypothetical file carrying both shapes: embedded wins
+        let mut both = serde_json::to_value(&settings).expect("new shape");
+        both["output_dir"] = serde_json::json!("/tmp/stale-flat");
+        let parsed: Settings = serde_json::from_value(both).expect("both shapes load");
+        assert_eq!(parsed.policies.output_dir.as_deref(), Some("/tmp/new-shape"));
+    }
+
+    #[test]
+    fn policy_set_defaults_match_the_cli_defaults() {
+        let policies = PolicySet::default();
+        assert_eq!(policies.output_dir, None);
+        assert_eq!(policies.collision, CollisionChoice::KeepExisting);
+        assert_eq!(
+            policies.animated_input,
+            AnimatedInputPolicy::FirstFrame
+        );
+        assert_eq!(policies.heif_image_policy, HeifImagePolicy::Primary);
+        assert!(!policies.discard_if_larger_than_input);
+        assert!(!policies.discard_input_alpha_channel);
+        assert_eq!(policies.max_animation_memory_mib, 4096);
+        assert!(!policies.reverse_processing_order);
+        assert_eq!(Settings::default().policies, policies);
     }
 
     #[test]

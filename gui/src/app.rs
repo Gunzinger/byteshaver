@@ -392,7 +392,7 @@ impl App {
     ///
     /// The CLI's selector parse error message.
     pub fn exif_policy(&self) -> Result<ExifPolicy, String> {
-        self.settings.exif.to_policy()
+        self.settings.policies.exif.to_policy()
     }
 
     /// Builds the shared [`ConversionConfig`] from the global policy
@@ -402,21 +402,24 @@ impl App {
     ///
     /// The EXIF selector parse error.
     pub fn build_conversion_config(&self) -> Result<ConversionConfig, String> {
-        let (overwrite_if_smaller, overwrite_existing) = self.settings.collision.flags();
+        let (overwrite_if_smaller, overwrite_existing) = self.settings.policies.collision.flags();
         Ok(ConversionConfig {
             // input selection happens via the spec's InputSelection
             pattern: String::new(),
             // overridden by the spec's output directory
             output: String::new(),
-            reverse_processing_order: self.settings.reverse_processing_order,
+            reverse_processing_order: self.settings.policies.reverse_processing_order,
             overwrite_if_smaller,
             overwrite_existing,
-            discard_if_larger_than_input: self.settings.discard_if_larger_than_input,
-            discard_input_alpha_channel: self.settings.discard_input_alpha_channel,
+            discard_if_larger_than_input: self
+                .settings
+                .policies
+                .discard_if_larger_than_input,
+            discard_input_alpha_channel: self.settings.policies.discard_input_alpha_channel,
             exif: self.exif_policy()?,
-            heif_image_policy: self.settings.heif_image_policy,
-            animated_input: self.settings.animated_input,
-            max_animation_memory_mib: self.settings.max_animation_memory_mib,
+            heif_image_policy: self.settings.policies.heif_image_policy,
+            animated_input: self.settings.policies.animated_input,
+            max_animation_memory_mib: self.settings.policies.max_animation_memory_mib,
         })
     }
 
@@ -435,6 +438,7 @@ impl App {
             inputs: InputSelection::Files(self.queue.selection()),
             output: self
                 .settings
+                .policies
                 .output_dir
                 .as_deref()
                 .filter(|dir| !dir.is_empty())
@@ -918,13 +922,13 @@ mod tests {
     #[test]
     fn policy_mirrors_map_onto_the_cli_flag_values() {
         let mut app = default_app();
-        app.settings.collision = CollisionChoice::OverwriteIfSmaller;
-        app.settings.animated_input = byteshaver::config::AnimatedInputPolicy::Error;
-        app.settings.discard_if_larger_than_input = true;
-        app.settings.discard_input_alpha_channel = true;
-        app.settings.max_animation_memory_mib = 512;
-        app.settings.reverse_processing_order = true;
-        app.settings.exif = ExifSettings {
+        app.settings.policies.collision = CollisionChoice::OverwriteIfSmaller;
+        app.settings.policies.animated_input = byteshaver::config::AnimatedInputPolicy::Error;
+        app.settings.policies.discard_if_larger_than_input = true;
+        app.settings.policies.discard_input_alpha_channel = true;
+        app.settings.policies.max_animation_memory_mib = 512;
+        app.settings.policies.reverse_processing_order = true;
+        app.settings.policies.exif = ExifSettings {
             mode: ExifMode::FilterExcept,
             except_tags: "gps".to_string(),
             only_tags: String::new(),
@@ -961,7 +965,7 @@ mod tests {
     fn job_spec_uses_files_selection_and_output_override() {
         let mut app = default_app();
         app.queue.add_paths(vec![PathBuf::from("/x/a.png")]);
-        app.settings.output_dir = Some("/tmp/out".to_string());
+        app.settings.policies.output_dir = Some("/tmp/out".to_string());
         let spec = app.build_job_spec().expect("valid settings");
         assert_eq!(
             spec.inputs,
@@ -973,7 +977,7 @@ mod tests {
         assert_eq!(spec.common.output, "");
 
         // empty output string means "same as input" (CLI default)
-        app.settings.output_dir = None;
+        app.settings.policies.output_dir = None;
         let spec = app.build_job_spec().expect("valid settings");
         assert_eq!(spec.output, None);
     }
@@ -981,7 +985,7 @@ mod tests {
     #[test]
     fn exif_policy_is_injected_into_oxipng_and_jxl_options() {
         let mut app = default_app();
-        app.settings.exif = ExifSettings {
+        app.settings.policies.exif = ExifSettings {
             mode: ExifMode::FilterExcept,
             except_tags: "gps,Orientation".to_string(),
             only_tags: String::new(),
@@ -1017,7 +1021,7 @@ mod tests {
     #[test]
     fn invalid_exif_selectors_block_the_start() {
         let mut app = default_app();
-        app.settings.exif = ExifSettings {
+        app.settings.policies.exif = ExifSettings {
             mode: ExifMode::KeepOnly,
             only_tags: "NoSuchTag!!!".to_string(),
             except_tags: String::new(),
@@ -1388,7 +1392,7 @@ mod tests {
 
         let mut app = default_app();
         app.select_encoder("webp");
-        app.settings.output_dir = Some(out_files.display().to_string());
+        app.settings.policies.output_dir = Some(out_files.display().to_string());
         // enqueue the directory only — the core must expand it recursively
         app.queue.add_paths(vec![input_dir.clone()]);
 

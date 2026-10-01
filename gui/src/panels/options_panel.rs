@@ -449,25 +449,25 @@ fn encoder_picker(ui: &mut egui::Ui, app: &mut App) {
 /// Output directory: "same as input" (default) or a browsed path; maps
 /// onto the spec's `output` override (CLI `-o`).
 fn output_dir_ui(ui: &mut egui::Ui, app: &mut App) {
-    let mut same_as_input = app.settings.output_dir.is_none();
+    let mut same_as_input = app.settings.policies.output_dir.is_none();
     ui.horizontal(|ui| {
         ui.label("Output:");
         if ui
             .radio_value(&mut same_as_input, true, "same as input")
             .changed()
         {
-            app.settings.output_dir = None;
+            app.settings.policies.output_dir = None;
             app.mark_settings_dirty();
         }
         if ui
             .radio_value(&mut same_as_input, false, "directory:")
             .changed()
         {
-            app.settings.output_dir = Some(String::new());
+            app.settings.policies.output_dir = Some(String::new());
             app.mark_settings_dirty();
         }
         if !same_as_input {
-            if let Some(dir) = app.settings.output_dir.as_mut() {
+            if let Some(dir) = app.settings.policies.output_dir.as_mut() {
                 let response = ui.add(
                     egui::TextEdit::singleline(dir)
                         .hint_text("/path/to/output")
@@ -480,7 +480,7 @@ fn output_dir_ui(ui: &mut egui::Ui, app: &mut App) {
             if ui.button("Browse…").clicked()
                 && let Some(path) = rfd::FileDialog::new().pick_folder()
             {
-                app.settings.output_dir = Some(path.display().to_string());
+                app.settings.policies.output_dir = Some(path.display().to_string());
                 app.mark_settings_dirty();
             }
         }
@@ -494,7 +494,7 @@ fn collision_ui(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         ui.label("Collision:")
             .on_hover_text("behavior when an output file already exists (CLI: --overwrite-if-smaller / --overwrite-existing)");
-        let mut choice = app.settings.collision;
+        let mut choice = app.settings.policies.collision;
         egui::ComboBox::from_id_salt("collision-policy")
             .selected_text(match choice {
                 CollisionChoice::KeepExisting => "keep existing",
@@ -518,8 +518,8 @@ fn collision_ui(ui: &mut egui::Ui, app: &mut App) {
                     "overwrite always",
                 );
             });
-        if choice != app.settings.collision {
-            app.settings.collision = choice;
+        if choice != app.settings.policies.collision {
+            app.settings.policies.collision = choice;
             app.mark_settings_dirty();
         }
     });
@@ -531,7 +531,7 @@ fn exif_ui(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         ui.label("EXIF:")
             .on_hover_text("how EXIF metadata of the source is treated (CLI: --exif)");
-        let mut mode = app.settings.exif.mode;
+        let mut mode = app.settings.policies.exif.mode;
         egui::ComboBox::from_id_salt("exif-policy")
             .selected_text(match mode {
                 ExifMode::Strip => "strip (default)",
@@ -545,8 +545,8 @@ fn exif_ui(ui: &mut egui::Ui, app: &mut App) {
                 ui.selectable_value(&mut mode, ExifMode::FilterExcept, "filter: keep except tags");
                 ui.selectable_value(&mut mode, ExifMode::KeepOnly, "filter: keep only tags");
             });
-        if mode != app.settings.exif.mode {
-            app.settings.exif.mode = mode;
+        if mode != app.settings.policies.exif.mode {
+            app.settings.policies.exif.mode = mode;
             app.mark_settings_dirty();
         }
         let (enabled, text, field) = match mode {
@@ -556,9 +556,9 @@ fn exif_ui(ui: &mut egui::Ui, app: &mut App) {
         };
         if enabled {
             let field = if field == 0 {
-                &mut app.settings.exif.except_tags
+                &mut app.settings.policies.exif.except_tags
             } else {
-                &mut app.settings.exif.only_tags
+                &mut app.settings.policies.exif.only_tags
             };
             let response = ui
                 .add(
@@ -583,7 +583,7 @@ fn animation_ui(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         ui.label("Animated input:")
             .on_hover_text("behavior when animated input meets a target that cannot encode animations (CLI: --animated-input)");
-        let mut policy = app.settings.animated_input;
+        let mut policy = app.settings.policies.animated_input;
         egui::ComboBox::from_id_salt("animated-input")
             .selected_text(match policy {
                 AnimatedInputPolicy::FirstFrame => "encode first frame",
@@ -597,23 +597,23 @@ fn animation_ui(ui: &mut egui::Ui, app: &mut App) {
                 );
                 ui.selectable_value(&mut policy, AnimatedInputPolicy::Error, "error");
             });
-        if policy != app.settings.animated_input {
-            app.settings.animated_input = policy;
+        if policy != app.settings.policies.animated_input {
+            app.settings.policies.animated_input = policy;
             app.mark_settings_dirty();
         }
 
         ui.label("animation memory cap:")
             .on_hover_text("hard cap for decoded animation memory in MiB (CLI: --max-animation-memory)");
-        let mut mib = app.settings.max_animation_memory_mib;
+        let mut mib = app.settings.policies.max_animation_memory_mib;
         if ui.add(egui::DragValue::new(&mut mib).range(1..=1_048_576).suffix(" MiB")).changed() {
-            app.settings.max_animation_memory_mib = mib;
+            app.settings.policies.max_animation_memory_mib = mib;
             app.mark_settings_dirty();
         }
 
         ui.add_enabled_ui(app.capabilities.heif_input_enabled, |ui| {
             ui.label("HEIF multi-image:")
                 .on_hover_text("how HEIC/HEIF files with multiple images are treated (CLI: --heif-image-policy; requires the dec-heif feature)");
-            let mut heif = app.settings.heif_image_policy;
+            let mut heif = app.settings.policies.heif_image_policy;
             let combo = egui::ComboBox::from_id_salt("heif-policy")
                 .selected_text(match heif {
                     HeifImagePolicy::Primary => "primary image",
@@ -623,8 +623,8 @@ fn animation_ui(ui: &mut egui::Ui, app: &mut App) {
                     ui.selectable_value(&mut heif, HeifImagePolicy::Primary, "primary image");
                     ui.selectable_value(&mut heif, HeifImagePolicy::All, "all images (stem_1, stem_2, …)");
                 });
-            if heif != app.settings.heif_image_policy {
-                app.settings.heif_image_policy = heif;
+            if heif != app.settings.policies.heif_image_policy {
+                app.settings.policies.heif_image_policy = heif;
                 app.mark_settings_dirty();
             }
             if !app.capabilities.heif_input_enabled {
@@ -638,31 +638,31 @@ fn animation_ui(ui: &mut egui::Ui, app: &mut App) {
 
 /// Remaining conversion flags of the CLI.
 fn misc_ui(ui: &mut egui::Ui, app: &mut App) {
-    let mut discard_larger = app.settings.discard_if_larger_than_input;
+    let mut discard_larger = app.settings.policies.discard_if_larger_than_input;
     if ui
         .checkbox(&mut discard_larger, "discard if larger than input")
         .on_hover_text("CLI: --discard-if-larger-than-input")
         .changed()
     {
-        app.settings.discard_if_larger_than_input = discard_larger;
+        app.settings.policies.discard_if_larger_than_input = discard_larger;
         app.mark_settings_dirty();
     }
-    let mut discard_alpha = app.settings.discard_input_alpha_channel;
+    let mut discard_alpha = app.settings.policies.discard_input_alpha_channel;
     if ui
         .checkbox(&mut discard_alpha, "discard input alpha channel")
         .on_hover_text("CLI: --discard-input-alpha-channel")
         .changed()
     {
-        app.settings.discard_input_alpha_channel = discard_alpha;
+        app.settings.policies.discard_input_alpha_channel = discard_alpha;
         app.mark_settings_dirty();
     }
-    let mut reverse = app.settings.reverse_processing_order;
+    let mut reverse = app.settings.policies.reverse_processing_order;
     if ui
         .checkbox(&mut reverse, "reverse processing order")
         .on_hover_text("CLI: --reverse-processing-order")
         .changed()
     {
-        app.settings.reverse_processing_order = reverse;
+        app.settings.policies.reverse_processing_order = reverse;
         app.mark_settings_dirty();
     }
 }
