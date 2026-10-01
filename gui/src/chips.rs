@@ -1,81 +1,27 @@
-//! Interim "quality ladder" chip definitions for the options panel
-//! (plan 13 §2B, approach B).
+//! The quality-ladder chip ladder of the options panel (plan 13 §2B,
+//! approach B) — now sourced from the built-in preset table (plan 14
+//! §5/integration): every built-in profile of the selected encoder
+//! becomes a chip.
 //!
 //! A chip is a **named, complete encoder configuration**: selecting it
-//! applies the full [`EncoderConfig`]. Which chip is active is derived —
-//! never stored — by pure equality against the current config
+//! applies the full [`EncoderConfig`] via the backing built-in preset
+//! ([`Chip::preset_title`]). Which chip is active is derived — never
+//! stored — by pure equality against the current config
 //! ([`selected_chip`]), so editing any option while a chip is active
 //! unhighlights it into the "Custom…" state.
 //!
-//! **Interim table**: this module is a stand-in for plan 14's preset
-//! model. The [`Chip`] shape mirrors a `Preset` subset (title,
-//! description, encoder) plus the qualitative trade-off metadata
-//! (quality dots, size/speed tags) that plan 14's profile table will
-//! provide; the table below migrates verbatim into
-//! `presets::builtin()` once plan 14 lands. Descriptions and tags are
-//! qualitative (no benchmark runs).
+//! This module is the thin render-model layer over
+//! [`crate::presets::profiles_for`]; the preset payloads live in
+//! [`crate::presets::builtin`].
 
-use byteshaver::config::{
-    ApngOptions, AvifOptions, BitDepth, CompressionType, EncoderConfig, FilterType, GifOptions,
-    JxlOptions, OxipngLevel, OxipngOptions, PngOptions, WebpAnimOptions, WebpOptions,
-};
+use byteshaver::config::EncoderConfig;
 
-/// Qualitative expected-output-size tag of a chip (relative to the other
-/// chips of the same encoder; no benchmark runs).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SizeTag {
-    /// Smallest output of the encoder's ladder.
-    Smallest,
-    /// Noticeably smaller than typical.
-    Smaller,
-    /// Typical size for the encoder.
-    Typical,
-    /// Larger (usually because quality or losslessness wins).
-    Larger,
-}
+use crate::presets::profiles_for;
 
-impl SizeTag {
-    /// Short word rendered after the `▤` icon.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            SizeTag::Smallest => "smallest",
-            SizeTag::Smaller => "smaller",
-            SizeTag::Typical => "typical",
-            SizeTag::Larger => "larger",
-        }
-    }
-}
-
-/// Qualitative encode-time tag of a chip (relative to the other chips of
-/// the same encoder; no benchmark runs).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SpeedTag {
-    /// Faster than typical.
-    Faster,
-    /// The encoder's typical/default speed.
-    Baseline,
-    /// Slower than typical.
-    Slower,
-    /// Slowest encode of the encoder's ladder.
-    Slowest,
-}
-
-impl SpeedTag {
-    /// Short word rendered after the `⚡` icon.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            SpeedTag::Faster => "faster",
-            SpeedTag::Baseline => "baseline",
-            SpeedTag::Slower => "slower",
-            SpeedTag::Slowest => "slowest",
-        }
-    }
-}
+pub use crate::presets::{SizeTag, SpeedTag};
 
 /// One quality-ladder chip: a curated, complete encoder configuration with
-/// presentation metadata (interim data shape, see the module docs).
+/// presentation metadata (plan 14 §5's built-in profiles in ladder shape).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Chip {
     /// Chip title (short, unique per encoder).
@@ -91,6 +37,10 @@ pub struct Chip {
     pub speed_tag: SpeedTag,
     /// The complete configuration this chip applies.
     pub encoder: EncoderConfig,
+    /// Title of the built-in preset backing this chip (the apply target;
+    /// applying routes through [`crate::app::App::apply_preset`] so the
+    /// active-preset tracking stays in sync).
+    pub preset_title: &'static str,
 }
 
 impl Chip {
@@ -110,241 +60,18 @@ impl Chip {
 /// unknown names. Built-in, read-only, ordered from compact to high.
 #[must_use]
 pub fn chips_for(name: &str) -> Vec<Chip> {
-    match name {
-        "webp" => vec![
-            Chip {
-                title: "Compact",
-                description: "q70 — smaller files with mild softening",
-                quality_dots: 2,
-                size_tag: SizeTag::Smallest,
-                speed_tag: SpeedTag::Faster,
-                encoder: EncoderConfig::Webp(WebpOptions {
-                    quality: 70.0,
-                    ..WebpOptions::default()
-                }),
-            },
-            Chip {
-                title: "Balanced",
-                description: "q80 — good default for web photos",
-                quality_dots: 3,
-                size_tag: SizeTag::Smaller,
-                speed_tag: SpeedTag::Baseline,
-                encoder: EncoderConfig::Webp(WebpOptions {
-                    quality: 80.0,
-                    ..WebpOptions::default()
-                }),
-            },
-            Chip {
-                title: "High",
-                description: "q90 — the CLI default quality",
-                quality_dots: 4,
-                size_tag: SizeTag::Typical,
-                speed_tag: SpeedTag::Baseline,
-                encoder: EncoderConfig::Webp(WebpOptions::default()),
-            },
-            Chip {
-                title: "Lossless",
-                description: "byte-identical output, larger files",
-                quality_dots: 5,
-                size_tag: SizeTag::Larger,
-                speed_tag: SpeedTag::Slower,
-                encoder: EncoderConfig::Webp(WebpOptions {
-                    lossless: true,
-                    ..WebpOptions::default()
-                }),
-            },
-        ],
-        "webp-image" => vec![Chip {
-            title: "Lossless",
-            description: "image-crate lossless webp (no options)",
-            quality_dots: 5,
-            size_tag: SizeTag::Typical,
-            speed_tag: SpeedTag::Baseline,
-            encoder: EncoderConfig::WebpImage,
-        }],
-        "avif" => vec![
-            Chip {
-                title: "Compact",
-                description: "q50 · speed 6 · 8-bit — smallest files, for thumbnails and bulk archives",
-                quality_dots: 2,
-                size_tag: SizeTag::Smallest,
-                speed_tag: SpeedTag::Faster,
-                encoder: EncoderConfig::Avif(AvifOptions {
-                    quality: 50.0,
-                    speed: 6,
-                    ..AvifOptions::default()
-                }),
-            },
-            Chip {
-                title: "Balanced",
-                description: "q62 · speed 4 · 8-bit — web photos, roughly half the bytes of JPEG q85 at equal perception",
-                quality_dots: 3,
-                size_tag: SizeTag::Smaller,
-                speed_tag: SpeedTag::Baseline,
-                encoder: EncoderConfig::Avif(AvifOptions {
-                    quality: 62.0,
-                    speed: 4,
-                    ..AvifOptions::default()
-                }),
-            },
-            Chip {
-                title: "High",
-                description: "q78 · speed 3 · 10-bit — near-transparent quality, slowest encode",
-                quality_dots: 5,
-                size_tag: SizeTag::Larger,
-                speed_tag: SpeedTag::Slower,
-                encoder: EncoderConfig::Avif(AvifOptions {
-                    quality: 78.0,
-                    speed: 3,
-                    bit_depth: Some(BitDepth::Ten),
-                    ..AvifOptions::default()
-                }),
-            },
-        ],
-        "png" => vec![
-            Chip {
-                title: "Default",
-                description: "encoder defaults (balanced compression)",
-                quality_dots: 5,
-                size_tag: SizeTag::Typical,
-                speed_tag: SpeedTag::Faster,
-                encoder: EncoderConfig::Png(PngOptions::default()),
-            },
-            Chip {
-                title: "Best",
-                description: "best compression + adaptive filtering — slow",
-                quality_dots: 5,
-                size_tag: SizeTag::Smaller,
-                speed_tag: SpeedTag::Slower,
-                encoder: EncoderConfig::Png(PngOptions {
-                    compression_type: Some(CompressionType::Best),
-                    filter_type: Some(FilterType::Adaptive),
-                }),
-            },
-        ],
-        "jpeg" => vec![Chip {
-            title: "Default",
-            description: "mozjpeg defaults (the encoder has no options)",
-            quality_dots: 5,
-            size_tag: SizeTag::Typical,
-            speed_tag: SpeedTag::Baseline,
-            encoder: EncoderConfig::Jpeg,
-        }],
-        "jxl" => vec![
-            Chip {
-                title: "Compact",
-                description: "distance 2.0 · effort 8 — smallest, slower effort",
-                quality_dots: 3,
-                size_tag: SizeTag::Smallest,
-                speed_tag: SpeedTag::Slower,
-                encoder: EncoderConfig::Jxl(JxlOptions {
-                    distance: Some(2.0),
-                    effort: 8,
-                    ..JxlOptions::default()
-                }),
-            },
-            Chip {
-                title: "Balanced",
-                description: "distance 1.0 (visually lossless) · effort 7",
-                quality_dots: 4,
-                size_tag: SizeTag::Smaller,
-                speed_tag: SpeedTag::Baseline,
-                encoder: EncoderConfig::Jxl(JxlOptions {
-                    distance: Some(1.0),
-                    effort: 7,
-                    ..JxlOptions::default()
-                }),
-            },
-            Chip {
-                title: "High",
-                description: "lossless · effort 7 — bit-exact output",
-                quality_dots: 5,
-                size_tag: SizeTag::Larger,
-                speed_tag: SpeedTag::Slower,
-                encoder: EncoderConfig::Jxl(JxlOptions {
-                    lossless: true,
-                    effort: 7,
-                    ..JxlOptions::default()
-                }),
-            },
-        ],
-        "oxipng" => vec![
-            Chip {
-                title: "Default",
-                description: "level 2 preset — the CLI default",
-                quality_dots: 5,
-                size_tag: SizeTag::Typical,
-                speed_tag: SpeedTag::Faster,
-                encoder: EncoderConfig::Oxipng(OxipngOptions::default()),
-            },
-            Chip {
-                title: "Deep",
-                description: "level 4 + zopfli — smallest PNGs, much slower",
-                quality_dots: 5,
-                size_tag: SizeTag::Smallest,
-                speed_tag: SpeedTag::Slowest,
-                encoder: EncoderConfig::Oxipng(OxipngOptions {
-                    level: OxipngLevel::Four,
-                    zopfli: true,
-                    ..OxipngOptions::default()
-                }),
-            },
-        ],
-        "webp-anim" => vec![
-            Chip {
-                title: "Compact",
-                description: "q75 — smaller animations, faster encode",
-                quality_dots: 2,
-                size_tag: SizeTag::Smallest,
-                speed_tag: SpeedTag::Faster,
-                encoder: EncoderConfig::WebpAnim(WebpAnimOptions {
-                    quality: 75.0,
-                    ..WebpAnimOptions::default()
-                }),
-            },
-            Chip {
-                title: "Balanced",
-                description: "q85 — balanced animation quality",
-                quality_dots: 3,
-                size_tag: SizeTag::Smaller,
-                speed_tag: SpeedTag::Baseline,
-                encoder: EncoderConfig::WebpAnim(WebpAnimOptions {
-                    quality: 85.0,
-                    ..WebpAnimOptions::default()
-                }),
-            },
-        ],
-        "apng" => vec![
-            Chip {
-                title: "Default",
-                description: "encoder defaults (balanced compression)",
-                quality_dots: 5,
-                size_tag: SizeTag::Typical,
-                speed_tag: SpeedTag::Faster,
-                encoder: EncoderConfig::Apng(ApngOptions::default()),
-            },
-            Chip {
-                title: "Best",
-                description: "best compression + adaptive filtering — slow",
-                quality_dots: 5,
-                size_tag: SizeTag::Smaller,
-                speed_tag: SpeedTag::Slower,
-                encoder: EncoderConfig::Apng(ApngOptions {
-                    compression_type: Some(CompressionType::Best),
-                    filter_type: Some(FilterType::Adaptive),
-                }),
-            },
-        ],
-        "gif" => vec![Chip {
-            title: "Default",
-            description: "palette speed 10 (the CLI default)",
-            quality_dots: 5,
-            size_tag: SizeTag::Typical,
-            speed_tag: SpeedTag::Baseline,
-            encoder: EncoderConfig::Gif(GifOptions::default()),
-        }],
-        _ => Vec::new(),
-    }
+    profiles_for(name)
+        .into_iter()
+        .map(|profile| Chip {
+            title: profile.chip_title,
+            description: profile.description,
+            quality_dots: profile.quality_dots,
+            size_tag: profile.size_tag,
+            speed_tag: profile.speed_tag,
+            encoder: profile.encoder.clone(),
+            preset_title: profile.preset_title,
+        })
+        .collect()
 }
 
 /// Which chip of the ladder (if any) exactly matches the current config —
@@ -389,6 +116,13 @@ mod tests {
                     "chip '{}' must be exactly selectable",
                     chip.title
                 );
+                assert!(
+                    crate::presets::profiles()
+                        .iter()
+                        .any(|profile| profile.preset_title == chip.preset_title),
+                    "chip '{}' must be backed by a built-in preset",
+                    chip.title
+                );
                 titles.push(chip.title);
             }
             assert_eq!(
@@ -407,6 +141,7 @@ mod tests {
 
     #[test]
     fn editing_any_option_unhighlights_the_chip_into_custom() {
+        use byteshaver::config::FilterType;
         for name in ENCODER_NAMES {
             let chips = chips_for(name);
             let mut edited = chips[0].encoder.clone();

@@ -1,10 +1,19 @@
 //! Options panel (bottom, auto-sizing per plan 13 §4): target format
 //! picker (capability-driven, with disabled entries grayed out + reason
-//! tooltip), the quality-ladder chips ([`crate::chips`]), the per-encoder
-//! options editor ([`crate::options`]) behind a "Custom…"/"adjust ▾"
-//! disclosure, the per-encoder "↺ defaults" button with undo notice and
-//! the global policy mirrors (output directory, EXIF, collisions,
-//! animation guards — every dropdown maps 1:1 onto a CLI flag).
+//! tooltip), the preset dropdown (plan 14 §4: grouped built-ins/user
+//! presets + save/manage/import, "·modified" dimming), the quality-ladder
+//! chips ([`crate::chips`], sourced from the built-in profiles), the
+//! per-encoder options editor ([`crate::options`]) behind a "Custom…"/
+//! "adjust ▾" disclosure, the per-encoder "↺ defaults" button with undo
+//! notice and the global policy mirrors (output directory, EXIF,
+//! collisions, animation guards — every dropdown maps 1:1 onto a CLI
+//! flag).
+//!
+//! This module also renders the two preset windows (registered from
+//! `panels::show`, both bounded like report.rs's doctrine): the "save
+//! current as preset" modal ([`show_save_window`]) and the manage window
+//! ([`show_manage_window`]) with apply/duplicate/rename/edit/export/
+//! delete(inline confirm) actions.
 //!
 //! The panel height tracks its content: the measured content height of
 //! each frame becomes the next frame's animation target (capped at 60 % of
@@ -17,9 +26,10 @@ use std::time::Instant;
 
 use egui::containers::collapsing_header::CollapsingState;
 
-use crate::app::App;
+use crate::app::{App, PresetSaveDraft};
 use crate::chips::{self, Chip};
 use crate::options;
+use crate::presets::{self, Preset, PresetRef};
 
 /// Height animation duration (s); plan 12 will route this through a
 /// `reduced_motion` setting (jump instantly) — one-line togglable here.
@@ -48,6 +58,19 @@ const TARGET_TREE_ID: &str = "byteshaver-tree-target-format";
 const POLICIES_TREE_ID: &str = "byteshaver-tree-policies";
 /// egui persisted-memory id of the custom-form disclosure.
 const CUSTOM_FORM_ID: &str = "byteshaver-custom-form";
+/// egui temp-memory ids of the manage window's inline editing/confirm
+/// states (never persisted).
+const RENAME_EDIT_ID: &str = "byteshaver-preset-rename";
+const DESCRIPTION_EDIT_ID: &str = "byteshaver-preset-description-edit";
+/// Draft text slots of the inline editors (kept next to their triggers).
+const RENAME_DRAFT_ID: &str = "byteshaver-preset-rename-draft";
+const DESCRIPTION_DRAFT_ID: &str = "byteshaver-preset-description-draft";
+const DELETE_CONFIRM_ID: &str = "byteshaver-preset-delete-confirm";
+/// Bounded-window geometry (plan 09's doctrine): the manage list scrolls
+/// inside an explicit height bound.
+const MANAGE_LIST_MAX_HEIGHT: f32 = 320.0;
+const MANAGE_WINDOW_WIDTH: f32 = 600.0;
+const SAVE_WINDOW_WIDTH: f32 = 420.0;
 
 /// Undo/fade state of the last "↺ defaults" click (kept in egui temp
 /// memory; never persisted).
@@ -225,10 +248,22 @@ fn custom_disclosure(ui: &mut egui::Ui, app: &mut App) {
         ui.weak(format!("{}: {}", chip.title, chip.description));
     }
     if let LadderAction::Apply(index) = action {
-        let config = ladder[index].encoder.clone();
-        if app.settings.encoder != config {
-            app.settings.encoder = config;
-            app.mark_settings_dirty();
+        // chips route through the backing built-in preset so the active-
+        // preset tracking (plan 14 §4) stays in sync with the ladder
+        let preset_title = ladder[index].preset_title;
+        let backing = app
+            .builtins
+            .iter()
+            .find(|preset| preset.title == preset_title)
+            .cloned();
+        if let Some(preset) = backing
+            && !presets::preset_matches(
+                &preset,
+                &app.settings.encoder,
+                &app.settings.policies,
+            )
+        {
+            let _ = app.apply_preset(&preset);
         }
     }
 
@@ -414,6 +449,8 @@ fn encoder_picker(ui: &mut egui::Ui, app: &mut App) {
         .unwrap_or_else(|| current.clone());
 
     ui.horizontal(|ui| {
+        preset_dropdown(ui, app);
+        ui.separator();
         ui.label("Format:");
         let response = egui::ComboBox::from_id_salt("encoder-picker")
             .selected_text(current_label)
@@ -637,8 +674,7 @@ fn animation_ui(ui: &mut egui::Ui, app: &mut App) {
 }
 
 /// Remaining conversion flags of the CLI.
-fn misc_ui(ui: &mut egui::Ui, app: &mut App) {
-    let mut discard_larger = app.settings.policies.discard_if_larger_than_input;
+fn misc_ui(ui: &mut egui::Ui, app: &mut App) {    let mut discard_larger = app.settings.policies.discard_if_larger_than_input;
     if ui
         .checkbox(&mut discard_larger, "discard if larger than input")
         .on_hover_text("CLI: --discard-if-larger-than-input")
@@ -665,6 +701,692 @@ fn misc_ui(ui: &mut egui::Ui, app: &mut App) {
         app.settings.policies.reverse_processing_order = reverse;
         app.mark_settings_dirty();
     }
+}
+
+// ---- presets (plan 14 §4) -----------------------------------------------------
+
+/// One prepared entry of the preset dropdown menu (snapshot built before
+/// the menu closure so the app is not mutably borrowed while rendering).
+struct PresetMenuEntry {
+    reference: PresetRef,
+    title: String,
+    preview: String,
+    enabled: bool,
+    /// Grayed-out reason (encoder not compiled in / newer format).
+    reason: Option<String>,
+    /// Extra badge text (foreign core version).
+    badge: Option<String>,
+}
+
+/// The preset dropdown, left of the encoder picker (plan 14 §4): grouped
+/// Built-ins / User presets plus the Save / Manage / Import actions. The
+/// active preset is shown in the button and dims to "·modified" when the
+/// state drifts ([`App::active_preset_label`]).
+fn preset_dropdown(ui: &mut egui::Ui, app: &mut App) {
+    ui.label("Preset:");
+    let label = app
+        .active_preset_label()
+        .unwrap_or_else(|| "—".to_string());
+    let button_label = egui::RichText::new(format!("● {label} ▾"));
+    let builtin_entries: Vec<PresetMenuEntry> = app
+        .builtins
+        .iter()
+        .enumerate()
+        .map(|(index, preset)| builtin_menu_entry(app, index, preset))
+        .collect();
+    let user_entries: Vec<PresetMenuEntry> =
+        app.user_presets.iter().map(user_menu_entry).collect();
+
+    let mut chosen: Option<PresetRef> = None;
+    let mut open_save = false;
+    let mut open_manage = false;
+    let mut import_clicked = false;
+
+    let dropdown_response = ui.button(button_label);
+    egui::Popup::menu(&dropdown_response).show(|ui| {
+        ui.set_min_width(280.0);
+        ui.weak("Built-in");
+        for entry in &builtin_entries {
+            menu_entry_ui(ui, entry, &mut chosen);
+        }
+        ui.separator();
+        ui.weak(if user_entries.is_empty() {
+            "User presets (none yet)"
+        } else {
+            "User presets"
+        });
+        for entry in &user_entries {
+            menu_entry_ui(ui, entry, &mut chosen);
+        }
+        ui.separator();
+        if ui.button("Save current as preset…").clicked() {
+            open_save = true;
+        }
+        if ui.button("Manage presets…").clicked() {
+            open_manage = true;
+        }
+        if ui.button("Import…").clicked() {
+            import_clicked = true;
+        }
+    });
+
+    if let Some(reference) = chosen
+        && let Some(preset) =
+            presets::find_preset(&app.builtins, &app.user_presets, &reference).cloned()
+    {
+        match app.apply_preset(&preset) {
+            Ok(()) => app.preset_status = None,
+            Err(message) => app.preset_status = Some(message),
+        }
+    }
+    if open_save {
+        app.preset_save = Some(PresetSaveDraft::from_current(app));
+    }
+    if open_manage {
+        app.show_preset_manager = true;
+    }
+    if import_clicked {
+        import_presets_dialog(app);
+    }
+}
+
+/// One dropdown entry (enabled or grayed with its reason; hovering shows
+/// the apply-preview and any badge).
+fn menu_entry_ui(ui: &mut egui::Ui, entry: &PresetMenuEntry, chosen: &mut Option<PresetRef>) {
+    let mut item = ui.add_enabled(
+        entry.enabled,
+        egui::Button::selectable(false, entry.title.clone()),
+    );
+    let mut hover = format!("{} — {}", entry.preview, entry.title);
+    if let Some(badge) = &entry.badge {
+        hover = format!("{hover} (authored for core {badge})");
+    }
+    item = item.on_hover_text(hover);
+    if let Some(reason) = &entry.reason {
+        item = item.on_disabled_hover_text(reason);
+    }
+    if entry.enabled && item.clicked() {
+        *chosen = Some(entry.reference.clone());
+    }
+}
+
+/// Builds a dropdown entry for a built-in (grayed with the capability
+/// reason when the encoder is not compiled into this build).
+fn builtin_menu_entry(app: &App, index: usize, preset: &Preset) -> PresetMenuEntry {
+    let kind = options::encoder_kind_name(&preset.content.encoder);
+    let enabled = options::encoder_enabled(&app.capabilities, kind)
+        && !presets::is_newer_format(preset);
+    let reason = if presets::is_newer_format(preset) {
+        Some("newer preset format — cannot be applied".to_string())
+    } else {
+        options::encoder_disabled_reason(&app.capabilities, kind)
+            .map(|reason| format!("this build cannot encode {kind}: {reason}"))
+    };
+    PresetMenuEntry {
+        reference: PresetRef::Builtin(index),
+        title: preset.title.clone(),
+        preview: presets::apply_preview(preset),
+        enabled,
+        reason,
+        badge: presets::is_foreign_version(preset).then(|| preset.core_version.clone()),
+    }
+}
+
+/// Builds a dropdown entry for a user preset (newer-format files are
+/// visible but cannot be applied).
+fn user_menu_entry(stored: &presets::StoredPreset) -> PresetMenuEntry {
+    let preset = &stored.preset;
+    let enabled = !presets::is_newer_format(preset);
+    let reason = presets::is_newer_format(preset)
+        .then(|| "newer preset format — cannot be applied".to_string());
+    PresetMenuEntry {
+        reference: PresetRef::User(preset.title.clone()),
+        title: preset.title.clone(),
+        preview: presets::apply_preview(preset),
+        enabled,
+        reason,
+        badge: presets::is_foreign_version(preset).then(|| preset.core_version.clone()),
+    }
+}
+
+/// File-picker import flow (plan 14 §3): multi-select `.json`, per-file
+/// errors collect into the status line — never dialogs.
+fn import_presets_dialog(app: &mut App) {
+    let Some(paths) = rfd::FileDialog::new()
+        .add_filter("byteshaver presets", &["json"])
+        .pick_files()
+    else {
+        return;
+    };
+    match app.import_presets(&paths) {
+        Ok(0) => app.preset_status = Some("no presets imported".to_string()),
+        Ok(count) => {
+            app.preset_status = Some(format!("imported {count} preset(s)"));
+        }
+        Err(message) => app.preset_status = Some(message),
+    }
+}
+
+/// The bounded "save current as preset" modal (plan 14 §4): title
+/// (required + unique, validated live), description, the scope toggle
+/// (default per decision 1) and the output-dir opt-in (disabled with a
+/// privacy note unless a directory is set).
+pub fn show_save_window(app: &mut App, ctx: &egui::Context) {
+    let Some(draft) = app.preset_save.clone() else {
+        return;
+    };
+    let mut open = true;
+    let mut draft = draft;
+    let mut cancel = false;
+    let mut save: Option<PresetSaveDraft> = None;
+
+    egui::Window::new("Save current as preset")
+        .open(&mut open)
+        .default_width(SAVE_WINDOW_WIDTH)
+        .show(ctx, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut draft.title)
+                    .hint_text("title (required)")
+                    .desired_width(f32::INFINITY),
+            );
+            ui.add(
+                egui::TextEdit::multiline(&mut draft.description)
+                    .hint_text("description (optional, one line about the why)")
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(2),
+            );
+            ui.add_space(4.0);
+            let policy_changes = presets::policy_change_count(&app.settings.policies);
+            if ui
+                .checkbox(
+                    &mut draft.include_policies,
+                    format!("also save output & global policies ({policy_changes} changed)"),
+                )
+                .on_hover_text(
+                    "off = format-only preset: applying it leaves your policies untouched",
+                )
+                .changed()
+                && !draft.include_policies
+            {
+                draft.include_output_dir = false;
+            }
+            let has_output_dir = app.settings.policies.output_dir.is_some();
+            ui.add_enabled_ui(draft.include_policies && has_output_dir, |ui| {
+                let checkbox = ui.checkbox(
+                    &mut draft.include_output_dir,
+                    "include the output directory path",
+                );
+                if !has_output_dir {
+                    checkbox.on_disabled_hover_text(
+                        "no output directory is set (\"same as input\") — nothing to embed",
+                    );
+                } else if let Some(dir) = app.settings.policies.output_dir.as_deref() {
+                    checkbox.on_hover_text(format!(
+                        "off (recommended): the preset file never embeds local paths; \
+                         on: the file will contain {dir:?}"
+                    ));
+                }
+            });
+            ui.add_space(4.0);
+            let titles: Vec<String> = app
+                .user_presets
+                .iter()
+                .map(|stored| stored.preset.title.clone())
+                .collect();
+            if let Err(message) = presets::validate_draft(&draft.title, &draft.description, &titles)
+            {
+                ui.colored_label(ui.visuals().warn_fg_color, message);
+            }
+            if let Some(status) = &app.preset_status {
+                ui.colored_label(ui.visuals().error_fg_color, status);
+            }
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    save = Some(draft.clone());
+                }
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+        });
+
+    if let Some(draft) = save {
+        match app.save_preset_from_current(&draft) {
+            Ok(()) => {
+                app.preset_save = None;
+                app.preset_status = Some(format!("saved preset {:?}", draft.title.trim()));
+            }
+            Err(message) => app.preset_status = Some(message),
+        }
+    } else if cancel {
+        app.preset_save = None;
+        app.preset_status = None;
+    }
+    if !open {
+        app.preset_save = None;
+    }
+}
+
+/// A prepared row of the manage window (snapshot; see [`PresetMenuEntry`]).
+struct ManageRow {
+    preset: Preset,
+    scope: String,
+    modified: String,
+    read_only: bool,
+    foreign: Option<String>,
+    newer: bool,
+}
+
+/// The bounded manage-presets window (plan 14 §4): grouped list with
+/// title, description preview, scope badge and modified date; actions
+/// apply / duplicate / rename / edit description / export / delete
+/// (delete confirms inline). Follows report.rs's bounded-layout doctrine:
+/// the list scrolls inside an explicit height bound.
+pub fn show_manage_window(app: &mut App, ctx: &egui::Context) {
+    if !app.show_preset_manager {
+        return;
+    }
+    let mut open = true;
+    let mut import_clicked = false;
+
+    // snapshots for the action pass (the closure borrows ui/app-data only)
+    let builtin_rows: Vec<ManageRow> = app
+        .builtins
+        .iter()
+        .map(manage_row_of)
+        .collect();
+    let user_rows: Vec<ManageRow> = app
+        .user_presets
+        .iter()
+        .map(|stored| manage_row_of(&stored.preset))
+        .collect();
+    let unreadable: Vec<presets::Unreadable> = app.unreadable_presets.clone();
+
+    // action intents collected while drawing
+    let mut unreadable_remove: Option<String> = None;
+    let mut apply: Option<PresetRef> = None;
+    let mut duplicate: Option<Preset> = None;
+    let mut export: Option<Preset> = None;
+    let mut delete: Option<String> = None;
+    let mut delete_confirmed: Option<String> = None;
+    let mut rename_start: Option<String> = None;
+    let mut rename_submit: Option<(String, String)> = None; // (old, new)
+    let mut description_start: Option<String> = None;
+    let mut description_submit: Option<(String, String)> = None; // (title, text)
+
+    egui::Window::new("Manage presets")
+        .open(&mut open)
+        .default_width(MANAGE_WINDOW_WIDTH)
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Import…").clicked() {
+                    import_clicked = true;
+                }
+                ui.weak(format!(
+                    "{} user preset(s) in {}",
+                    user_rows.len(),
+                    app.preset_store
+                        .as_ref()
+                        .map_or_else(|| "?".to_string(), |store| store.dir().display().to_string())
+                ));
+            });
+            ui.separator();
+
+            egui::ScrollArea::vertical()
+                .max_height(MANAGE_LIST_MAX_HEIGHT)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.strong("Built-in (read-only)");
+                    for row in &builtin_rows {
+                        manage_row_ui(
+                            ui,
+                            row,
+                            &mut apply,
+                            &mut duplicate,
+                            &mut export,
+                            &mut rename_start,
+                            &mut description_start,
+                            &mut delete,
+                        );
+                        ui.separator();
+                    }
+                    ui.strong("User presets");
+                    if user_rows.is_empty() {
+                        ui.weak("(none yet — save the current configuration as a preset)");
+                    }
+                    for row in &user_rows {
+                        manage_row_ui(
+                            ui,
+                            row,
+                            &mut apply,
+                            &mut duplicate,
+                            &mut export,
+                            &mut rename_start,
+                            &mut description_start,
+                            &mut delete,
+                        );
+                        ui.separator();
+                    }
+                    if !unreadable.is_empty() {
+                        ui.strong("Unreadable files");
+                        for unreadable in &unreadable {
+                            ui.horizontal_wrapped(|ui| {
+                                let name = ui
+                                    .label(
+                                        egui::RichText::new(unreadable.file_name.clone())
+                                            .weak()
+                                            .strikethrough(),
+                                    )
+                                    .on_hover_text(unreadable.reason.clone());
+                                if let Some(raw) = &unreadable.raw_json {
+                                    let preview: String =
+                                        raw.to_string().chars().take(400).collect();
+                                    name.on_hover_text(format!(
+                                        "raw content (kept for recovery):\n{preview}"
+                                    ));
+                                }
+                                if ui.button("Remove file").clicked() {
+                                    unreadable_remove = Some(unreadable.file_name.clone());
+                                }
+                            });
+                        }
+                    }
+                });
+
+            // inline rename editor (draft prefilled with the current title)
+            let rename = ui
+                .ctx()
+                .data_mut(|data| data.get_temp::<String>(egui::Id::new(RENAME_EDIT_ID)));
+            if let Some(old) = rename {
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("New title:");
+                    let mut draft = ui
+                        .ctx()
+                        .data_mut(|data| data.get_temp::<String>(egui::Id::new(RENAME_DRAFT_ID)))
+                        .unwrap_or_else(|| old.clone());
+                    let response = ui.text_edit_singleline(&mut draft);
+                    ui.ctx().data_mut(|data| {
+                        data.insert_temp(egui::Id::new(RENAME_DRAFT_ID), draft.clone())
+                    });
+                    if ui.button("Rename").clicked() || response.lost_focus() {
+                        rename_submit = Some((old.clone(), draft));
+                        ui.ctx().data_mut(|data| {
+                            data.remove::<String>(egui::Id::new(RENAME_EDIT_ID));
+                            data.remove::<String>(egui::Id::new(RENAME_DRAFT_ID));
+                        });
+                    }
+                    if ui.button("Cancel").clicked() {
+                        ui.ctx().data_mut(|data| {
+                            data.remove::<String>(egui::Id::new(RENAME_EDIT_ID));
+                            data.remove::<String>(egui::Id::new(RENAME_DRAFT_ID));
+                        });
+                    }
+                });
+            }
+
+            // inline description editor (draft prefilled with the current text)
+            let description_edit = ui
+                .ctx()
+                .data_mut(|data| data.get_temp::<String>(egui::Id::new(DESCRIPTION_EDIT_ID)));
+            if let Some(title) = description_edit {
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label(format!("Description of {title:?}:"));
+                    let mut draft = ui
+                        .ctx()
+                        .data_mut(|data| {
+                            data.get_temp::<String>(egui::Id::new(DESCRIPTION_DRAFT_ID))
+                        })
+                        .unwrap_or_else(|| {
+                            app_user_description(&user_rows, &title)
+                        });
+                    ui.add(
+                        egui::TextEdit::multiline(&mut draft)
+                            .desired_width(340.0)
+                            .desired_rows(2),
+                    );
+                    ui.ctx().data_mut(|data| {
+                        data.insert_temp(egui::Id::new(DESCRIPTION_DRAFT_ID), draft.clone());
+                    });
+                    if ui.button("Save").clicked() {
+                        description_submit = Some((title.clone(), draft.clone()));
+                        ui.ctx().data_mut(|data| {
+                            data.remove::<String>(egui::Id::new(DESCRIPTION_EDIT_ID));
+                            data.remove::<String>(egui::Id::new(DESCRIPTION_DRAFT_ID));
+                        });
+                    }
+                    if ui.button("Cancel").clicked() {
+                        ui.ctx().data_mut(|data| {
+                            data.remove::<String>(egui::Id::new(DESCRIPTION_EDIT_ID));
+                            data.remove::<String>(egui::Id::new(DESCRIPTION_DRAFT_ID));
+                        });
+                    }
+                });
+            }
+
+            // inline delete confirm swap
+            let confirming = ui
+                .ctx()
+                .data_mut(|data| data.get_temp::<String>(egui::Id::new(DELETE_CONFIRM_ID)));
+            if let Some(title) = confirming {
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        format!("delete {title:?} permanently?"),
+                    );
+                    if ui.button("Yes, delete").clicked() {
+                        delete_confirmed = Some(title.clone());
+                        ui.ctx()
+                            .data_mut(|data| data.remove::<String>(egui::Id::new(DELETE_CONFIRM_ID)));
+                    }
+                    if ui.button("Keep").clicked() {
+                        ui.ctx()
+                            .data_mut(|data| data.remove::<String>(egui::Id::new(DELETE_CONFIRM_ID)));
+                    }
+                });
+            }
+
+            if let Some(status) = &app.preset_status {
+                ui.separator();
+                ui.weak(status);
+            }
+        });
+
+    // ---- action pass (app mutated outside the window closure) -----------------
+    if let Some(reference) = apply
+        && let Some(preset) =
+            presets::find_preset(&app.builtins, &app.user_presets, &reference).cloned()
+    {
+        match app.apply_preset(&preset) {
+            Ok(()) => app.preset_status = Some(format!("applied {:?}", preset.title)),
+            Err(message) => app.preset_status = Some(message),
+        }
+    }
+    if let Some(source) = duplicate {
+        match app.preset_duplicate(&source) {
+            Ok(()) => {}
+            Err(message) => app.preset_status = Some(message),
+        }
+    }
+    if let Some(preset) = export {
+        let suggested = presets::export_file_name(&preset);
+        if let Some(target) = rfd::FileDialog::new()
+            .add_filter("byteshaver presets", &["json"])
+            .set_file_name(suggested)
+            .save_file()
+        {
+            match app.preset_export(&preset, target) {
+                Ok(()) => app.preset_status = Some("preset exported".to_string()),
+                Err(message) => app.preset_status = Some(message),
+            }
+        }
+    }
+    if let Some(title) = rename_start {
+        ui_context_set(ctx, RENAME_EDIT_ID, title);
+    }
+    if let Some((old, new)) = rename_submit {
+        match app.preset_rename(&old, &new) {
+            Ok(()) => {}
+            Err(message) => app.preset_status = Some(message),
+        }
+    }
+    if let Some(title) = description_start {
+        ui_context_set(ctx, DESCRIPTION_EDIT_ID, title);
+    }
+    if let Some((title, text)) = description_submit {
+        match app.preset_edit_description(&title, &text) {
+            Ok(()) => {}
+            Err(message) => app.preset_status = Some(message),
+        }
+    }
+    if let Some(title) = delete {
+        ui_context_set(ctx, DELETE_CONFIRM_ID, title);
+    }
+    if let Some(file_name) = unreadable_remove
+        && let Some(store) = &app.preset_store
+    {
+        match store.delete_file(&file_name) {
+            Ok(()) => {
+                app.reload_unreadable_only();
+                app.preset_status = Some(format!("removed {file_name}"));
+            }
+            Err(message) => app.preset_status = Some(message),
+        }
+    }
+    if let Some(title) = delete_confirmed {
+        match app.preset_delete(&title) {
+            Ok(()) => app.preset_status = Some(format!("deleted {title:?}")),
+            Err(message) => app.preset_status = Some(message),
+        }
+    }
+    if import_clicked {
+        import_presets_dialog(app);
+    }
+    app.show_preset_manager = open;
+}
+
+/// Small helper for the temp-memory one-shot states (rename/description/
+/// delete-confirm) — sets `id_salt` to `value` and clears its draft slot.
+fn ui_context_set(ctx: &egui::Context, id_salt: &str, value: String) {
+    ctx.data_mut(|data| {
+        data.insert_temp(egui::Id::new(id_salt), value);
+    });
+}
+
+/// Builds the manage-window row model of one preset (scope badge, modified
+/// date, read-only/badges; pure).
+fn manage_row_of(preset: &Preset) -> ManageRow {
+    let scope = match &preset.content.policies {
+        None => "format only".to_string(),
+        Some(policies) => {
+            format!("format + {} policies", presets::policy_change_count(policies))
+        }
+    };
+    ManageRow {
+        preset: preset.clone(),
+        scope,
+        modified: if preset.builtin {
+            "built-in".to_string()
+        } else {
+            format!("modified {}", presets::format_date(preset.modified_unix))
+        },
+        read_only: preset.builtin || presets::is_newer_format(preset),
+        foreign: presets::is_foreign_version(preset).then(|| preset.core_version.clone()),
+        newer: presets::is_newer_format(preset),
+    }
+}
+
+/// One manage-window row: title + badges, description preview + meta, and
+/// the action buttons (read-only rows keep apply/duplicate/export).
+#[allow(clippy::too_many_arguments)]
+fn manage_row_ui(
+    ui: &mut egui::Ui,
+    row: &ManageRow,
+    apply: &mut Option<PresetRef>,
+    duplicate: &mut Option<Preset>,
+    export: &mut Option<Preset>,
+    rename_start: &mut Option<String>,
+    description_start: &mut Option<String>,
+    delete: &mut Option<String>,
+) {
+    ui.vertical(|ui| {
+        ui.horizontal_wrapped(|ui| {
+            let title_response = ui.strong(row.preset.title.clone());
+            if row.newer {
+                title_response
+                    .on_hover_text("written by a newer app generation — visible, read-only");
+                ui.colored_label(ui.visuals().warn_fg_color, "newer format");
+            }
+            if let Some(version) = &row.foreign {
+                ui.colored_label(ui.visuals().warn_fg_color, format!("core {version}"))
+                    .on_hover_text(
+                        "authored by a different core version; it still applies structurally",
+                    );
+            }
+            if row.read_only {
+                ui.weak("(read-only)");
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let reference = manage_reference(row);
+                if ui.add_enabled(!row.newer, egui::Button::new("Apply")).clicked() {
+                    *apply = Some(reference);
+                }
+                if ui.button("Duplicate").clicked() {
+                    *duplicate = Some(row.preset.clone());
+                }
+                if ui.button("Export…").clicked() {
+                    *export = Some(row.preset.clone());
+                }
+                if !row.read_only {
+                    if ui.button("Rename").clicked() {
+                        *rename_start = Some(row.preset.title.clone());
+                    }
+                    if ui.button("Edit description").clicked() {
+                        *description_start = Some(row.preset.title.clone());
+                    }
+                    if ui.button("Delete").clicked() {
+                        *delete = Some(row.preset.title.clone());
+                    }
+                }
+            });
+        });
+        ui.horizontal_wrapped(|ui| {
+            let description = if row.preset.description.is_empty() {
+                "(no description)".to_string()
+            } else {
+                row.preset.description.clone()
+            };
+            ui.weak(description);
+            ui.separator();
+            ui.weak(format!("{} · {}", row.scope, row.modified));
+        });
+    });
+}
+
+/// The [`PresetRef`] of a manage row (built-ins resolve by title in the
+/// action pass).
+fn manage_reference(row: &ManageRow) -> PresetRef {
+    if row.preset.builtin {
+        PresetRef::Builtin(
+            crate::presets::profiles()
+                .iter()
+                .position(|profile| profile.preset_title == row.preset.title)
+                .unwrap_or_default(),
+        )
+    } else {
+        PresetRef::User(row.preset.title.clone())
+    }
+}
+
+/// The current description of a user preset (the inline description
+/// editor's prefill; empty for unknown titles).
+fn app_user_description(rows: &[ManageRow], title: &str) -> String {
+    rows.iter()
+        .find(|row| row.preset.title == title)
+        .map_or_else(String::new, |row| row.preset.description.clone())
 }
 
 #[cfg(test)]

@@ -28,13 +28,13 @@
 //! user explicitly opts in. Applying such a preset leaves the local output
 //! directory untouched ([`preset_matches`] ignores the field accordingly).
 
-// consumed by `app.rs` + the options panel in the follow-up commit of this
-// change series; removed together with that wiring
-#![allow(dead_code, unused_imports)]
-
 mod builtin;
 
-pub use builtin::{BuiltinProfile, builtin, profiles, profiles_for};
+// nameability re-export (the profile type appears in the `profiles`
+// signatures); nothing else names the path
+#[allow(unused_imports)]
+pub use builtin::BuiltinProfile;
+pub use builtin::{builtin, profiles, profiles_for};
 
 use std::path::{Path, PathBuf};
 

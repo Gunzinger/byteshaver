@@ -6,7 +6,8 @@
 //!
 //! Layout (top to bottom): header bar, drop-zone banner + file table
 //! (central), options & policies panel, run footer. Optional windows:
-//! about; the report renders in its own OS viewport (plan 09).
+//! about, the preset save/manage windows (plan 14 §4, rendered by the
+//! options panel); the report renders in its own OS viewport (plan 09).
 
 pub mod about;
 pub mod drop_zone;
@@ -45,6 +46,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         inspector::InspectorState::show(app, ctx);
     }
     about::show_window(app, ctx);
+    // the preset save modal + manage window (plan 14 §4): bounded windows
+    // owned by the options panel, rendered like the about window
+    options_panel::show_save_window(app, ctx);
+    options_panel::show_manage_window(app, ctx);
 }
 
 /// Header bar: app title plus report/about toggles.

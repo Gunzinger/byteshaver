@@ -40,6 +40,7 @@ use byteshaver::pipeline::Outcome;
 use crate::celebrate::{Confetti, RectPx, TextFlourish};
 use crate::metrics::{MetricMode, MetricState};
 use crate::options;
+use crate::presets::PresetRef;
 use crate::queue::Queue;
 use crate::reporter::ChannelReporter;
 use crate::settings::Settings;
@@ -281,7 +282,61 @@ pub struct App {
     /// Last row-action failure (spawn errors surface as row tooltips,
     /// plan 11 §5 — never dialogs).
     pub action_error: Option<String>,
+    /// The compiled-in built-in presets (plan 14 §5), loaded once.
+    pub builtins: Vec<crate::presets::Preset>,
+    /// User presets loaded from the preset store (plan 14 §2).
+    pub user_presets: Vec<crate::presets::StoredPreset>,
+    /// Store files that could not be parsed (plan 14 §2; surfaced grayed
+    /// with a reason in the manage window).
+    pub unreadable_presets: Vec<crate::presets::Unreadable>,
+    /// The preset store (`None` when the OS has no config dir; tests
+    /// inject a temp-dir store).
+    pub preset_store: Option<crate::presets::Store>,
+    /// The currently active preset (drives the dropdown label and its
+    /// "·modified" dimming, plan 14 §4).
+    pub active_preset: Option<crate::presets::PresetRef>,
+    /// Whether the manage-presets window is open (plan 14 §4).
+    pub show_preset_manager: bool,
+    /// Open "save current as preset" modal draft (plan 14 §4).
+    pub preset_save: Option<PresetSaveDraft>,
+    /// Last preset-operation status/error line (manage window + save
+    /// modal; never dialogs, plan 14 §2).
+    pub preset_status: Option<String>,
     settings_dirty: bool,
+}
+
+/// Draft state of the "save current as preset" modal (plan 14 §4): the
+/// title/description fields plus the two privacy-relevant toggles. The
+/// scope toggle defaults to a *full* preset only when the policies
+/// actually differ from the defaults (plan 14 decision 1) — see
+/// [`PresetSaveDraft::from_current`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct PresetSaveDraft {
+    /// Title field (required, unique — validated live via
+    /// `crate::presets::validate_draft`).
+    pub title: String,
+    /// Description field (optional).
+    pub description: String,
+    /// Scope toggle: also save the output/global policies.
+    pub include_policies: bool,
+    /// Opt-in to embed the local output directory path (privacy, plan 14
+    /// §2; only enabled when a directory is set).
+    pub include_output_dir: bool,
+}
+
+impl PresetSaveDraft {
+    /// Seeds the draft from the current state: the scope toggle is on when
+    /// the policies differ from the defaults (decision 1); the output-dir
+    /// opt-in always starts off.
+    #[must_use]
+    pub fn from_current(app: &App) -> Self {
+        PresetSaveDraft {
+            title: String::new(),
+            description: String::new(),
+            include_policies: crate::presets::policy_change_count(&app.settings.policies) > 0,
+            include_output_dir: false,
+        }
+    }
 }
 
 impl App {
@@ -289,6 +344,14 @@ impl App {
     #[must_use]
     pub fn with_settings(settings: Settings) -> Self {
         let metric_engine = settings.metric_engine;
+        let preset_store = crate::presets::Store::default_dir().map(crate::presets::Store::new);
+        let (user_presets, unreadable_presets) = match &preset_store {
+            Some(store) => {
+                let contents = store.load_all();
+                (contents.presets, contents.unreadable)
+            }
+            None => (Vec::new(), Vec::new()),
+        };
         App {
             queue: Queue::new(),
             settings,
@@ -314,6 +377,14 @@ impl App {
             },
             inspector: None,
             action_error: None,
+            builtins: crate::presets::builtin(),
+            user_presets,
+            unreadable_presets,
+            preset_store,
+            active_preset: None,
+            show_preset_manager: false,
+            preset_save: None,
+            preset_status: None,
             settings_dirty: false,
         }
     }
@@ -381,6 +452,308 @@ impl App {
                 .find(|info| info.name == kind)
                 .map_or(kind, |info| info.extension),
         )
+    }
+
+    // ---- presets (plan 14) ---------------------------------------------------
+
+    /// Applies a preset to the current state (pure, plan 14 §4): the
+    /// encoder is replaced (resetting the JXL draft state) and — for
+    /// full-scope presets — the policies too. The output directory is
+    /// **kept** when the preset excluded it (privacy exclusions must not
+    /// wipe the local setting). Queue, table and window state are never
+    /// touched. Settings are marked dirty once.
+    ///
+    /// # Errors
+    ///
+    /// A "newer format" preset (schema beyond this build's
+    /// [`crate::presets::PRESET_SCHEMA`]) is rejected; applying is
+    /// structural otherwise (serde validated the file on load).
+    pub fn apply_preset(&mut self, preset: &crate::presets::Preset) -> Result<(), String> {
+        if crate::presets::is_newer_format(preset) {
+            return Err(format!(
+                "{:?} uses a newer preset format (schema {}) and cannot be applied",
+                preset.title, preset.schema
+            ));
+        }
+        self.settings.encoder = preset.content.encoder.clone();
+        self.jxl_draft = JxlAdvancedDraft::default();
+        if let Some(saved) = &preset.content.policies {
+            let mut next = saved.clone();
+            if !preset.content.include_output_dir {
+                next.output_dir = self.settings.policies.output_dir.clone();
+            }
+            self.settings.policies = next;
+        }
+        self.mark_settings_dirty();
+        self.active_preset = Some(if preset.builtin {
+            PresetRef::Builtin(
+                self.builtins
+                    .iter()
+                    .position(|builtin| builtin.title == preset.title)
+                    .unwrap_or_default(),
+            )
+        } else {
+            PresetRef::User(preset.title.clone())
+        });
+        Ok(())
+    }
+
+    /// The dropdown's active-preset label: the preset title, dimmed with a
+    /// "·modified" suffix when the current state drifted from it (pure
+    /// equality via [`crate::presets::preset_matches`], plan 14 §4).
+    #[must_use]
+    pub fn active_preset_label(&self) -> Option<String> {
+        let preset = crate::presets::find_preset(
+            &self.builtins,
+            &self.user_presets,
+            self.active_preset.as_ref()?,
+        )?;
+        if crate::presets::preset_matches(preset, &self.settings.encoder, &self.settings.policies)
+        {
+            Some(preset.title.clone())
+        } else {
+            Some(format!("{} ·modified", preset.title))
+        }
+    }
+
+    /// Builds the preset the save modal would write (pure wrapper around
+    /// [`crate::presets::build_preset`]; the timestamps/version are filled
+    /// in there).
+    #[must_use]
+    pub fn preset_from_current(&self, draft: &PresetSaveDraft) -> crate::presets::Preset {
+        crate::presets::build_preset(
+            &draft.title,
+            &draft.description,
+            draft.include_policies,
+            draft.include_output_dir,
+            &self.settings.encoder,
+            &self.settings.policies,
+        )
+    }
+
+    /// Validates + persists a preset built from the save-modal draft.
+    ///
+    /// # Errors
+    ///
+    /// Validation (empty/duplicate/over-long title) or store failure.
+    pub fn save_preset_from_current(&mut self, draft: &PresetSaveDraft) -> Result<(), String> {
+        let titles: Vec<String> = self
+            .user_presets
+            .iter()
+            .map(|stored| stored.preset.title.clone())
+            .collect();
+        crate::presets::validate_draft(&draft.title, &draft.description, &titles)?;
+        let preset = self.preset_from_current(draft);
+        match &self.preset_store {
+            Some(store) => store.upsert(&preset, None)?,
+            None => return Err("no preset directory is available".to_string()),
+        }
+        self.reload_presets();
+        self.active_preset = Some(PresetRef::User(preset.title.clone()));
+        Ok(())
+    }
+
+    /// Duplicates any preset (built-ins included — the supported way to
+    /// edit them, plan 14 §2) under a fresh `"(copy)"` title.
+    ///
+    /// # Errors
+    ///
+    /// Store failure.
+    pub fn preset_duplicate(&mut self, source: &crate::presets::Preset) -> Result<(), String> {
+        let existing: Vec<String> = self
+            .user_presets
+            .iter()
+            .map(|stored| stored.preset.title.clone())
+            .collect();
+        let base = format!("{} (copy)", source.title);
+        let mut title = base.clone();
+        let mut counter = 1;
+        while existing.contains(&title) {
+            counter += 1;
+            title = format!("{base} {counter}");
+        }
+        let now = crate::presets::now_unix();
+        let mut copy = source.clone();
+        copy.builtin = false;
+        copy.title = title;
+        copy.created_unix = now;
+        copy.modified_unix = now;
+        match &self.preset_store {
+            Some(store) => store.upsert(&copy, None)?,
+            None => return Err("no preset directory is available".to_string()),
+        }
+        self.reload_presets();
+        Ok(())
+    }
+
+    /// Renames a user preset (re-slugging the file, plan 14 §2).
+    ///
+    /// # Errors
+    ///
+    /// Unknown title, validation, or store failure.
+    pub fn preset_rename(&mut self, old_title: &str, new_title: &str) -> Result<(), String> {
+        let other_titles: Vec<String> = self
+            .user_presets
+            .iter()
+            .map(|stored| stored.preset.title.clone())
+            .filter(|title| title != old_title)
+            .collect();
+        crate::presets::validate_draft(new_title, "", &other_titles)?;
+        let mut preset = self
+            .user_presets
+            .iter()
+            .find(|stored| stored.preset.title == old_title)
+            .map(|stored| stored.preset.clone())
+            .ok_or_else(|| format!("no preset named {old_title:?}"))?;
+        preset.title = new_title.trim().to_string();
+        preset.modified_unix = crate::presets::now_unix();
+        match &self.preset_store {
+            Some(store) => store.upsert(&preset, Some(old_title))?,
+            None => return Err("no preset directory is available".to_string()),
+        }
+        if self.active_preset == Some(PresetRef::User(old_title.to_string())) {
+            self.active_preset = Some(PresetRef::User(preset.title.clone()));
+        }
+        self.reload_presets();
+        Ok(())
+    }
+
+    /// Edits a user preset's description in place.
+    ///
+    /// # Errors
+    ///
+    /// Unknown title, over-long description, or store failure.
+    pub fn preset_edit_description(
+        &mut self,
+        title: &str,
+        description: &str,
+    ) -> Result<(), String> {
+        let mut preset = self
+            .user_presets
+            .iter()
+            .find(|stored| stored.preset.title == title)
+            .map(|stored| stored.preset.clone())
+            .ok_or_else(|| format!("no preset named {title:?}"))?;
+        if description.chars().count() > crate::presets::DESCRIPTION_MAX_CHARS {
+            return Err(format!(
+                "the description is longer than {} characters",
+                crate::presets::DESCRIPTION_MAX_CHARS
+            ));
+        }
+        preset.description = description.trim().to_string();
+        preset.modified_unix = crate::presets::now_unix();
+        match &self.preset_store {
+            Some(store) => store.upsert(&preset, None)?,
+            None => return Err("no preset directory is available".to_string()),
+        }
+        self.reload_presets();
+        Ok(())
+    }
+
+    /// Deletes a user preset from the store.
+    ///
+    /// # Errors
+    ///
+    /// Unknown title or store failure.
+    pub fn preset_delete(&mut self, title: &str) -> Result<(), String> {
+        match &self.preset_store {
+            Some(store) => store.delete_by_title(title)?,
+            None => return Err("no preset directory is available".to_string()),
+        }
+        if self.active_preset == Some(PresetRef::User(title.to_string())) {
+            self.active_preset = None;
+        }
+        self.reload_presets();
+        Ok(())
+    }
+
+    /// Writes a preset's sanitized JSON to an export target.
+    ///
+    /// # Errors
+    ///
+    /// Filesystem failure.
+    pub fn preset_export(
+        &self,
+        preset: &crate::presets::Preset,
+        target: std::path::PathBuf,
+    ) -> Result<(), String> {
+        std::fs::write(target, crate::presets::export_json(preset))
+            .map_err(|err| format!("cannot write the preset file: {err}"))
+    }
+
+    /// Imports preset files (multi-select, plan 14 §3): each file is
+    /// validated, its title deduped, then stored. Returns the number of
+    /// imported presets.
+    ///
+    /// # Errors
+    ///
+    /// No store available, or a per-file problem summary (all other files
+    /// are still imported).
+    pub fn import_presets(&mut self, paths: &[std::path::PathBuf]) -> Result<usize, String> {
+        let Some(store) = self.preset_store.clone() else {
+            return Err("no preset directory is available".to_string());
+        };
+        let mut imported = 0;
+        let mut errors = Vec::new();
+        for path in paths {
+            let file_name = path
+                .file_name()
+                .map_or_else(|| "?".to_string(), |name| name.to_string_lossy().into_owned());
+            let outcome = std::fs::read_to_string(path)
+                .map_err(|err| err.to_string())
+                .and_then(|text| crate::presets::parse_preset_text(&text));
+            match outcome {
+                Ok(mut preset) => {
+                    let titles: Vec<String> = store
+                        .load_all()
+                        .presets
+                        .into_iter()
+                        .map(|stored| stored.preset.title)
+                        .collect();
+                    preset.title = crate::presets::dedup_import_title(&preset.title, &titles);
+                    match store.upsert(&preset, None) {
+                        Ok(()) => imported += 1,
+                        Err(err) => errors.push(format!("{file_name}: {err}")),
+                    }
+                }
+                Err(err) => errors.push(format!("{file_name}: {err}")),
+            }
+        }
+        self.reload_presets();
+        if errors.is_empty() {
+            Ok(imported)
+        } else {
+            Err(format!(
+                "imported {imported} preset(s); problem(s): {}",
+                errors.join("; ")
+            ))
+        }
+    }
+
+    /// Re-reads only the unreadable list (after a junk-file cleanup).
+    pub fn reload_unreadable_only(&mut self) {
+        if let Some(store) = &self.preset_store {
+            self.unreadable_presets = store.load_all().unreadable;
+        }
+    }
+
+    /// Re-reads the user preset list from the store (after every mutation)
+    /// and drops a dangling active reference.
+    fn reload_presets(&mut self) {
+        let Some(store) = &self.preset_store else {
+            return;
+        };
+        let contents = store.load_all();
+        self.user_presets = contents.presets;
+        self.unreadable_presets = contents.unreadable;
+        if let Some(PresetRef::User(title)) = &self.active_preset
+            && !self
+                .user_presets
+                .iter()
+                .any(|stored| &stored.preset.title == title)
+        {
+            self.active_preset = None;
+        }
     }
 
     // ---- job spec construction -------------------------------------------
@@ -888,8 +1261,9 @@ impl eframe::App for App {
 mod tests {
     use super::*;
     use crate::celebrate::ConfettiLevel;
+    use crate::presets::{Preset, PresetContent};
     use crate::queue::ItemStatus;
-    use crate::settings::{CollisionChoice, ExifMode, ExifSettings};
+    use crate::settings::{CollisionChoice, ExifMode, ExifSettings, PolicySet};
     use byteshaver::cli::CliArgs;
     use byteshaver::config::ConversionConfig;
     use byteshaver::pipeline::Outcome;
@@ -1460,5 +1834,368 @@ mod tests {
         assert!(app.settings_dirty());
         assert!(!app.select_encoder("nope"));
         assert!(matches!(app.settings.encoder, EncoderConfig::Avif(_)));
+    }
+
+    // ---- plan 14: presets (apply path, active tracking, store ops) ------------
+
+    fn builtin_preset(title: &str) -> Preset {
+        crate::presets::builtin()
+            .into_iter()
+            .find(|preset| preset.title == title)
+            .unwrap_or_else(|| panic!("missing built-in {title}"))
+    }
+
+    fn full_preset(include_output_dir: bool) -> Preset {
+        let mut preset = builtin_preset("WebP · Balanced");
+        preset.builtin = false;
+        preset.title = "Full Shape".to_string();
+        preset.content.policies = Some(PolicySet {
+            collision: CollisionChoice::OverwriteIfSmaller,
+            discard_if_larger_than_input: true,
+            max_animation_memory_mib: 512,
+            ..PolicySet::default()
+        });
+        preset.content.include_output_dir = include_output_dir;
+        if include_output_dir
+            && let Some(policies) = &mut preset.content.policies
+        {
+            policies.output_dir = Some("/preset/dir".to_string());
+        }
+        preset
+    }
+
+    #[test]
+    fn applying_a_format_only_preset_touches_only_the_encoder() {
+        let mut app = default_app();
+        app.settings.policies.collision = CollisionChoice::OverwriteAlways;
+        app.settings.policies.output_dir = Some("/keep/me".to_string());
+        let preset = builtin_preset("AVIF · Balanced");
+        let encoder_before = app.settings.encoder.clone();
+
+        app.apply_preset(&preset).expect("applies");
+        assert_eq!(app.settings.encoder, preset.content.encoder);
+        assert_eq!(
+            app.settings.policies.collision,
+            CollisionChoice::OverwriteAlways,
+            "format-only presets leave the policies untouched"
+        );
+        assert_eq!(app.settings.policies.output_dir.as_deref(), Some("/keep/me"));
+        assert_ne!(app.settings.encoder, encoder_before);
+        assert!(app.settings_dirty(), "dirty marked exactly once");
+        app.save_settings();
+        assert!(!app.settings_dirty());
+    }
+
+    #[test]
+    fn applying_a_full_preset_replaces_policies_and_keeps_the_excluded_output_dir() {
+        let mut app = default_app();
+        app.settings.policies.output_dir = Some("/local/dir".to_string());
+
+        // exclusion (the default save shape): policies change, dir stays
+        let preset = full_preset(false);
+        app.apply_preset(&preset).expect("applies");
+        assert_eq!(
+            app.settings.policies.collision,
+            CollisionChoice::OverwriteIfSmaller
+        );
+        assert!(app.settings.policies.discard_if_larger_than_input);
+        assert_eq!(
+            app.settings.policies.output_dir.as_deref(),
+            Some("/local/dir"),
+            "a privacy-excluded dir must not wipe the local setting"
+        );
+
+        // opt-in: the embedded dir replaces the local one
+        let preset = full_preset(true);
+        app.apply_preset(&preset).expect("applies");
+        assert_eq!(app.settings.policies.output_dir.as_deref(), Some("/preset/dir"));
+    }
+
+    #[test]
+    fn applying_a_preset_resets_the_jxl_draft_and_tracks_the_ref() {
+        let mut app = default_app();
+        app.jxl_draft = JxlAdvancedDraft {
+            new_id: "leftover".to_string(),
+            new_value: 7,
+        };
+        let preset = builtin_preset("JXL · Visually lossless");
+        app.apply_preset(&preset).expect("applies");
+        assert_eq!(app.jxl_draft, JxlAdvancedDraft::default(), "draft state reset");
+        let index = app
+            .builtins
+            .iter()
+            .position(|builtin| builtin.title == "JXL · Visually lossless")
+            .expect("builtin present");
+        assert_eq!(app.active_preset, Some(PresetRef::Builtin(index)));
+        assert_eq!(
+            app.active_preset_label().as_deref(),
+            Some("JXL · Visually lossless")
+        );
+
+        // drift → "·modified"
+        if let EncoderConfig::Jxl(options) = &mut app.settings.encoder {
+            options.effort = 2;
+        }
+        assert_eq!(
+            app.active_preset_label().as_deref(),
+            Some("JXL · Visually lossless ·modified")
+        );
+        // back to an exact match → clean label
+        if let EncoderConfig::Jxl(options) = &mut app.settings.encoder {
+            options.effort = 7;
+        }
+        assert_eq!(
+            app.active_preset_label().as_deref(),
+            Some("JXL · Visually lossless")
+        );
+    }
+
+    #[test]
+    fn newer_format_presets_are_rejected_by_the_apply_path() {
+        let mut app = default_app();
+        let mut preset = builtin_preset("WebP · Compact");
+        preset.schema = crate::presets::PRESET_SCHEMA + 1;
+        let encoder_before = app.settings.encoder.clone();
+        assert!(app.apply_preset(&preset).is_err());
+        assert_eq!(app.settings.encoder, encoder_before, "state untouched");
+        assert!(app.active_preset.is_none());
+    }
+
+    #[test]
+    fn preset_save_rename_edit_delete_round_trip_through_the_store() {
+        let mut app = default_app();
+        let dir = std::env::temp_dir().join(format!(
+            "byteshaver-gui-app-preset-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        app.preset_store = Some(crate::presets::Store::new(dir.clone()));
+        app.settings.policies.collision = CollisionChoice::OverwriteAlways;
+
+        // save (scope toggle default per decision 1: policies differ → full)
+        let draft = PresetSaveDraft::from_current(&app);
+        assert!(draft.include_policies, "policies differ from the defaults");
+        assert!(!draft.include_output_dir, "privacy opt-in starts off");
+        let err = app
+            .save_preset_from_current(&draft)
+            .expect_err("an empty title is rejected");
+        assert!(err.contains("title"));
+
+        // actually save with a proper title
+        app.active_preset = None;
+        let draft = PresetSaveDraft {
+            title: "My Webp".to_string(),
+            description: "test".to_string(),
+            ..PresetSaveDraft::from_current(&app)
+        };
+        app.save_preset_from_current(&draft).expect("saved");
+        assert_eq!(app.user_presets.len(), 1);
+        assert_eq!(app.user_presets[0].file_name, "my-webp.json");
+        assert_eq!(app.active_preset, Some(PresetRef::User("My Webp".to_string())));
+
+        // duplicate title rejected
+        let err = app
+            .save_preset_from_current(&PresetSaveDraft {
+                title: "My Webp".to_string(),
+                ..draft.clone()
+            })
+            .expect_err("duplicate title");
+        assert!(err.contains("already exists"));
+
+        // rename re-slugs
+        app.preset_rename("My Webp", "Renamed Preset").expect("renamed");
+        assert_eq!(app.user_presets[0].file_name, "renamed-preset.json");
+        assert_eq!(
+            app.active_preset,
+            Some(PresetRef::User("Renamed Preset".to_string())),
+            "the active ref follows the rename"
+        );
+
+        // description edit
+        app.preset_edit_description("Renamed Preset", "new text")
+            .expect("edited");
+        assert_eq!(app.user_presets[0].preset.description, "new text");
+
+        // duplicate from a builtin (the supported edit path for built-ins)
+        let source = builtin_preset("AVIF · Compact");
+        app.preset_duplicate(&source).expect("duplicated");
+        assert_eq!(app.user_presets.len(), 2);
+        let copy = app
+            .user_presets
+            .iter()
+            .find(|stored| stored.preset.title == "AVIF · Compact (copy)")
+            .expect("the copy exists (found by title, files load sorted)");
+        assert!(!copy.preset.builtin);
+
+        // delete clears a dangling active ref
+        app.preset_delete("Renamed Preset").expect("deleted");
+        assert_eq!(app.user_presets.len(), 1);
+        assert!(app.active_preset.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preset_import_dedups_titles_and_reports_per_file_errors() {
+        let mut app = default_app();
+        let dir = std::env::temp_dir().join(format!(
+            "byteshaver-gui-app-import-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        app.preset_store = Some(crate::presets::Store::new(dir.clone()));
+
+        let mut preset = builtin_preset("WebP · Compact");
+        preset.builtin = false;
+        let json = serde_json::to_string_pretty(&preset).expect("serialize");
+        let good = dir.join("one.json");
+        std::fs::write(&good, &json).expect("seed import 1");
+        let same_title = dir.join("two.json");
+        std::fs::write(&same_title, json).expect("seed import 2 (same title)");
+        let broken = dir.join("broken.json");
+        std::fs::write(&broken, "{ not json").expect("seed junk");
+
+        let message = app
+            .import_presets(&[good, same_title, broken])
+            .expect_err("the broken file surfaces as a summary error");
+        assert!(
+            message.starts_with("imported 2 preset(s)"),
+            "the two good files still imported: {message}"
+        );
+        let titles: Vec<String> = app
+            .user_presets
+            .iter()
+            .map(|stored| stored.preset.title.clone())
+            .collect();
+        assert!(titles.contains(&"WebP · Compact".to_string()));
+        assert!(
+            titles.contains(&"WebP · Compact (imported)".to_string()),
+            "the colliding import keeps both (dedup on import)"
+        );
+
+        // clean import reports the count
+        let good = dir.join("one.json");
+        let result = app
+            .import_presets(&[good.clone(), good])
+            .expect("clean batch");
+        assert_eq!(result, 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preset_export_writes_sanitized_json() {
+        let app = default_app();
+        let mut preset = full_preset(false);
+        if let Some(policies) = &mut preset.content.policies {
+            policies.output_dir = Some("/local/secret".to_string());
+        }
+        let target = std::env::temp_dir().join(format!(
+            "byteshaver-gui-app-export-{}.json",
+            std::process::id()
+        ));
+        app.preset_export(&preset, target.clone()).expect("exported");
+        let text = std::fs::read_to_string(&target).expect("read export");
+        assert!(
+            !text.contains("/local/secret"),
+            "excluded dirs never reach the file"
+        );
+        let parsed: Preset = serde_json::from_str(&text).expect("re-importable");
+        assert_eq!(parsed.title, preset.title);
+        let _ = std::fs::remove_file(&target);
+    }
+
+    #[test]
+    fn preset_content_shapes_round_trip_through_serde() {
+        for scope in [false, true] {
+            let mut preset = full_preset(scope);
+            preset.schema = crate::presets::PRESET_SCHEMA;
+            preset.core_version = crate::app::CORE_VERSION.to_string();
+            preset.created_unix = 1;
+            preset.modified_unix = 2;
+            let json = serde_json::to_string(&preset).expect("serialize");
+            let parsed: Preset = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(parsed, preset);
+        }
+    }
+
+    #[test]
+    fn save_draft_defaults_follow_decision_1() {
+        // default policies → format-only default
+        let app = default_app();
+        let draft = PresetSaveDraft::from_current(&app);
+        assert!(!draft.include_policies);
+        // drifted policies → full-preset default
+        let mut app = default_app();
+        app.settings.policies.reverse_processing_order = true;
+        let draft = PresetSaveDraft::from_current(&app);
+        assert!(draft.include_policies);
+        assert!(!draft.include_output_dir);
+    }
+
+    #[test]
+    fn preset_from_current_builds_both_scope_shapes() {
+        let mut app = default_app();
+        app.select_encoder("jxl");
+        app.settings.policies.exif = ExifSettings {
+            mode: ExifMode::Keep,
+            ..ExifSettings::default()
+        };
+        app.settings.policies.output_dir = Some("/x".to_string());
+        let format_only = app.preset_from_current(&PresetSaveDraft {
+            title: "Only format".to_string(),
+            description: String::new(),
+            include_policies: false,
+            include_output_dir: false,
+        });
+        assert!(format_only.content.policies.is_none());
+        let full = app.preset_from_current(&PresetSaveDraft {
+            title: "Full".to_string(),
+            description: String::new(),
+            include_policies: true,
+            include_output_dir: false,
+        });
+        assert_eq!(
+            full.content.policies.as_ref().expect("full scope").output_dir,
+            None,
+            "no opt-in → stripped at build time"
+        );
+        // and the state after an apply matches the preset (equality check;
+        // the label only resolves for *stored* presets, so compare directly)
+        app.apply_preset(&full).expect("applies");
+        assert!(
+            crate::presets::preset_matches(&full, &app.settings.encoder, &app.settings.policies),
+            "the excluded output dir must not read as modified"
+        );
+    }
+
+    #[test]
+    fn a_preset_content_with_an_unknown_encoder_would_not_parse() {
+        // forward-compat guarantee at the model level (plan 14 §2)
+        let json = r#"{
+            "schema": 1, "title": "X", "description": "", "created_unix": 0,
+            "modified_unix": 0, "core_version": "9.9.9",
+            "content": { "encoder": { "NotAnEncoder": {} }, "include_output_dir": false }
+        }"#;
+        let parsed: Result<Preset, _> = serde_json::from_str(json);
+        assert!(parsed.is_err(), "unknown variants fail serde (unreadable list)");
+        // while the empty-content guard still trips
+        let json = r#"{
+            "schema": 1, "title": "X", "description": "", "created_unix": 0,
+            "modified_unix": 0, "core_version": "9.9.9"
+        }"#;
+        let parsed: Result<Preset, _> = serde_json::from_str(json);
+        assert!(parsed.is_err(), "content is mandatory");
+    }
+
+    #[test]
+    fn preset_content_carries_the_documented_fields() {
+        // a structural smoke test of the plan-§1 shape
+        let preset = full_preset(true);
+        let PresetContent { encoder, policies, include_output_dir } = preset.content;
+        assert!(matches!(encoder, EncoderConfig::Webp(_)));
+        assert!(policies.is_some());
+        assert!(include_output_dir);
     }
 }
