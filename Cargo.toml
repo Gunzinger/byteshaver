@@ -43,6 +43,13 @@ exif = ["dep:kamadak-exif"]
 # continues. Kept out of `default` so musl/windows release binaries stay
 # self-contained (see README + docs/plans/01-heic-heif-decoding.md).
 dec-heif = ["dep:libheif-rs"]
+# AVIF output EXIF embedding: when EXIF survives the policy, AVIF files are
+# routed through the native libheif encoder (`heif_context_add_exif_metadata`)
+# instead of ravif, which has no metadata API. Needs the native libheif plus
+# an AV1 encoder plugin (e.g. libheif-aomenc/libaom) at build & runtime;
+# falls back to ravif (metadata dropped, with a warning) when the plugin is
+# missing. Same libheif version gate as `dec-heif`.
+enc-avif = ["dep:libheif-rs"]
 # JPEG XL source decoding (jxl-oxide) and target encoding (in-tree FFI
 # bindings to libjxl, built by jpegxl-src). Requires cmake + a C++
 # compiler + nasm at build time. Decode-only without cmake: the encode

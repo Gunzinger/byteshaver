@@ -565,8 +565,11 @@ fn png_exif_source_round_trip() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// AVIF cannot embed: one warning per file and the counter increments.
+/// AVIF without the `enc-avif` feature cannot embed: one warning per file
+/// and the counter increments. With the feature, the EXIF round-trips via
+/// libheif (covered in `tests/avif_metadata.rs`).
 #[test]
+#[cfg(not(feature = "enc-avif"))]
 fn avif_reports_dropped_metadata() {
     let dir = temp_dir("avif-drop");
     let input = dir.join("photo.jpg");
