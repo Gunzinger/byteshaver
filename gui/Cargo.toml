@@ -41,7 +41,7 @@ eframe = { version = "0.32", default-features = false, features = [
     "default_fonts",
     "glow",
 ] }
-egui = "0.32"
+egui = "0.36"
 # table widget (sortable headers, resizable columns, row virtualization)
 # — pinned to the same 0.32 line as egui/eframe above
 egui_extras = "0.32"
