@@ -429,8 +429,11 @@ fn render_table(app: &mut App, ui: &mut egui::Ui, columns: &[Column]) {
                     // state renders visibly in the status cell (pending
                     // marker / reading / error), full line in the tooltip
                     let pending = app.metrics.is_pending(&snapshot.path);
+                    let metric_error = app.metrics.error(&snapshot.path);
                     let metric_line = if pending {
                         None
+                    } else if let Some(error) = metric_error {
+                        Some(error.message.clone())
                     } else {
                         app.metrics.cached(&snapshot.path).map(|entry| {
                             format!(
@@ -440,7 +443,11 @@ fn render_table(app: &mut App, ui: &mut egui::Ui, columns: &[Column]) {
                             )
                         })
                     };
-                    let metric = table::metric_status(pending, metric_line.as_deref(), None);
+                    let metric = table::metric_status(
+                        pending,
+                        metric_line.as_deref(),
+                        metric_error.map(|error| error.message.as_str()),
+                    );
                     let active = app
                         .running
                         .as_ref()
