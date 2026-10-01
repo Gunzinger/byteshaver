@@ -57,7 +57,7 @@ rfd = "0.17"
 byteshaver = { path = ".." }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-dirs = "6"
+dirs = "7"
 
 # the CLI parity tests build CliArgs exactly like the CLI binary does
 clap = "4"
