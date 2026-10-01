@@ -1,58 +1,31 @@
-//! Measures the overhead of AVIF EXIF embedding (`enc-avif` feature).
+//! Measures the overhead of AVIF EXIF embedding (ravif >= 0.13).
 //!
-//! When EXIF survives the policy, AVIF output is routed through the native
-//! libheif encoder instead of ravif (which has no metadata API). This
-//! harness encodes the same image three ways and reports the differences:
+//! ravif serializes the EXIF payload as a standard HEIF `Exif` item into the
+//! ISOBMFF container *after* the AV1 encode, so the expected overhead is the
+//! item bytes plus a few box headers — no extra encoding work. This harness
+//! verifies that by encoding the same image twice:
 //!
-//! 1. `ravif`        — the default path (no metadata), baseline
-//! 2. `libheif`      — libheif route without EXIF (pure encoder swap cost)
-//! 3. `libheif+exif` — libheif route with the EXIF payload attached
+//! 1. `plain` — no metadata (baseline)
+//! 2. `+exif` — same encode with the EXIF payload attached
 //!
-//! Size overhead = (2) - (1) container/encoder difference and (3) - (2)
-//! EXIF item cost; time overhead = encode durations of (2)/(3) vs (1).
-//!
-//! Note the comparison is knob-equivalent, not quality-equivalent: ravif
-//! 0.13 applies its own tuned speed tweaks on top of the aom `cpu-used`
-//! preset, and both are given the same quality (90) and speed setting.
+//! Reported: output sizes (absolute and delta = metadata cost) and encode
+//! times (median of the configured iterations).
 //!
 //! Usage:
-//!   cargo run --release --features enc-avif --example avif_exif_overhead -- [IMAGES...]
+//!   cargo run --release --example avif_exif_overhead -- [IMAGES...]
 //!   (defaults to examples/jpg/*.jpg; EXIF is taken from the source file if
-//!   present, otherwise a small synthetic payload is embedded)
+//!   present, otherwise a small synthetic payload is embedded;
+//!   AVIF_OVERHEAD_ITERATIONS=<n> configures the runs per image)
 
 fn main() {
-    #[cfg(feature = "enc-avif")]
-    real_main();
-    #[cfg(not(feature = "enc-avif"))]
-    eprintln!(
-        "This example measures the libheif AVIF EXIF route; rebuild with --features enc-avif"
-    );
-}
-
-#[cfg(feature = "enc-avif")]
-fn real_main() {
-    use byteshaver::config::AvifOptions;
-    use byteshaver::converter::{EncoderRegistry, ThreadBudget};
-    use byteshaver::input;
-    use byteshaver::metadata::ImageMetadata;
-    use std::path::PathBuf;
-    use std::time::{Duration, Instant};
-
-    const DEFAULT_ITERATIONS: usize = 3;
-    let iterations: usize = std::env::var("AVIF_OVERHEAD_ITERATIONS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .filter(|&v| v > 0)
-        .unwrap_or(DEFAULT_ITERATIONS);
-
-    let images: Vec<PathBuf> = std::env::args()
+    let images: Vec<std::path::PathBuf> = std::env::args()
         .skip(1)
-        .map(PathBuf::from)
-        .collect::<Vec<_>>();
+        .map(std::path::PathBuf::from)
+        .collect();
     let images = if images.is_empty() {
         glob::glob("examples/jpg/*.jpg")
             .expect("glob")
-            .filter_map(std::result::Result::ok)
+            .filter_map(Result::ok)
             .collect()
     } else {
         images
@@ -62,42 +35,43 @@ fn real_main() {
         std::process::exit(1);
     }
 
-    let encoder = EncoderRegistry::build(
-        &byteshaver::config::EncoderConfig::Avif(AvifOptions::default()),
-        ThreadBudget::global(),
+    let encoder = byteshaver::converter::EncoderRegistry::build(
+        &byteshaver::config::EncoderConfig::Avif(byteshaver::config::AvifOptions::default()),
+        byteshaver::converter::ThreadBudget::global(),
     );
     println!("encoder: {}", encoder.describe());
+
+    let iterations: usize = std::env::var("AVIF_OVERHEAD_ITERATIONS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(3);
     println!("iterations per configuration: {iterations}");
     println!();
 
     println!(
-        "{:<28} {:>11} {:>10} {:>10} {:>12} {:>9} | {:>8} {:>8} {:>9}",
-        "image",
-        "WxH",
-        "ravif",
-        "libheif",
-        "libheif+exif",
-        "exif B",
-        "t ravif",
-        "t heif",
-        "t +exif"
+        "{:<24} {:>11} {:>10} {:>10} {:>9} {:>9} | {:>8} {:>8}",
+        "image", "WxH", "plain B", "+exif B", "exif B", "delta B", "t plain", "t +exif"
     );
 
-    let mut totals = [0usize; 3];
-    let mut total_times = [Duration::ZERO; 3];
+    let mut total_plain = 0usize;
+    let mut total_exif = 0usize;
+    let mut total_time_plain = std::time::Duration::ZERO;
+    let mut total_time_exif = std::time::Duration::ZERO;
+    let mut measured = 0usize;
 
     for path in &images {
-        let source = match input::load_source(path) {
+        let source = match byteshaver::input::load_source(path) {
             Ok(source) => source,
             Err(err) => {
-                println!("{:<28} load failed: {err}", path.display());
+                println!("{:<24} load failed: {err}", path.display());
                 continue;
             }
         };
         let image = match &source.content {
-            input::ImageContent::Still(image) => image.clone(),
-            input::ImageContent::Animated(_) => {
-                println!("{:<28} skipped (animated)", path.display());
+            byteshaver::input::ImageContent::Still(image) => image.clone(),
+            byteshaver::input::ImageContent::Animated(_) => {
+                println!("{:<24} skipped (animated)", path.display());
                 continue;
             }
         };
@@ -123,23 +97,19 @@ fn real_main() {
             _ => exif_payload,
         };
 
-        let meta_ravif = ImageMetadata::default();
-        let meta_heif = ImageMetadata {
-            exif: Some(Vec::new()), // routes through libheif, attaches nothing
-            ..ImageMetadata::default()
-        };
-        let meta_heif_exif = ImageMetadata {
+        let meta_plain = byteshaver::metadata::ImageMetadata::default();
+        let meta_exif = byteshaver::metadata::ImageMetadata {
             exif: Some(exif_payload.clone()),
-            ..ImageMetadata::default()
+            ..byteshaver::metadata::ImageMetadata::default()
         };
 
-        let mut sizes = [0usize; 3];
-        let mut times = [Duration::ZERO; 3];
-        for (slot, meta) in [(0, &meta_ravif), (1, &meta_heif), (2, &meta_heif_exif)] {
-            let mut runs: Vec<Duration> = Vec::with_capacity(iterations);
+        let mut sizes = [0usize; 2];
+        let mut times = [std::time::Duration::ZERO; 2];
+        for (slot, meta) in [(0, &meta_plain), (1, &meta_exif)] {
+            let mut runs: Vec<std::time::Duration> = Vec::with_capacity(iterations);
             let mut size = 0usize;
             for _ in 0..iterations {
-                let start = Instant::now();
+                let start = std::time::Instant::now();
                 let bytes = encoder
                     .encode_still_image_with_metadata(&image, meta)
                     .expect("encode");
@@ -153,68 +123,45 @@ fn real_main() {
 
         // sanity check: the +exif run must actually carry the payload
         assert!(
-            sizes[2] > sizes[1],
-            "libheif+exif output is not larger than libheif output \
-             (is the AV1 encoder plugin missing? see the warnings above)"
+            sizes[1] > sizes[0],
+            "+exif output is not larger than plain output (was the payload dropped?)"
         );
 
-        for slot in 0..3 {
-            totals[slot] += sizes[slot];
-            total_times[slot] += times[slot];
-        }
+        total_plain += sizes[0];
+        total_exif += sizes[1];
+        total_time_plain += times[0];
+        total_time_exif += times[1];
+        measured += 1;
 
         println!(
-            "{:<28} {:>11} {:>10} {:>10} {:>12} {:>9} | {:>7.2}s {:>7.2}s {:>8.2}s",
+            "{:<24} {:>11} {:>10} {:>10} {:>9} {:>9} | {:>7.2}s {:>7.2}s",
             path.file_name()
                 .map(|n| n.to_string_lossy())
                 .unwrap_or_default(),
             format!("{}x{}", image.width(), image.height()),
             sizes[0],
             sizes[1],
-            sizes[2],
             exif_payload.len(),
+            sizes[1] - sizes[0],
             times[0].as_secs_f32(),
             times[1].as_secs_f32(),
-            times[2].as_secs_f32(),
         );
     }
 
+    if measured == 0 {
+        return;
+    }
     println!();
     println!(
-        "totals: ravif {} B, libheif {} B, libheif+exif {} B",
-        totals[0], totals[1], totals[2]
+        "totals: plain {total_plain} B, +exif {total_exif} B (delta {} B, {:+.3}%)",
+        total_exif - total_plain,
+        (total_exif - total_plain) as f64 / total_plain as f64 * 100.0
     );
+    let mean = |d: std::time::Duration| d.as_secs_f32() / measured as f32;
     println!(
-        "mean size overhead: encoder swap {:+.1}%, exif item {:+.1}%, combined {:+.1}%",
-        pct(totals[1], totals[0]),
-        pct(totals[2], totals[1]),
-        pct(totals[2], totals[0]),
+        "mean encode time per file: plain {:.2}s, +exif {:.2}s ({:+.1}%)",
+        mean(total_time_plain),
+        mean(total_time_exif),
+        (mean(total_time_exif) - mean(total_time_plain)) / mean(total_time_plain) * 100.0
     );
-    let mean = |d: Duration| d.as_secs_f32() / images.len() as f32;
-    println!(
-        "mean encode time per file: ravif {:.2}s, libheif {:.2}s ({:+.0}%), libheif+exif {:.2}s ({:+.0}% vs ravif)",
-        mean(total_times[0]),
-        mean(total_times[1]),
-        pct_time(total_times[1], total_times[0]),
-        mean(total_times[2]),
-        pct_time(total_times[2], total_times[0]),
-    );
-}
-
-#[cfg(feature = "enc-avif")]
-fn pct(part: usize, base: usize) -> f64 {
-    if base == 0 {
-        0.0
-    } else {
-        (part as f64 - base as f64) / base as f64 * 100.0
-    }
-}
-
-#[cfg(feature = "enc-avif")]
-fn pct_time(part: std::time::Duration, base: std::time::Duration) -> f64 {
-    if base.as_secs_f64() == 0.0 {
-        0.0
-    } else {
-        (part.as_secs_f64() - base.as_secs_f64()) / base.as_secs_f64() * 100.0
-    }
 }

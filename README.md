@@ -81,24 +81,13 @@ while the **docker images include it** and are validated end-to-end by CI.
  (still images and animations, 8/16-bit, EXIF/XMP boxes and ICC profiles).
  Requires the `jxl` feature (enabled by default).
 
-On the output side, `avif` files that need to carry EXIF are encoded through the native
-libheif encoder (`heif_context_add_exif_metadata`) when the `enc-avif` feature is compiled in —
-ravif has no metadata API. Requirements mirror `dec-heif` (native libheif at build time) plus an
-**AV1 encoder** plugin at runtime (e.g. Debian's `libheif-plugin-aomenc`, alpine's `aom`;
-both already ship in the docker images). The route only applies to files with EXIF: everything
-else keeps using ravif, and if the plugin is missing at runtime the file falls back to ravif
-without metadata (one-line warning). Be aware that the libheif/aom encoder is considerably
-slower than ravif and produces different (not quality-identical) files.
-
 ### Output formats 📤
 
 - `webp`, webp encoder using the `webp` crate (libwebp bindings) - offers lossy and lossless encoding
 - `webp-image`, webp encoder using the `image` crate - offers lossless encoding
-- `avif`, avif encoder using the `ravif` crate - offers lossy and lossless encoding. When EXIF
-  survives the policy and the `enc-avif` feature is compiled in, the file is encoded through the
-  native libheif encoder to embed it (ravif has no metadata API); files without EXIF always take
-  the faster ravif path, and a missing AV1 encoder plugin at runtime falls back to ravif without
-  metadata (with a warning). See the [features section](#optional-features-) for requirements.
+- `avif`, avif encoder using the `ravif` crate - offers lossy and lossless encoding. EXIF that
+  survives the policy is embedded natively by ravif (>= 0.13) as a standard HEIF `Exif` item after
+  the AV1 encode — with no measurable encoding overhead.
 - `png`, png encoder using the `png` crate - offers lossless encoding (with optional eXIf embedding)
 - `jpeg`, jpeg optimizer using the `mozjpeg` crate - only optimizes images (with optional EXIF embedding)
 - `jxl`, jpeg-xl encoder using in-tree FFI bindings to `libjxl` (vendored static build via `jpegxl-src`) - offers
@@ -211,7 +200,7 @@ Where EXIF ends up per target:
 | `oxipng` | `eXIf` chunk; under `keep`/`filter` metadata stripping is forced off, under `strip` an unset `--strip` is bumped to `safe` |
 | `webp`, `webp-image`, `webp-anim` | `EXIF` RIFF chunk |
 | `jxl` | `Exif` metadata box (Brotli-compressed) |
-| `avif` | `Exif` item via the native libheif encoder (`enc-avif` feature; files **without** EXIF keep using the faster ravif path; falls back to ravif without metadata + warning when no AV1 encoder plugin is available at runtime) |
+| `avif` | standard HEIF `Exif` item (ISOBMFF), embedded natively by `ravif` after the AV1 encode |
 | `gif` | not supported — a warning is printed per file and the count appears in the run summary |
 
 Notes:
@@ -320,9 +309,9 @@ artifacts target x86-64-v3 (Intel Haswell / AMD Zen and newer). Every artifact
 ships with a `.sha256` checksum.
 
 Feature notes: the static Linux/Windows binaries include everything except
-`dec-heif` and `enc-avif` — HEIC/HEIF/AVIF input and AVIF EXIF embedding require the native
-libheif libraries and are therefore only shipped in the **docker images** (validated by CI
-end-to-end, see below). The Linux GUI build uses the X11 windowing backend.
+`dec-heif` — HEIC/HEIF/AVIF input requires the native libheif libraries and is
+therefore only shipped in the **docker images** (validated by CI end-to-end,
+see below). The Linux GUI build uses the X11 windowing backend.
 
 See the [GitHub releases](https://github.com/Gunzinger/byteshaver/releases) page for downloads.
 
@@ -542,10 +531,9 @@ Example of clean command:
 - `cmake`, a C++ compiler and `nasm` are needed for building the vendored `libjxl`
   (jpeg-xl support; enabled by default via the `jxl` feature).
   Install via `apt install cmake g++ nasm` / `apk add cmake g++ nasm`.
-- The opt-in `dec-heif` (HEIC/HEIF/AVIF input) and `enc-avif` (AVIF EXIF embedding) features
-  need the native `libheif` + `libaom` development libraries at build time
-  (`apt install libheif-dev libaom-dev pkg-config` / `apk add libheif-dev aom-dev`),
-  and an AV1 encoder plugin (e.g. `libheif-plugin-aomenc`) at runtime for `enc-avif`.
+- The opt-in `dec-heif` feature (HEIC/HEIF/AVIF input) needs the native
+  `libheif` + codec development libraries at build time
+  (`apt install libheif-dev libde265-dev libaom-dev pkg-config` / `apk add libheif-dev libde265-dev aom-dev`).
 
 ### Installation Guide
 
@@ -600,7 +588,7 @@ cargo uninstall byteshaver
   - [x] animated `webp` / `apng` / `gif`
   - [ ] animated `avif` (blocked upstream: needs libheif ≥ 1.20 with an AV1 encoder; see `docs/plans/06-*`)
 - [x] Image metadata handling (EXIF data preservation/stripping/filtering)
-  - [x] `avif` EXIF embedding (still images, via the libheif encoder / `enc-avif` feature)
+  - [x] `avif` EXIF embedding (native Exif item via ravif >= 0.13)
 - [x] Output logs (JSON-lines event log via `--json-log`)
 - [ ] `winresource` integration (application icon and .exe metadata for Windows binaries)
 - [x] GUI (egui/eframe desktop front-end; drag-and-drop queue; see `gui/`)

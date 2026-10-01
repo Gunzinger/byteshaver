@@ -130,9 +130,9 @@ pub trait ImageEncoder: Send + Sync {
 
     /// Whether this encoder can embed EXIF metadata into its output (WS4).
     ///
-    /// Encoders that cannot (e.g. ravif AVIF) report `false`; the pipeline
-    /// then drops the payload with a per-file warning and counts it in
-    /// [`RunStats::metadata_dropped`][crate::pipeline::RunStats].
+    /// Encoders that cannot (e.g. the gif target) report `false`; the
+    /// pipeline then drops the payload with a per-file warning and counts it
+    /// in [`RunStats::metadata_dropped`][crate::pipeline::RunStats].
     fn supports_metadata(&self) -> bool {
         true
     }
