@@ -3,11 +3,12 @@
 //! tooltip), the preset dropdown (plan 14 §4: grouped built-ins/user
 //! presets + save/manage/import, "·modified" dimming), the quality-ladder
 //! chips ([`crate::chips`], sourced from the built-in profiles), the
-//! per-encoder options editor ([`crate::options`]) behind a "Custom…"/
-//! "adjust ▾" disclosure, the per-encoder "↺ defaults" button with undo
-//! notice and the global policy mirrors (output mode + directory, EXIF,
-//! collisions, animation guards — every dropdown maps 1:1 onto a CLI
-//! flag).
+//! per-encoder options editor ([`crate::options`]) behind the constant
+//! "Encoder options" disclosure (plan 15 F2; open by default in every
+//! state, exclusively user-driven — plan 15 F1), the per-encoder
+//! "↺ defaults" button with undo notice and the global policy mirrors
+//! (output mode + directory, EXIF, collisions, animation guards — every
+//! dropdown maps 1:1 onto a CLI flag).
 //!
 //! This module also renders the two preset windows (registered from
 //! `panels::show`, both bounded like report.rs's doctrine): the "save
@@ -56,8 +57,12 @@ const RESET_NOTICE_ID: &str = "byteshaver-reset-notice";
 /// egui persisted-memory ids of the two trees.
 const TARGET_TREE_ID: &str = "byteshaver-tree-target-format";
 const POLICIES_TREE_ID: &str = "byteshaver-tree-policies";
-/// egui persisted-memory id of the custom-form disclosure.
+/// egui persisted-memory id of the options-form disclosure (plan 15 F2:
+/// one constant title in every state; plan 15 F1: open by default and
+/// exclusively user-driven — chip/preset selection never toggles it).
 const CUSTOM_FORM_ID: &str = "byteshaver-custom-form";
+/// The single disclosure title of the full options form (plan 15 F2).
+const ENCODER_OPTIONS_TITLE: &str = "Encoder options";
 /// egui temp-memory ids of the manage window's inline editing/confirm
 /// states (never persisted).
 const RENAME_EDIT_ID: &str = "byteshaver-preset-rename";
@@ -91,8 +96,9 @@ enum LadderAction {
     None,
     /// Apply the chip at this index.
     Apply(usize),
-    /// Open the custom-form disclosure (the "⚙ Custom…" card).
-    OpenCustom,
+    /// The "⚙ Custom…" card was clicked (sets the explicit custom state,
+    /// plan 15 F1 — it never touches the form's collapse state).
+    CustomClicked,
 }
 
 /// Next-frame panel height target: the measured content height plus the
@@ -220,9 +226,16 @@ fn policies_tree(ui: &mut egui::Ui, app: &mut App) {
     );
 }
 
-/// Quality-ladder chips plus the "⚙ Custom…"/"adjust ▾" disclosure around
-/// the full options form. The ladder is skipped for encoders without chip
-/// definitions (unknown names).
+/// Quality-ladder chips plus the constant "Encoder options" disclosure
+/// around the full options form (plan 15 F2). The selection follows the
+/// tri-state model ([`crate::chips::chip_selection`], plan 15 F1): a
+/// matching chip highlights, the "⚙ Custom…" card highlights after an
+/// explicit click (immediately — the click sets
+/// [`App::custom_chip_explicit`]) and after any manual edit off a chip.
+/// The form itself is open by default in every state and exclusively
+/// user-driven: chip or preset selection never collapses or expands it.
+/// The ladder is skipped for encoders without chip definitions (unknown
+/// names).
 fn custom_disclosure(ui: &mut egui::Ui, app: &mut App) {
     let name = options::encoder_kind_name(&app.settings.encoder);
     let ladder = chips::chips_for(name);
@@ -231,62 +244,60 @@ fn custom_disclosure(ui: &mut egui::Ui, app: &mut App) {
         return;
     }
 
-    let selected = chips::selected_chip(&ladder, &app.settings.encoder);
+    let selection = chips::chip_selection(&ladder, &app.settings.encoder, app.custom_chip_explicit);
     let mut action = LadderAction::None;
     ui.horizontal_wrapped(|ui| {
         for (index, chip) in ladder.iter().enumerate() {
-            if chip_card(ui, chip, selected == Some(index)) && action == LadderAction::None {
+            if chip_card(ui, chip, selection == crate::chips::ChipSelection::Selected(index))
+                && action == LadderAction::None
+            {
                 action = LadderAction::Apply(index);
             }
         }
-        if custom_card(ui, selected.is_none()) {
-            action = LadderAction::OpenCustom;
+        if custom_card(ui, selection.is_custom()) {
+            action = LadderAction::CustomClicked;
         }
     });
-    if let Some(index) = selected {
+    if let Some(index) = selection.selected_index() {
         let chip = &ladder[index];
         ui.weak(format!("{}: {}", chip.title, chip.description));
     }
-    if let LadderAction::Apply(index) = action {
-        // chips route through the backing built-in preset so the active-
-        // preset tracking (plan 14 §4) stays in sync with the ladder
-        let preset_title = ladder[index].preset_title;
-        let backing = app
-            .builtins
-            .iter()
-            .find(|preset| preset.title == preset_title)
-            .cloned();
-        if let Some(preset) = backing
-            && !presets::preset_matches(
-                &preset,
-                &app.settings.encoder,
-                &app.settings.policies,
-            )
-        {
-            let _ = app.apply_preset(&preset);
-        }
-    }
-
-    // the form opens automatically in the custom state, closes when a chip
-    // is applied, and can be toggled via "adjust ▾" while a chip is active
-    let is_custom = chips::selected_chip(&ladder, &app.settings.encoder).is_none();
-    let disclosure_id = egui::Id::new(CUSTOM_FORM_ID);
-    let mut state = CollapsingState::load_with_default_open(ui.ctx(), disclosure_id, false);
     match action {
-        LadderAction::Apply(_) => state.set_open(false),
-        LadderAction::OpenCustom => state.set_open(true),
-        LadderAction::None => {
-            if is_custom {
-                state.set_open(true);
+        LadderAction::Apply(index) => {
+            // chips route through the backing built-in preset so the active-
+            // preset tracking (plan 14 §4) stays in sync with the ladder
+            let preset_title = ladder[index].preset_title;
+            let backing = app
+                .builtins
+                .iter()
+                .find(|preset| preset.title == preset_title)
+                .cloned();
+            if let Some(preset) = backing
+                && !presets::preset_matches(
+                    &preset,
+                    &app.settings.encoder,
+                    &app.settings.policies,
+                )
+            {
+                let _ = app.apply_preset(&preset);
             }
         }
-    }
-    let header = state.show_header(ui, |ui| {
-        if is_custom {
-            ui.strong("⚙ Custom…");
-        } else {
-            ui.weak("adjust ▾");
+        LadderAction::CustomClicked => {
+            // plan 15 F1: the click is the *explicit* custom state — it
+            // highlights immediately (next frame) and never touches the
+            // collapse state
+            app.custom_chip_explicit = true;
         }
+        LadderAction::None => {}
+    }
+
+    // plan 15 F1/F2: one constant title, open by default in every state
+    // (preset or custom), toggled only by the user; egui's persisted
+    // memory keeps the choice for the session as before
+    let disclosure_id = egui::Id::new(CUSTOM_FORM_ID);
+    let state = CollapsingState::load_with_default_open(ui.ctx(), disclosure_id, true);
+    let header = state.show_header(ui, |ui| {
+        ui.strong(ENCODER_OPTIONS_TITLE);
     });
     let _ = header.body(|ui| {
         ui.add_space(2.0);
@@ -382,6 +393,7 @@ fn reset_defaults_button(ui: &mut egui::Ui, app: &mut App) {
     if response.clicked() && !changed.is_empty() {
         let undo = current;
         app.settings.encoder = default;
+        app.custom_chip_explicit = false; // a defaults reset is a config choice (plan 15 F1)
         app.mark_settings_dirty();
         ui.ctx().data_mut(|data| {
             data.insert_temp(

@@ -302,6 +302,13 @@ pub struct App {
     /// Last preset-operation status/error line (manage window + save
     /// modal; never dialogs, plan 14 §2).
     pub preset_status: Option<String>,
+    /// The explicit half of the chip-ladder tri-state (plan 15 F1): set
+    /// when the user clicks the "⚙ Custom…" card, cleared whenever a
+    /// preset/chip is applied (or the encoder is switched). With it unset
+    /// the selection is pure equality against the current chip ladder
+    /// (a matching chip highlights; drift highlights Custom as the
+    /// *derived* state) — see `crate::chips::chip_selection`.
+    pub custom_chip_explicit: bool,
     settings_dirty: bool,
 }
 
@@ -385,6 +392,7 @@ impl App {
             show_preset_manager: false,
             preset_save: None,
             preset_status: None,
+            custom_chip_explicit: false,
             settings_dirty: false,
         }
     }
@@ -427,13 +435,15 @@ impl App {
 
     /// Selects the encoder by capability name, resetting its options to
     /// the CLI defaults. Returns `false` (keeping the old selection) when
-    /// the name is unknown.
+    /// the name is unknown. Clears the explicit chip-custom state (the
+    /// switch is a configuration choice, plan 15 F1).
     pub fn select_encoder(&mut self, name: &str) -> bool {
         let Some(config) = options::default_encoder_config(name) else {
             return false;
         };
         if self.settings.encoder != config {
             self.settings.encoder = config;
+            self.custom_chip_explicit = false;
             self.mark_settings_dirty();
         }
         true
@@ -464,7 +474,8 @@ impl App {
     /// not wipe the local setting, and switching modes never clears the
     /// stored path). Format-only presets never touch mode/dir at all.
     /// Queue, table and window state are never touched. Settings are
-    /// marked dirty once.
+    /// marked dirty once; the explicit chip-custom state is cleared (the
+    /// chip ladder re-derives from the applied config, plan 15 F1).
     ///
     /// # Errors
     ///
@@ -480,6 +491,7 @@ impl App {
         }
         self.settings.encoder = preset.content.encoder.clone();
         self.jxl_draft = JxlAdvancedDraft::default();
+        self.custom_chip_explicit = false;
         if let Some(saved) = &preset.content.policies {
             let mut next = saved.clone();
             if !preset.content.include_output_dir {
@@ -2021,6 +2033,18 @@ mod tests {
         assert_eq!(
             app.settings.policies.output_dir, "/local/dir",
             "mode switches never clear the stored path"
+        );
+    }
+
+    #[test]
+    fn applying_a_preset_clears_the_explicit_custom_state() {
+        let mut app = default_app();
+        app.custom_chip_explicit = true;
+        let preset = builtin_preset("AVIF · Balanced");
+        app.apply_preset(&preset).expect("applies");
+        assert!(
+            !app.custom_chip_explicit,
+            "the chip ladder re-derives from the applied config (plan 15 F1)"
         );
     }
 
