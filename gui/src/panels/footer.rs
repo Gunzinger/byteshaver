@@ -43,13 +43,105 @@ const SHIMMER_SPEED: f32 = 12.0;
 /// Spacing between two shimmer stripes (45° diagonals).
 const SHIMMER_PERIOD: f32 = 9.0;
 
+// ---- Convert-button state colors (plan 15 F18) ------------------------------
+
+/// Paint state of the Convert button (plan 15 F18): ready (muted green),
+/// blocked (muted gray-red, tooltip carries the reason) or running (muted
+/// amber; Cancel stays the separate control — the tint communicates the
+/// state).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConvertButtonState {
+    /// Idle and startable.
+    Ready,
+    /// Idle but a start blocker is present (the button is disabled).
+    Blocked,
+    /// A job is running (the button is disabled as today).
+    Running,
+}
+
+/// The colors of the Convert button for one state (the pure part of F18;
+/// derived from [`egui::Visuals`] so dark/light themes both work).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ConvertButtonStyle {
+    /// Button background fill.
+    pub fill: egui::Color32,
+    /// Button label color.
+    pub text_color: egui::Color32,
+}
+
+/// How strongly the ready-state green is blended over the panel
+/// background (deliberately low saturation, plan 15 F18).
+pub const READY_TINT: f32 = 0.22;
+/// Blocked tint (weakest: "weak styling" per plan 15 F18).
+pub const BLOCKED_TINT: f32 = 0.15;
+/// Running tint.
+pub const RUNNING_TINT: f32 = 0.20;
+/// The muted green of a ready Convert button (same green as the good
+/// progress segments).
+const READY_GREEN: egui::Color32 = egui::Color32::from_rgb(90, 190, 110);
+/// The muted amber of a running Convert button (same amber as the grew
+/// segments).
+const RUNNING_AMBER: egui::Color32 = egui::Color32::from_rgb(214, 158, 70);
+
+/// Maps the button state onto fill + text colors (pure, unit-tested):
+/// every fill is a low-alpha tint of a semantic color over the panel
+/// background, so dark and light themes both stay muted but distinct.
+#[must_use]
+pub fn convert_button_style(
+    state: ConvertButtonState,
+    visuals: &egui::Visuals,
+) -> ConvertButtonStyle {
+    let bg = visuals.panel_fill;
+    match state {
+        ConvertButtonState::Ready => ConvertButtonStyle {
+            fill: bg.lerp_to_gamma(READY_GREEN, READY_TINT),
+            text_color: if visuals.dark_mode {
+                READY_GREEN.lerp_to_gamma(egui::Color32::WHITE, 0.35)
+            } else {
+                READY_GREEN.lerp_to_gamma(egui::Color32::BLACK, 0.45)
+            },
+        },
+        ConvertButtonState::Blocked => ConvertButtonStyle {
+            fill: bg.lerp_to_gamma(visuals.error_fg_color, BLOCKED_TINT),
+            text_color: if visuals.dark_mode {
+                visuals.error_fg_color.lerp_to_gamma(egui::Color32::WHITE, 0.15)
+            } else {
+                visuals.error_fg_color.lerp_to_gamma(egui::Color32::BLACK, 0.4)
+            },
+        },
+        ConvertButtonState::Running => ConvertButtonStyle {
+            fill: bg.lerp_to_gamma(RUNNING_AMBER, RUNNING_TINT),
+            text_color: if visuals.dark_mode {
+                RUNNING_AMBER.lerp_to_gamma(egui::Color32::WHITE, 0.25)
+            } else {
+                RUNNING_AMBER.lerp_to_gamma(egui::Color32::BLACK, 0.45)
+            },
+        },
+    }
+}
+
 /// Renders the footer panel (run controls + progress + totals).
 pub fn show(app: &mut App, ctx: &egui::Context) {
     egui::TopBottomPanel::bottom("byteshaver-footer").show(ctx, |ui| {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             // run controls -------------------------------------------------
-            let mut convert = ui.add_enabled(app.can_start(), egui::Button::new("▶ Convert"));
+            // plan 15 F18: state-colored Convert button (muted green when
+            // ready, gray-red when blocked, amber while running); the
+            // blocker reason stays in the disabled tooltip
+            let state = if app.running.is_some() {
+                ConvertButtonState::Running
+            } else if app.can_start() {
+                ConvertButtonState::Ready
+            } else {
+                ConvertButtonState::Blocked
+            };
+            let style = convert_button_style(state, ui.visuals());
+            let label = egui::RichText::new("▶ Convert").color(style.text_color);
+            let mut convert = ui.add_enabled(
+                state == ConvertButtonState::Ready,
+                egui::Button::new(label).fill(style.fill),
+            );
             if let Some(reason) = app.start_blocker() {
                 convert = convert.on_disabled_hover_text(reason);
             }
@@ -607,6 +699,54 @@ mod tests {
                 stats.input_bytes,
                 stats.output_bytes
             ))
+        );
+    }
+
+    // ---- Convert-button state colors (plan 15 F18) -----------------------------
+
+    fn channel_distance(a: egui::Color32, b: egui::Color32) -> u8 {
+        a.r().abs_diff(b.r()).max(a.g().abs_diff(b.g())).max(a.b().abs_diff(b.b()))
+    }
+
+    #[test]
+    fn convert_button_tints_are_muted_distinct_and_theme_derived() {
+        for visuals in [egui::Visuals::dark(), egui::Visuals::light()] {
+            let bg = visuals.panel_fill;
+            let ready = convert_button_style(ConvertButtonState::Ready, &visuals);
+            let blocked = convert_button_style(ConvertButtonState::Blocked, &visuals);
+            let running = convert_button_style(ConvertButtonState::Running, &visuals);
+
+            // every fill is a low-alpha tint over the panel background
+            // (plan 15 F18: alpha ~0.15–0.25) — no channel strays further
+            // than the tint band allows
+            for style in [ready, blocked, running] {
+                assert!(
+                    channel_distance(style.fill, bg) <= (0.25_f32 * 255.0).ceil() as u8,
+                    "fill {style:?} drifted too far from the panel fill {bg:?}"
+                );
+            }
+            // and the three states stay visually distinct
+            assert_ne!(ready, blocked);
+            assert_ne!(ready, running);
+            assert_ne!(blocked, running);
+            assert_ne!(ready.text_color, blocked.text_color);
+            assert_ne!(ready.text_color, running.text_color);
+
+            // hue direction: ready is green (g dominant), running amber
+            // (r dominant), blocked carries the theme's error color
+            assert!(ready.fill.g() > ready.fill.r() && ready.fill.g() > ready.fill.b());
+            assert!(running.fill.r() > running.fill.b());
+            assert_eq!(blocked.fill, bg.lerp_to_gamma(visuals.error_fg_color, BLOCKED_TINT));
+
+            // the tints stay inside the documented saturation band
+            for tint in [READY_TINT, BLOCKED_TINT, RUNNING_TINT] {
+                assert!((0.15..=0.25).contains(&tint));
+            }
+        }
+        // theme awareness: dark and light renders differ
+        assert_ne!(
+            convert_button_style(ConvertButtonState::Ready, &egui::Visuals::dark()),
+            convert_button_style(ConvertButtonState::Ready, &egui::Visuals::light())
         );
     }
 }
