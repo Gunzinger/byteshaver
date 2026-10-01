@@ -229,9 +229,10 @@ impl InspectorState {
 
     /// Renders the contents of the standalone viewport (called by
     /// [`crate::viewports`] while open): the inspector body in a
-    /// `CentralPanel` of the viewport's own context, plus the OS-title-bar
+    /// `CentralPanel` of the viewport's own ui, plus the OS-title-bar
     /// close handling (closing drops buffers and textures).
-    pub fn show_viewport_contents(app: &mut crate::app::App, ctx: &egui::Context) {
+    pub fn show_viewport_contents(app: &mut crate::app::App, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
         let Some(state) = &mut app.inspector else {
             return;
         };
@@ -244,7 +245,7 @@ impl InspectorState {
         let metric_caption = app.metrics.cached(&state.input).map(|entry| {
             format!("{} — {}", entry.result.pretty, entry.result.interpretation())
         });
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             let state = app.inspector.as_mut().expect("checked above");
             body(ui, state, metric_caption.as_deref());
         });

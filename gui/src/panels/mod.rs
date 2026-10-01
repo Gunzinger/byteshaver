@@ -29,20 +29,20 @@ use crate::app::App;
 /// popups are hosted last, every frame, regardless of open state — that
 /// is what keeps their OS windows alive from startup (no creation flash,
 /// plan 15 F12).
-pub fn show(app: &mut App, ctx: &egui::Context) {
-    header(app, ctx);
-    footer::show(app, ctx);
-    options_panel::show(app, ctx);
-    egui::CentralPanel::default().show(ctx, |ui| {
+pub fn show(app: &mut App, ui: &mut egui::Ui) {
+    header(app, ui);
+    footer::show(app, ui);
+    options_panel::show(app, ui);
+    egui::CentralPanel::default().show(ui, |ui| {
         drop_zone::show(app, ui);
         file_table::show(app, ui);
     });
-    crate::viewports::show_all(app, ctx);
+    crate::viewports::show_all(app, ui.ctx());
 }
 
 /// Header bar: app title plus report/about toggles.
-fn header(app: &mut App, ctx: &egui::Context) {
-    egui::TopBottomPanel::top("byteshaver-header").show(ctx, |ui| {
+fn header(app: &mut App, ui: &mut egui::Ui) {
+    egui::Panel::top("byteshaver-header").show(ui, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.set_height(24.0);
             ui.heading("byteshaver");

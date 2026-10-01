@@ -40,15 +40,16 @@ const REPAINT_INTERVAL: Duration = Duration::from_millis(200);
 /// `CentralPanel` of the viewport's own context, plus the OS-title-bar
 /// close handling, the geometry persistence and the lazy self-repaint
 /// cadence (the report is static after a run finishes).
-pub fn show_viewport_contents(app: &mut App, ctx: &egui::Context) {
+pub fn show_viewport_contents(app: &mut App, ui: &mut egui::Ui) {
+    let ctx = ui.ctx().clone();
     // closing via the OS title bar flips the flag off; the host hides the
     // viewport on the next frame and the header button reflects the state
     if ctx.input(|input| input.viewport().close_requested()) {
         app.show_report = false;
         return;
     }
-    persist_geometry(app, ctx);
-    egui::CentralPanel::default().show(ctx, |ui| report_body(app, ui));
+    persist_geometry(app, &ctx);
+    egui::CentralPanel::default().show(ui, |ui| report_body(app, ui));
     ctx.request_repaint_after(REPAINT_INTERVAL);
 }
 

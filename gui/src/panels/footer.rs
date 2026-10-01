@@ -121,8 +121,8 @@ pub fn convert_button_style(
 }
 
 /// Renders the footer panel (run controls + progress + totals).
-pub fn show(app: &mut App, ctx: &egui::Context) {
-    egui::TopBottomPanel::bottom("byteshaver-footer").show(ctx, |ui| {
+pub fn show(app: &mut App, ui: &mut egui::Ui) {
+    egui::Panel::bottom("byteshaver-footer").show(ui, |ui| {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             // run controls -------------------------------------------------
@@ -202,7 +202,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         ui.add_space(2.0);
     });
     // celebration overlay above all panels + its repaint budget
-    crate::celebrate::paint(app, ctx);
+    crate::celebrate::paint(app, ui.ctx());
 }
 
 // ---- segmented progress bar ----------------------------------------------

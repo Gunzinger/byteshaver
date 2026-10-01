@@ -1780,8 +1780,8 @@ mod tests {
         for name in ENCODER_NAMES {
             let mut config = default_encoder_config(name).expect("default config");
             let mut draft = crate::app::JxlAdvancedDraft::default();
-            egui::__run_test_ctx(|ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            egui::__run_test_ui(|ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     show_encoder_options(ui, &mut config, &mut draft);
                 });
             });
@@ -1800,8 +1800,8 @@ mod tests {
                 }
                 let mut config = touched_config(&row, &default);
                 let mut draft = crate::app::JxlAdvancedDraft::default();
-                egui::__run_test_ctx(|ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                egui::__run_test_ui(|ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
                         show_encoder_options(ui, &mut config, &mut draft);
                     });
                 });

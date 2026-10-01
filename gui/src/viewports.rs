@@ -20,7 +20,7 @@
 //! # Fallbacks
 //!
 //! - When the backend cannot spawn multiple viewports, egui invokes the
-//!   callback with [`egui::ViewportClass::Embedded`]; the host then
+//!   callback with [`egui::ViewportClass::EmbeddedWindow`]; the host then
 //!   renders that popup's bounded plain `egui::Window` inside the main
 //!   viewport instead (plan 09 doctrine) — and only while it is open.
 //! - `with_visible` is a no-op on Wayland (winit cannot hide or remap
@@ -178,7 +178,8 @@ pub fn popup_builder(spec: &PopupSpec, persistent: bool) -> egui::ViewportBuilde
 /// only toggled visible/hidden, which removes the creation flash).
 ///
 /// - `render_embedded`: the popup's bounded `egui::Window` body for the
-///   [`egui::ViewportClass::Embedded`] fallback (skipped while closed).
+///   [`egui::ViewportClass::EmbeddedWindow`] fallback (skipped while
+///   closed).
 /// - `render_contents`: the popup's own-viewport body (`CentralPanel`,
 ///   close handling, repaint requests; skipped while closed).
 pub fn show_popup(
@@ -186,7 +187,7 @@ pub fn show_popup(
     ctx: &egui::Context,
     spec: PopupSpec,
     render_embedded: impl FnMut(&mut App, &egui::Context),
-    mut render_contents: impl FnMut(&mut App, &egui::Context),
+    mut render_contents: impl FnMut(&mut App, &mut egui::Ui),
 ) {
     let persistent = supports_persistent_viewports();
     if !persistent && !spec.open {
@@ -197,13 +198,13 @@ pub fn show_popup(
     let id = spec.kind.viewport_id();
     let builder = popup_builder(&spec, persistent);
     let mut render_embedded = render_embedded;
-    ctx.show_viewport_immediate(id, builder, move |vctx, class| {
-        if class == egui::ViewportClass::Embedded {
+    ctx.show_viewport_immediate(id, builder, move |vui, class| {
+        if class == egui::ViewportClass::EmbeddedWindow {
             if open {
-                render_embedded(app, vctx);
+                render_embedded(app, vui.ctx());
             }
         } else if open {
-            render_contents(app, vctx);
+            render_contents(app, vui);
         }
     });
 }

@@ -1,24 +1,57 @@
 version: 2
+
+# Grouped updates: each ecosystem opens ONE rolling PR per cycle containing
+# all its version bumps, instead of one PR per dependency. Note: Dependabot
+# *security* updates cannot be grouped and still open individual PRs.
+
 updates:
-  # Rust configuration
+  # Rust dependencies: single weekly overview PR for all cargo updates
   - package-ecosystem: "cargo"
-    # Ingests Cargo.toml
     directory: "/"
     schedule:
-      interval: "daily"
+      interval: "weekly"
+      day: "monday"
+    # guard rail for ungroupable security PRs
+    open-pull-requests-limit: 2
+    groups:
+      cargo-all:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "cargo"
+    labels:
+      - "dependencies"
+    reviewers:
+      - "Gunzinger"
 
-  # Enable version updates for Docker
+  # Docker base images: single weekly PR (fires rarely; tags are floating)
   - package-ecosystem: "docker"
-    # Look for a `Dockerfile` in the `root` directory
     directory: "/"
-    # Check for updates once a week
     schedule:
       interval: "weekly"
+      day: "monday"
+    groups:
+      docker-all:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "docker"
+    labels:
+      - "dependencies"
 
-  # Enable version updates for GitHub Actions
+  # GitHub Actions: single weekly PR for all workflow action bumps
   - package-ecosystem: "github-actions"
-    # Workflow files stored in the default location of `.github/workflows`
-    # You don't need to specify `/.github/workflows` for `directory`. You can use `directory: "/"`.
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "monday"
+    groups:
+      actions-all:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci"
+    labels:
+      - "dependencies"
+    reviewers:
+      - "Gunzinger"

@@ -57,7 +57,7 @@ anim-apng = []
 logs = ["dep:serde_json"]
 
 [dependencies]
-clap = { version = "4.6.7", features = ["derive"] } # 4.5.41 changes parser ordering; makes command ugly...
+clap = { version = "4.6.7", features = ["derive"] }
 glob = "0.3.4"
 ctrlc = "3.5.2"
 #image = {version = "0.25.8", features = ["avif-native"] } # problematic on windows
@@ -80,7 +80,7 @@ kamadak-exif = { version = "0.6", optional = true }
 # integration feature (decoding is wired manually)
 libheif-rs = { version = "3", optional = true, default-features = false, features = ["v1_19"] }
 jxl-oxide = { version = "0.12", default-features = false, features = ["rayon", "moxcms", "image"], optional = true }
-moxcms = { version = "0.8", optional = true }
+moxcms = { version = "0.9", optional = true }
 jpegxl-src = { version = "0.12", optional = true }
 # `static` forces libwebp-sys2 to always build its bundled libwebp instead of
 # linking a system libwebp found via pkg-config — required for static musl
