@@ -368,8 +368,8 @@ pub fn profiles_for(kind: &str) -> Vec<&'static BuiltinProfile> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::presets::{DESCRIPTION_MAX_CHARS, TITLE_MAX_CHARS};
     use crate::options::{ENCODER_NAMES, encoder_kind_name};
+    use crate::presets::{DESCRIPTION_MAX_CHARS, TITLE_MAX_CHARS};
 
     #[test]
     fn every_builtin_is_a_known_variant_with_sane_metadata() {
@@ -388,7 +388,11 @@ mod tests {
             );
             let json = serde_json::to_string(&profile.encoder).expect("serialize");
             let back: EncoderConfig = serde_json::from_str(&json).expect("deserialize back");
-            assert_eq!(back, profile.encoder, "{}: serde round trip", profile.preset_title);
+            assert_eq!(
+                back, profile.encoder,
+                "{}: serde round trip",
+                profile.preset_title
+            );
             assert!(
                 (1..=5).contains(&profile.quality_dots),
                 "{}: dot count out of range",
@@ -461,7 +465,11 @@ mod tests {
                 let EncoderConfig::Webp(options) = &profile.encoder else {
                     panic!("{} carries the wrong variant", profile.preset_title);
                 };
-                (profile.preset_title.to_string(), options.quality, options.lossless)
+                (
+                    profile.preset_title.to_string(),
+                    options.quality,
+                    options.lossless,
+                )
             })
             .collect();
         assert_eq!(
@@ -517,7 +525,10 @@ mod tests {
             .into_iter()
             .find(|profile| profile.preset_title == "Oxipng · Safe re-optimize")
             .expect("missing safe re-optimize");
-        assert_eq!(safe.encoder, EncoderConfig::Oxipng(OxipngOptions::default()));
+        assert_eq!(
+            safe.encoder,
+            EncoderConfig::Oxipng(OxipngOptions::default())
+        );
 
         // alpha color mode stays auto on every AVIF profile
         for profile in profiles_for("avif") {
@@ -534,7 +545,10 @@ mod tests {
         assert_eq!(builtins.len(), profiles().len());
         for preset in &builtins {
             assert!(preset.builtin);
-            assert!(preset.content.policies.is_none(), "built-ins are format-only");
+            assert!(
+                preset.content.policies.is_none(),
+                "built-ins are format-only"
+            );
             assert!(!preset.content.include_output_dir);
             assert_eq!(preset.schema, PRESET_SCHEMA);
             // the on-disk shape must stay loadable (skip_serializing_if on

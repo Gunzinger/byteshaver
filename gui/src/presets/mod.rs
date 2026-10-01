@@ -179,8 +179,10 @@ pub fn slugify(title: &str) -> String {
         } else {
             ch
         };
-        let allowed =
-            mapped.is_ascii_lowercase() || mapped.is_ascii_digit() || mapped == '-' || mapped == '_';
+        let allowed = mapped.is_ascii_lowercase()
+            || mapped.is_ascii_digit()
+            || mapped == '-'
+            || mapped == '_';
         if !allowed || (mapped == '-' && (slug.is_empty() || slug.ends_with('-'))) {
             continue;
         }
@@ -334,7 +336,9 @@ pub fn build_preset(
 pub fn sanitized(preset: &Preset) -> Preset {
     let mut copy = preset.clone();
     copy.builtin = false;
-    if !copy.content.include_output_dir && let Some(policies) = &mut copy.content.policies {
+    if !copy.content.include_output_dir
+        && let Some(policies) = &mut copy.content.policies
+    {
         policies.output_dir = None;
     }
     copy
@@ -374,11 +378,7 @@ pub fn parse_preset_text(text: &str) -> Result<Preset, String> {
 /// output directory is ignored when the preset did not embed it (privacy
 /// exclusions must not read as "modified").
 #[must_use]
-pub fn preset_matches(
-    preset: &Preset,
-    encoder: &EncoderConfig,
-    policies: &PolicySet,
-) -> bool {
+pub fn preset_matches(preset: &Preset, encoder: &EncoderConfig, policies: &PolicySet) -> bool {
     if preset.content.encoder != *encoder {
         return false;
     }
@@ -559,11 +559,8 @@ impl Store {
     /// sibling of [`crate::settings::Settings::path`].
     #[must_use]
     pub fn default_dir() -> Option<PathBuf> {
-        crate::settings::Settings::path().and_then(|settings_path| {
-            settings_path
-                .parent()
-                .map(|parent| parent.join("presets"))
-        })
+        crate::settings::Settings::path()
+            .and_then(|settings_path| settings_path.parent().map(|parent| parent.join("presets")))
     }
 
     /// The store directory.
@@ -586,9 +583,10 @@ impl Store {
             .collect();
         paths.sort();
         for path in paths {
-            let file_name = path
-                .file_name()
-                .map_or_else(|| "?".to_string(), |name| name.to_string_lossy().into_owned());
+            let file_name = path.file_name().map_or_else(
+                || "?".to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
             match Self::load_file(&path) {
                 Ok(preset) => contents.presets.push(StoredPreset { preset, file_name }),
                 Err(error) => contents.unreadable.push(Unreadable {
@@ -625,7 +623,8 @@ impl Store {
     /// status area, never dialogs).
     pub fn upsert(&self, preset: &Preset, previous_title: Option<&str>) -> Result<(), String> {
         validate(preset)?;
-        std::fs::create_dir_all(&self.dir).map_err(|err| format!("cannot create presets dir: {err}"))?;
+        std::fs::create_dir_all(&self.dir)
+            .map_err(|err| format!("cannot create presets dir: {err}"))?;
         if let Some(previous) = previous_title
             && previous != preset.title
             && let Some(old_file) = self.find_file_name_by_title(previous)?
@@ -785,10 +784,10 @@ mod tests {
         let long = slugify("This is a very long preset title that goes on and on forever");
         assert_eq!(long.len(), SLUG_MAX_CHARS);
         assert!(!long.ends_with('-'));
-        assert!(long.chars().all(|ch| ch.is_ascii_lowercase()
-            || ch.is_ascii_digit()
-            || ch == '-'
-            || ch == '_'));
+        assert!(
+            long.chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_')
+        );
     }
 
     #[test]
@@ -823,7 +822,11 @@ mod tests {
         std::fs::write(dir.join("my-preset-2.json"), "{ junk").expect("seed again");
         store.upsert(&preset, None).expect("fourth save");
         assert!(dir.join("my-preset-3.json").exists(), "collision suffix -3");
-        assert_eq!(store.load_all().unreadable.len(), 2, "the stale files surface");
+        assert_eq!(
+            store.load_all().unreadable.len(),
+            2,
+            "the stale files surface"
+        );
     }
 
     // ---- validation / titles ---------------------------------------------------
@@ -841,8 +844,14 @@ mod tests {
         assert!(validate(&preset).is_err(), "over-long description rejected");
 
         assert!(validate_draft("", "", &[]).is_err());
-        assert!(validate_draft("Ok", "", &["Ok".to_string()]).is_err(), "duplicate title");
-        assert!(validate_draft(" Ok ", "", &["Other".to_string()]).is_ok(), "trimmed");
+        assert!(
+            validate_draft("Ok", "", &["Ok".to_string()]).is_err(),
+            "duplicate title"
+        );
+        assert!(
+            validate_draft(" Ok ", "", &["Other".to_string()]).is_ok(),
+            "trimmed"
+        );
     }
 
     #[test]
@@ -945,7 +954,10 @@ mod tests {
         assert_eq!(contents.presets[0].preset.title, "After");
         assert!(store.delete_by_title("After").is_ok());
         assert!(store.load_all().presets.is_empty());
-        assert!(store.delete_by_title("After").is_err(), "second delete fails");
+        assert!(
+            store.delete_by_title("After").is_err(),
+            "second delete fails"
+        );
     }
 
     #[test]
@@ -995,7 +1007,11 @@ mod tests {
         )
         .expect("seed");
         let contents = store.load_all();
-        assert_eq!(contents.presets.len(), 1, "the newer-schema file stays visible");
+        assert_eq!(
+            contents.presets.len(),
+            1,
+            "the newer-schema file stays visible"
+        );
         assert!(is_newer_format(&contents.presets[0].preset));
         assert_eq!(contents.unreadable.len(), 1);
         let unreadable = &contents.unreadable[0];
@@ -1092,7 +1108,11 @@ mod tests {
         // format-only preset matches regardless of policies
         let mut format_only = sample_preset("Only");
         format_only.content.policies = None;
-        assert!(preset_matches(&format_only, &format_only.content.encoder, &current));
+        assert!(preset_matches(
+            &format_only,
+            &format_only.content.encoder,
+            &current
+        ));
     }
 
     // ---- misc helpers --------------------------------------------------------------
@@ -1124,21 +1144,26 @@ mod tests {
         assert!(!preset.builtin);
         assert_eq!(preset.core_version, crate::app::CORE_VERSION);
         assert!(
-            preset.content.policies.as_ref().unwrap().output_dir.is_none(),
+            preset
+                .content
+                .policies
+                .as_ref()
+                .unwrap()
+                .output_dir
+                .is_none(),
             "no opt-in → path stripped at build time"
         );
         assert!(!preset.content.include_output_dir);
 
-        let preset = build_preset(
-            "Full",
-            "",
-            true,
-            true,
-            &webp_encoder(90.0),
-            &policies,
-        );
+        let preset = build_preset("Full", "", true, true, &webp_encoder(90.0), &policies);
         assert_eq!(
-            preset.content.policies.as_ref().unwrap().output_dir.as_deref(),
+            preset
+                .content
+                .policies
+                .as_ref()
+                .unwrap()
+                .output_dir
+                .as_deref(),
             Some("/tmp/out"),
             "opt-in embeds the path"
         );
