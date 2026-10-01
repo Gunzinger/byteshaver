@@ -36,7 +36,7 @@ x11 = ["eframe/x11"]
 # MSRV 1.85 < 1.98 of the workspace toolchain.
 # `default-features = false` + explicit base features so the wayland/x11
 # backends are opt-in via the crate features above.
-eframe = { version = "0.32", default-features = false, features = [
+eframe = { version = "0.36", default-features = false, features = [
     "accesskit",
     "default_fonts",
     "glow",
