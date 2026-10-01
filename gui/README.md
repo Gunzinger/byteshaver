@@ -76,8 +76,11 @@ znver5). Build configurations per platform:
 | `byteshaver-<ver>[-cpu].exe` (Windows) | ubuntu host, `--target x86_64-pc-windows-gnu -p byteshaver` | full features; the libjxl cmake cross needs the target-suffixed `CC/CXX/AR` env vars set by the workflow |
 | `byteshaver-gui-<ver>[-cpu].exe` (Windows) | ubuntu host, `--no-default-features` | winit auto-selects its windows backend; eframe's wayland/x11 features are not target-gated and must stay off |
 
-All artifacts are UPX-packed and shipped with a `.sha256` checksum to the
-GitHub release. The docker images are the only artifacts that carry `dec-heif`
+All artifacts are shipped unpacked (instant startup; see
+`docs/upx-binary-size-report.md` in the repository root — an optional
+UPX-packed `-upx` variant set is attached to each release by a dedicated CI
+job) together with a `.sha256` checksum. The docker images are the only
+artifacts that carry `dec-heif`
 (the `libheif`/codec libraries have no static archives); a dedicated
 `validate_docker` CI job builds both images and proves the feature with an
 end-to-end decode of a generated real HEIC before publication.

@@ -92,7 +92,7 @@ jobs:
           grep -n -A1 '^name = "byteshaver' Cargo.lock
 
       - name: Install Windows cross compiler
-        run: sudo apt-get install --yes --no-install-recommends gcc-mingw-w64-x86-64-win32 g++-mingw-w64-x86-64-win32 nasm upx-ucl
+        run: sudo apt-get install --yes --no-install-recommends gcc-mingw-w64-x86-64-win32 g++-mingw-w64-x86-64-win32 nasm
 
       - name: Install rustup targets
         run: rustup target add x86_64-pc-windows-gnu
@@ -170,10 +170,11 @@ jobs:
             rust:1-alpine sh -c '
               set -e
               unset RUSTFLAGS
-              # NOTE: the static-pie assertion must run BEFORE packing — after
-              # upx, `file` reports "pie executable ... statically linked" and
-              # no longer matches "static-pie".
-              apk add --no-cache nasm musl-dev gcc g++ make cmake file upx >/dev/null
+              # binaries are shipped UNPACKED (instant startup, no AV
+              # false-positive surface); an optional UPX-packed variant set
+              # is produced later by the dedicated pack_binaries job.
+              # NOTE: the static-pie assertion must run before any packing.
+              apk add --no-cache nasm musl-dev gcc g++ make cmake file >/dev/null
               # CLI: full default features (opt-oxipng, exif, jxl, anim-webp, anim-apng, logs)
               cargo build --release --target x86_64-unknown-linux-musl -p byteshaver
               # GUI: static, x11-only windowing
@@ -182,7 +183,6 @@ jobs:
                 || (echo "ERROR: byteshaver is not static-pie" && exit 1)
               file target-linux/x86_64-unknown-linux-musl/release/byteshaver-gui | grep -q "static-pie" \
                 || (echo "ERROR: byteshaver-gui is not static-pie" && exit 1)
-              upx --best target-linux/x86_64-unknown-linux-musl/release/byteshaver target-linux/x86_64-unknown-linux-musl/release/byteshaver-gui
             '
           mkdir -p current_release
           if [ "${{ matrix.cpu_target }}" == "${{ env.BASE_CPU }}" ]; then SUFFIX=""; else SUFFIX="-${{ matrix.cpu_target }}"; fi
@@ -223,7 +223,8 @@ jobs:
               echo "FATAL: $exe depends on a mingw runtime DLL (libstdc++-6/libgcc_s/libwinpthread)"; objdump -p "$exe" | grep 'DLL Name'; exit 1
             fi
           done
-          upx --best target/x86_64-pc-windows-gnu/release/byteshaver.exe target/x86_64-pc-windows-gnu/release/byteshaver-gui.exe
+          # binaries are shipped UNPACKED (see the linux step note); the
+          # dedicated pack_binaries job produces the optional UPX variants
           mkdir -p current_release
           if [ "${{ matrix.cpu_target }}" == "${{ env.BASE_CPU }}" ]; then SUFFIX=""; else SUFFIX="-${{ matrix.cpu_target }}"; fi
           cp target/x86_64-pc-windows-gnu/release/byteshaver.exe "current_release/byteshaver-${{ env.VERSION }}${SUFFIX}.exe"
@@ -239,12 +240,92 @@ jobs:
           tag_name: ${{ github.ref_name }}
           files: current_release/*
 
-      # manual workflow_dispatch runs: attach as workflow artifacts instead
+      # Always upload the (unpacked) binaries as workflow artifacts: on tag
+      # runs the pack_binaries job consumes them to build the UPX variants;
+      # on manual workflow_dispatch runs they ARE the deliverable.
       - name: Upload binaries as workflow artifacts
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         uses: actions/upload-artifact@v7
         with:
           name: byteshaver-binaries-${{ matrix.cpu_target }}
+          path: current_release/*
+
+  # ---------------------------------------------------------------
+  # UPX packing (single job, after ALL matrix builds finished).
+  #
+  # The release ships the unpacked binaries by default: UPX saves 60-70%
+  # size but decompression adds ~45 ms (NRV --best) to every single
+  # invocation, and packed exes are a classic AV false-positive trigger.
+  # This job therefore produces UPX variants *in addition* (suffix
+  # `-upx`), for size-constrained setups. See docs/upx-binary-size-report.md
+  # for the full benchmark backing this split.
+  # ---------------------------------------------------------------
+  pack_binaries:
+    needs: build_binaries
+    runs-on: ubuntu-latest
+    name: UPX-pack all binaries
+    steps:
+      - name: Install UPX
+        run: sudo apt-get install --yes --no-install-recommends upx-ucl
+
+      - name: Download all built binaries
+        uses: actions/download-artifact@v7
+        with:
+          pattern: byteshaver-binaries-*
+          merge-multiple: true
+          path: to_pack
+
+      - name: Set version from tag
+        run: |
+          if [[ "$GITHUB_REF_NAME" == v* ]]; then
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
+          else
+            echo "VERSION=0.0.0-dispatch" >> $GITHUB_ENV
+          fi
+
+      - name: Pack, verify and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p current_release
+          for f in to_pack/byteshaver*; do
+            case "$f" in *.sha256) continue ;; esac
+            base="$(basename "$f")"
+            # byteshaver-<version>[-cpu][.exe] -> byteshaver-<version>[-cpu]-upx[.exe]
+            if [[ "$base" == *.exe ]]; then
+              out="${base%.exe}-upx.exe"
+            else
+              out="${base}-upx"
+            fi
+            cp "$f" "current_release/$out"
+            upx --best "current_release/$out"
+            # integrity check of the packed executable
+            upx -t "current_release/$out"
+          done
+          # smoke test: only the suffixless linux CLI (x86-64-v3) is
+          # guaranteed to run on any runner CPU; cpu-tuned variants may
+          # legitimately SIGILL here (e.g. AVX-512 on non-v4 runners)
+          if [ -x "current_release/byteshaver-${VERSION}-upx" ]; then
+            "current_release/byteshaver-${VERSION}-upx" --version
+          fi
+          ls -la current_release/
+          ( cd current_release && for f in byteshaver*; do
+              case "$f" in *.sha256) continue ;; esac
+              sha256sum "$f" > "$f.sha256"
+            done )
+
+      - name: Upload packed binaries to GitHub Release
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        uses: softprops/action-gh-release@v3
+        with:
+          name: Release ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          files: current_release/*
+
+      - name: Upload packed binaries as workflow artifact
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: byteshaver-binaries-upx
           path: current_release/*
 
   # ---------------------------------------------------------------
