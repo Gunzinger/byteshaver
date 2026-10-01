@@ -157,6 +157,9 @@ impl MetricState {
 
     /// Stored failure for an input path (plan 15 F19: a decode/compare
     /// error is an explicit per-row state, not a silent nothing).
+    // rendered by the file table's metric text (plan 15 WP B); unused
+    // until that lands
+    #[allow(dead_code)]
     #[must_use]
     pub fn error(&self, input: &Path) -> Option<&MetricError> {
         self.errors.get(input)
