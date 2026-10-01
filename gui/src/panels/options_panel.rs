@@ -72,9 +72,12 @@ const DESCRIPTION_EDIT_ID: &str = "byteshaver-preset-description-edit";
 const RENAME_DRAFT_ID: &str = "byteshaver-preset-rename-draft";
 const DESCRIPTION_DRAFT_ID: &str = "byteshaver-preset-description-draft";
 const DELETE_CONFIRM_ID: &str = "byteshaver-preset-delete-confirm";
-/// Bounded-window geometry (plan 09's doctrine): the manage list scrolls
-/// inside an explicit height bound.
-const MANAGE_LIST_MAX_HEIGHT: f32 = 320.0;
+/// Bounded-window geometry (plan 09's doctrine, plan 15 F13): the manage
+/// list scrolls inside the height left after the blocks below it — the
+/// old fixed [`MANAGE_LIST_MAX_HEIGHT`] ceiling is gone, so the window
+/// may be resized arbitrarily tall. The floor keeps tiny windows usable.
+const MANAGE_BELOW_RESERVE: f32 = 150.0;
+const MANAGE_LIST_MIN_HEIGHT: f32 = 60.0;
 const MANAGE_WINDOW_WIDTH: f32 = 600.0;
 const SAVE_WINDOW_WIDTH: f32 = 420.0;
 
@@ -1074,8 +1077,9 @@ struct ManageRows {
 /// Hosted by [`crate::viewports`] (plan 15 F12): an independent OS
 /// viewport ([`show_manage_viewport_contents`]) with an `Embedded`
 /// fallback (plan 09 doctrine) — both shapes share [`manage_body`] /
-/// [`manage_actions`]. Follows report.rs's bounded-layout doctrine: the
-/// list scrolls inside an explicit height bound.
+/// [`manage_actions`]. The list scrolls inside a **dynamic** height bound
+/// (plan 15 F13: the remaining available height minus the blocks below —
+/// never a fixed ceiling, so the window may be resized arbitrarily tall).
 pub fn show_manage_window(app: &mut App, ctx: &egui::Context) {
     if !app.show_preset_manager {
         return;
@@ -1141,10 +1145,14 @@ fn manage_body(app: &App, ui: &mut egui::Ui, rows: &ManageRows, intents: &mut Ma
     });
     ui.separator();
 
-    // bounded list (plan 09's doctrine): the list scrolls inside an
-    // explicit height bound
+    // plan 15 F13: no fixed ceiling — the list is bounded by the height
+    // left after reserving room for the status line and the transient
+    // inline editors below, so it grows with the window (report.rs's
+    // bounded-layout doctrine).
     egui::ScrollArea::vertical()
-        .max_height(MANAGE_LIST_MAX_HEIGHT)
+        .max_height(
+            (ui.available_height() - MANAGE_BELOW_RESERVE).max(MANAGE_LIST_MIN_HEIGHT),
+        )
         .auto_shrink([false, true])
         .show(ui, |ui| {
             ui.strong("Built-in (read-only)");
