@@ -271,21 +271,15 @@ fn render_table(app: &mut App, ui: &mut egui::Ui, columns: &[Column]) {
         .input(|input| input.pointer.latest_pos())
         .map(|pos| pos.y);
 
-    // thumbnail snapshot for the visible rows (the body closure only gets
-    // an immutable queue borrow, so the LRU-promoting cache lookups and
-    // the texture handle clones happen up front)
+    // thumbnail texture snapshot for the visible rows (the body closure
+    // only gets an immutable queue borrow, so the LRU-promoting cache
+    // lookups and the texture handle clones happen up front — driven by
+    // the previous frame's visible slice, one frame of latency for newly
+    // visible rows which render the decoding placeholder meanwhile)
     let mut textures: HashMap<PathBuf, TextureHandle> = HashMap::new();
     let mut thumb_failed: HashSet<PathBuf> = HashSet::new();
-    let mut visible_keys: Vec<ThumbKey> = Vec::new();
-    for &queue_index in &order {
-        let Some(item) = app.queue.items().get(queue_index) else {
-            continue;
-        };
-        if !thumb_eligible(mode, item) {
-            continue;
-        }
-        let key: ThumbKey = (item.path.clone(), item.modified);
-        match app.thumbs.cached(&key) {
+    for key in &app.thumbs.take_visible() {
+        match app.thumbs.cached(key) {
             Some(ThumbEntry::Ready(texture)) => {
                 textures.insert(key.0.clone(), texture.clone());
             }
@@ -294,8 +288,8 @@ fn render_table(app: &mut App, ui: &mut egui::Ui, columns: &[Column]) {
             }
             None => {}
         }
-        visible_keys.push(key);
     }
+    let mut visible_keys: Vec<ThumbKey> = Vec::new();
 
     let exif_requested = columns.iter().any(|column| column.is_metadata());
     let dimensions_requested = columns.contains(&Column::Dimensions);
@@ -347,6 +341,7 @@ fn render_table(app: &mut App, ui: &mut egui::Ui, columns: &[Column]) {
             } else {
                 ThumbCell::Hidden
             };
+            visible_keys.push((item.path.clone(), item.modified));
             let mut row_remove: Option<usize> = None;
             let mut row_top: Option<f32> = None;
 
@@ -408,6 +403,7 @@ fn render_table(app: &mut App, ui: &mut egui::Ui, columns: &[Column]) {
         app.queue.remove(index);
     }
     app.action_error = action_error;
+    app.thumbs.set_visible(visible_keys.clone());
     app.request_row_data(&visible_keys, &need_dimensions, &need_exif);
 }
 

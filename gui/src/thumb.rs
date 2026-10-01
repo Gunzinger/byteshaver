@@ -104,7 +104,8 @@ impl<K: Clone + Eq + std::hash::Hash, V> LruCache<K, V> {
         self.map.get(key)
     }
 
-    /// Whether `key` is cached (without promotion).
+    /// Whether `key` is cached (without promotion; test introspection).
+    #[cfg(test)]
     pub fn contains(&self, key: &K) -> bool {
         self.map.contains_key(key)
     }
@@ -144,6 +145,10 @@ pub struct ThumbState {
     pending_thumbs: HashSet<PathBuf>,
     /// Paths with an in-flight EXIF request (dedup).
     pending_exif: HashSet<PathBuf>,
+    /// The most recent frame's visible-row keys: the request set, and the
+    /// pre-pass input for the table's texture snapshot (one frame of
+    /// latency, see `panels/file_table`).
+    visible: Vec<ThumbKey>,
     /// Decoded textures / failure markers, LRU-capped.
     cache: LruCache<ThumbKey, ThumbEntry>,
 }
@@ -174,6 +179,7 @@ impl ThumbState {
             paused,
             pending_thumbs: HashSet::new(),
             pending_exif: HashSet::new(),
+            visible: Vec::new(),
             cache: LruCache::new(CACHE_CAP),
         }
     }
@@ -184,13 +190,26 @@ impl ThumbState {
         self.paused.store(paused, Ordering::Relaxed);
     }
 
+    /// Takes the previous frame's visible-row keys (the texture pre-pass
+    /// input of the file table).
+    pub fn take_visible(&mut self) -> Vec<ThumbKey> {
+        std::mem::take(&mut self.visible)
+    }
+
+    /// Stores this frame's visible-row keys (collected by the table's
+    /// `body.rows` callback, which yields exactly the visible slice).
+    pub fn set_visible(&mut self, keys: Vec<ThumbKey>) {
+        self.visible = keys;
+    }
+
     /// (Re-)requests thumbnails, most-recently-visible-first (the table
-    /// passes its visible rows bottom-up). Requests for cached or
+    /// passes its visible rows; the reversed order lets the bottom-most —
+    /// usually the scroll anchor — decode first). Requests for cached or
     /// in-flight paths are dropped.
     pub fn request_thumbs(&mut self, keys: &[ThumbKey]) {
         for key in keys.iter().rev() {
-            let (path, mtime) = key;
-            if self.cache.contains(&(path.clone(), *mtime)) || self.pending_thumbs.contains(path) {
+            let (path, _mtime) = key;
+            if self.cache.get(key).is_some() || self.pending_thumbs.contains(path) {
                 continue;
             }
             if self
