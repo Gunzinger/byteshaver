@@ -13,6 +13,8 @@ use byteshaver::config::{AnimatedInputPolicy, EncoderConfig, HeifImagePolicy};
 use byteshaver::metadata::policy::{ExifPolicy, parse_tag_list};
 use serde::{Deserialize, Serialize};
 
+use crate::celebrate::ConfettiLevel;
+
 /// Which existing outputs survive a run (maps onto the CLI's
 /// `--overwrite-if-smaller` / `--overwrite-existing` flag pair).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,6 +126,15 @@ pub struct Settings {
     pub max_animation_memory_mib: u64,
     /// CLI `--reverse-processing-order` mirror.
     pub reverse_processing_order: bool,
+    /// Confetti intensity of the post-run celebration (plan 12 §3,
+    /// decision D1: default Regular).
+    #[serde(default)]
+    pub confetti: ConfettiLevel,
+    /// Reduced-motion escape hatch: steady bar shades, no time-varying
+    /// painting, and the confetti replaced by a fading text line (plan
+    /// 12 §2/§3; egui cannot read the OS preference portably).
+    #[serde(default)]
+    pub reduced_motion: bool,
     /// Last window size in points (restored on startup).
     pub window_size: Option<[f32; 2]>,
 }
@@ -141,6 +152,8 @@ impl Default for Settings {
             discard_input_alpha_channel: false,
             max_animation_memory_mib: 4096,
             reverse_processing_order: false,
+            confetti: ConfettiLevel::default(),
+            reduced_motion: false,
             window_size: None,
         }
     }
@@ -210,11 +223,29 @@ mod tests {
             discard_input_alpha_channel: true,
             max_animation_memory_mib: 1024,
             reverse_processing_order: true,
+            confetti: ConfettiLevel::Excessive,
+            reduced_motion: true,
             window_size: Some([1100.0, 720.0]),
         };
         let json = serde_json::to_string(&settings).expect("serialize settings");
         let parsed: Settings = serde_json::from_str(&json).expect("deserialize settings");
         assert_eq!(parsed, settings);
+    }
+
+    #[test]
+    fn celebration_settings_default_when_absent_from_the_file() {
+        // settings written by an older build lack the plan-12 fields
+        let mut value = serde_json::to_value(Settings::default()).expect("serialize defaults");
+        let object = value
+            .as_object_mut()
+            .expect("settings serialize to an object");
+        object.remove("confetti");
+        object.remove("reduced_motion");
+        let parsed: Settings =
+            serde_json::from_value(value).expect("deserialize without the new fields");
+        assert_eq!(parsed.confetti, ConfettiLevel::Regular, "decision D1");
+        assert!(!parsed.reduced_motion);
+        assert_eq!(parsed, Settings::default());
     }
 
     #[test]

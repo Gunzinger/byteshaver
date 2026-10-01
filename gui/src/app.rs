@@ -35,7 +35,9 @@ use byteshaver::job::{
     StopFlag,
 };
 use byteshaver::metadata::policy::ExifPolicy;
+use byteshaver::pipeline::Outcome;
 
+use crate::celebrate::{Confetti, RectPx, TextFlourish};
 use crate::options;
 use crate::queue::Queue;
 use crate::reporter::ChannelReporter;
@@ -96,6 +98,17 @@ pub struct RunningJob {
     pub total_items: Option<u64>,
     /// Finished work items so far.
     pub finished_items: u64,
+    /// Paths currently being worked on (FileStarted without a matching
+    /// FileFinished) — the truthful "active" set (plan 12 §1):
+    /// `Queue::begin_run` marks every row Running, only this set knows
+    /// which ones are actually in flight.
+    pub active: std::collections::HashSet<PathBuf>,
+    /// Per-work-item segment states of the progress bar, indexed by the
+    /// events' `index` (sized on [`JobEvent::Started`], plan 12 §2).
+    pub segments: Vec<SegState>,
+    /// Per-work-item input paths for segment tooltips (sized like
+    /// [`RunningJob::segments`]).
+    pub seg_paths: Vec<Option<PathBuf>>,
     /// When the job started (for the elapsed display).
     pub started_at: Instant,
 }
@@ -109,6 +122,117 @@ impl RunningJob {
             return Some(1.0);
         }
         Some(self.finished_items as f32 / total as f32)
+    }
+}
+
+/// Paint class of one progress-bar segment (egui-free; the footer maps it
+/// onto concrete colors, plan 12 §2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SegTone {
+    /// Not started yet (faint gray).
+    Pending,
+    /// Currently being converted (selection blue + pulse/shimmer).
+    Active,
+    /// Encoded at ≤ 80 % ratio (green tint).
+    Good,
+    /// Encoded at 80–100 % ratio (soft green-gray).
+    Neutral,
+    /// Output larger than the input (amber).
+    Grew,
+    /// Conversion failed (red).
+    Error,
+    /// Skipped, collided or aborted (dark gray).
+    Skipped,
+}
+
+/// State of one progress-bar segment, indexed by the work-item index of
+/// the [`JobEvent`] stream (plan 12 §2).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SegState {
+    /// Waiting to be worked on.
+    Pending,
+    /// Inside the job's active set (FileStarted without FileFinished).
+    Active,
+    /// Finished: result class plus the `output / input` ratio when known.
+    Done {
+        /// Result class (color band).
+        tone: SegTone,
+        /// `output / input` fraction (`None` when the input had no size).
+        ratio: Option<f32>,
+    },
+}
+
+impl SegState {
+    /// The segment's paint class.
+    #[must_use]
+    pub fn tone(self) -> SegTone {
+        match self {
+            SegState::Pending => SegTone::Pending,
+            SegState::Active => SegTone::Active,
+            SegState::Done { tone, .. } => tone,
+        }
+    }
+
+    /// Maps a finished [`Outcome`] onto its segment state. The ratio
+    /// bands match plan 10 §phase 1 (≤ 80 % good, 80–100 % neutral,
+    /// above 100 % grew; discarded-larger counts as grew); once plan 10
+    /// lands its shared helper this private copy gets unified away.
+    #[must_use]
+    pub fn from_outcome(outcome: &Outcome) -> Self {
+        match outcome {
+            Outcome::Encoded {
+                input_size,
+                output_size,
+                ..
+            } => {
+                let ratio = ratio_of(*input_size, *output_size);
+                let tone = ratio.map_or(SegTone::Neutral, ratio_tone);
+                SegState::Done { tone, ratio }
+            }
+            Outcome::DiscardedLargerThanInput {
+                input_size,
+                encoded_size,
+            } => SegState::Done {
+                tone: SegTone::Grew,
+                ratio: ratio_of(*input_size, *encoded_size),
+            },
+            Outcome::Error(_) => SegState::Done {
+                tone: SegTone::Error,
+                ratio: None,
+            },
+            Outcome::SkippedExisting { .. }
+            | Outcome::SkippedCollision { .. }
+            | Outcome::DiscardedLargerThanExisting { .. }
+            | Outcome::Aborted => SegState::Done {
+                tone: SegTone::Skipped,
+                ratio: None,
+            },
+        }
+    }
+}
+
+/// `output / input` as a fraction (`None` for a zero-size input).
+fn ratio_of(input: u64, output: u64) -> Option<f32> {
+    if input == 0 {
+        None
+    } else {
+        Some(output as f32 / input as f32)
+    }
+}
+
+/// Ratio band of a compression fraction (plan 10 §phase 1 bands): ≤ 0.8
+/// good, ≤ 1.0 neutral, > 1.0 grew. Non-finite input maps to neutral.
+#[must_use]
+pub fn ratio_tone(ratio: f32) -> SegTone {
+    if !ratio.is_finite() {
+        return SegTone::Neutral;
+    }
+    if ratio <= 0.8 {
+        SegTone::Good
+    } else if ratio <= 1.0 {
+        SegTone::Neutral
+    } else {
+        SegTone::Grew
     }
 }
 
@@ -142,6 +266,15 @@ pub struct App {
     pub drag_hovered: bool,
     /// Draft state of the JXL advanced settings editor.
     pub jxl_draft: JxlAdvancedDraft,
+    /// Confetti burst of the last finished run (`None` = no party /
+    /// expired; plan 12 §3).
+    pub confetti: Option<Confetti>,
+    /// Reduced-motion text flourish of the last finished run (plan 12
+    /// §3).
+    pub flourish: Option<TextFlourish>,
+    /// Last known viewport size in points (refreshed every frame; anchors
+    /// the confetti emission at the Convert-button corner).
+    pub viewport_size: [f32; 2],
     settings_dirty: bool,
 }
 
@@ -163,6 +296,9 @@ impl App {
             start_error: None,
             drag_hovered: false,
             jxl_draft: JxlAdvancedDraft::default(),
+            confetti: None,
+            flourish: None,
+            viewport_size: [1100.0, 720.0],
             settings_dirty: false,
         }
     }
@@ -326,6 +462,9 @@ impl App {
         self.start_error = None;
         self.report = None;
         self.event_log.clear();
+        // a new run retires the previous celebration
+        self.confetti = None;
+        self.flourish = None;
         self.queue.begin_run();
         let (tx, rx) = mpsc::channel::<JobEvent>();
         let reporter: Box<dyn Reporter> = Box::new(ChannelReporter::new(tx));
@@ -342,6 +481,9 @@ impl App {
             stats: FooterStats::default(),
             total_items: None,
             finished_items: 0,
+            active: std::collections::HashSet::new(),
+            segments: Vec::new(),
+            seg_paths: Vec::new(),
             started_at: Instant::now(),
         });
     }
@@ -377,14 +519,39 @@ impl App {
             JobEvent::Started { total_files } => {
                 if let Some(job) = self.running.as_mut() {
                     job.total_items = Some(total_files);
+                    // per-item segments are sized on discovery (plan 12 §2)
+                    let total = total_files as usize;
+                    job.segments = vec![SegState::Pending; total];
+                    job.seg_paths = vec![None; total];
                 }
             }
-            JobEvent::FileStarted { path, .. } => {
+            JobEvent::FileStarted { index, path } => {
+                if let Some(job) = self.running.as_mut() {
+                    job.active.insert(path.clone());
+                    if let Some(segment) = job.segments.get_mut(index as usize) {
+                        *segment = SegState::Active;
+                    }
+                    if let Some(slot) = job.seg_paths.get_mut(index as usize) {
+                        *slot = Some(path.clone());
+                    }
+                }
                 self.queue.apply_file_started(&path);
             }
-            JobEvent::FileFinished { path, outcome, .. } => {
+            JobEvent::FileFinished {
+                index,
+                path,
+                outcome,
+            } => {
                 if let Some(job) = self.running.as_mut() {
                     job.finished_items += 1;
+                    job.active.remove(&path);
+                    let state = SegState::from_outcome(&outcome);
+                    if let Some(segment) = job.segments.get_mut(index as usize) {
+                        *segment = state;
+                    }
+                    if let Some(slot) = job.seg_paths.get_mut(index as usize) {
+                        *slot = Some(path.clone());
+                    }
                 }
                 if !self.queue.apply_file_finished(&path, &outcome) {
                     // discovered by directory/HEIF expansion: show as row
@@ -437,7 +604,8 @@ impl App {
     }
 
     /// Completes the running job: joins the worker (instant after
-    /// `Finished`), collects the report and resets the queue run state.
+    /// `Finished`), collects the report, resets the queue run state and
+    /// arms the celebration (plan 12 §3).
     fn finish_job(&mut self) {
         let Some(mut job) = self.running.take() else {
             return;
@@ -448,11 +616,60 @@ impl App {
             .take()
             .map(byteshaver::job::JobHandle::join)
             .unwrap_or_default();
+        job.active.clear(); // plan 12 §1: the active set dies with the run
         self.queue.finish_run();
         if let Some(message) = &report.error {
             self.start_error = Some(message.clone());
         }
+        self.celebrate_run(&report);
         self.report = Some(report);
+    }
+
+    /// Decides and arms the post-run celebration (plan 12 §3): a
+    /// compression-ratio-scaled confetti burst emitted at the
+    /// Convert-button corner — or, under `reduced_motion`, a fading text
+    /// flourish with the same percentage. Pure trigger decision in
+    /// [`crate::celebrate::should_celebrate`].
+    fn celebrate_run(&mut self, report: &RunReport) {
+        let summary = crate::celebrate::RunSummary {
+            successful: report.totals.successful,
+            input_size: report.totals.input_size,
+            output_size: report.totals.output_size,
+            input_files: report.totals.input_files,
+            aborted: report.totals.aborted,
+            failed: report.error.is_some(),
+        };
+        if !crate::celebrate::should_celebrate(&summary) {
+            return;
+        }
+        // should_celebrate guarantees input_size > output_size ≥ 0
+        let ratio = report.totals.output_size as f32 / report.totals.input_size as f32;
+        if self.settings.reduced_motion {
+            let percent = ((1.0 - ratio) * 100.0).round().clamp(0.0, 100.0) as u32;
+            self.flourish = Some(TextFlourish::new(percent));
+        } else {
+            let count = crate::celebrate::confetti_count(self.settings.confetti, ratio);
+            if count == 0 {
+                return;
+            }
+            let [_, height] = self.viewport_size;
+            let origin = RectPx {
+                x: 12.0,
+                y: (height - 84.0).max(0.0),
+                w: 240.0,
+                h: 48.0,
+            };
+            // deterministic seed per run → identical replays
+            let totals = &report.totals;
+            let seed = totals.input_size
+                ^ totals.output_size.rotate_left(17)
+                ^ totals.successful.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            self.confetti = Some(Confetti::burst(
+                count,
+                origin,
+                &mut crate::celebrate::Lcg::new(seed),
+            ));
+        }
     }
 }
 
@@ -507,13 +724,15 @@ impl eframe::App for App {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
 
-        // 5. remember the window size for the next launch
+        // 5. remember the window size for the next launch (and keep the
+        // confetti origin anchored to the current window)
         let size = ctx.input(|input| input.viewport().inner_rect.map(|rect| rect.size()));
-        if let Some([width, height]) = size.map(|size| [size.x, size.y])
-            && self.settings.window_size != Some([width, height])
-        {
-            self.settings.window_size = Some([width, height]);
-            self.settings_dirty = true;
+        if let Some([width, height]) = size.map(|size| [size.x, size.y]) {
+            self.viewport_size = [width, height];
+            if self.settings.window_size != Some([width, height]) {
+                self.settings.window_size = Some([width, height]);
+                self.settings_dirty = true;
+            }
         }
 
         // 6. persist changed settings (cheap JSON write, at most per change);
@@ -528,12 +747,15 @@ impl eframe::App for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::celebrate::ConfettiLevel;
     use crate::queue::ItemStatus;
     use crate::settings::{CollisionChoice, ExifMode, ExifSettings};
     use byteshaver::cli::CliArgs;
     use byteshaver::config::ConversionConfig;
     use byteshaver::pipeline::Outcome;
     use clap::Parser;
+    use std::path::Path;
+    use std::time::Duration;
 
     fn default_app() -> App {
         App::with_settings(Settings::default())
@@ -757,6 +979,234 @@ mod tests {
         assert_eq!(app.queue.len(), 2, "discovered rows are appended");
         assert!(app.queue.items()[1].discovered);
         assert_eq!(app.queue.items()[1].status, ItemStatus::Encoded);
+    }
+
+    // ---- plan 12 §1/§2: active set + per-item segments ----------------------
+
+    fn encoded_outcome(input: u64, output: u64) -> Outcome {
+        Outcome::Encoded {
+            input_size: input,
+            output_size: output,
+            metadata_dropped: false,
+            output_path: PathBuf::from("/x/out.img"),
+        }
+    }
+
+    #[test]
+    fn active_set_tracks_started_without_matching_finished() {
+        let mut app = default_app();
+        app.queue
+            .add_paths(vec![PathBuf::from("/x/a.png"), PathBuf::from("/x/b.png")]);
+        app.start_job();
+        app.apply_event(JobEvent::Started { total_files: 3 });
+        // rayon parallelism: two files in flight at once coexist
+        app.apply_event(JobEvent::FileStarted {
+            index: 0,
+            path: PathBuf::from("/x/a.png"),
+        });
+        app.apply_event(JobEvent::FileStarted {
+            index: 1,
+            path: PathBuf::from("/x/b.png"),
+        });
+        {
+            let job = app.running.as_ref().expect("job running");
+            assert_eq!(job.active.len(), 2);
+            assert!(job.active.contains(Path::new("/x/a.png")));
+            assert!(job.active.contains(Path::new("/x/b.png")));
+            assert_eq!(
+                job.segments,
+                vec![SegState::Active, SegState::Active, SegState::Pending]
+            );
+            assert_eq!(job.seg_paths[1].as_deref(), Some(Path::new("/x/b.png")));
+        }
+        // finishes remove exactly their own path
+        app.apply_event(JobEvent::FileFinished {
+            index: 0,
+            path: PathBuf::from("/x/a.png"),
+            outcome: encoded_outcome(100, 40),
+        });
+        let job = app.running.as_ref().expect("job running");
+        assert_eq!(job.active.len(), 1);
+        assert!(job.active.contains(Path::new("/x/b.png")));
+        assert!(!job.active.contains(Path::new("/x/a.png")));
+        assert_eq!(
+            job.segments[0],
+            SegState::Done {
+                tone: SegTone::Good,
+                ratio: Some(0.4),
+            }
+        );
+        assert_eq!(job.segments[2], SegState::Pending);
+        assert_eq!(job.finished_items, 1);
+    }
+
+    #[test]
+    fn aborted_outcome_leaves_the_active_set_and_maps_to_skipped() {
+        let mut app = default_app();
+        app.queue.add_paths(vec![PathBuf::from("/x/a.png")]);
+        app.start_job();
+        app.apply_event(JobEvent::Started { total_files: 1 });
+        app.apply_event(JobEvent::FileStarted {
+            index: 0,
+            path: PathBuf::from("/x/a.png"),
+        });
+        app.apply_event(JobEvent::FileFinished {
+            index: 0,
+            path: PathBuf::from("/x/a.png"),
+            outcome: Outcome::Aborted,
+        });
+        let job = app.running.as_ref().expect("job running");
+        assert!(job.active.is_empty(), "aborted files are no longer active");
+        assert_eq!(job.segments[0].tone(), SegTone::Skipped);
+    }
+
+    #[test]
+    fn outcome_maps_onto_segment_state_bands() {
+        let done = |tone, ratio| SegState::Done { tone, ratio };
+        // ratio bands: ≤ 80 % good, 80–100 % neutral, > 100 % grew
+        assert_eq!(
+            SegState::from_outcome(&encoded_outcome(100, 80)),
+            done(SegTone::Good, Some(0.8))
+        );
+        assert_eq!(
+            SegState::from_outcome(&encoded_outcome(100, 81)),
+            done(SegTone::Neutral, Some(0.81))
+        );
+        assert_eq!(
+            SegState::from_outcome(&encoded_outcome(100, 100)),
+            done(SegTone::Neutral, Some(1.0))
+        );
+        assert_eq!(
+            SegState::from_outcome(&encoded_outcome(100, 101)),
+            done(SegTone::Grew, Some(1.01))
+        );
+        assert_eq!(
+            SegState::from_outcome(&Outcome::DiscardedLargerThanInput {
+                input_size: 100,
+                encoded_size: 120,
+            }),
+            done(SegTone::Grew, Some(1.2)),
+            "discarded-larger counts as grew (plan 10 §phase 1)"
+        );
+        // skipped / collision / aborted share the dark-gray tone
+        assert_eq!(
+            SegState::from_outcome(&Outcome::SkippedExisting {
+                input_size: 100,
+                existing_size: 50,
+                output_path: PathBuf::from("/x/old.img"),
+            }),
+            done(SegTone::Skipped, None)
+        );
+        assert_eq!(
+            SegState::from_outcome(&Outcome::SkippedCollision {
+                input_size: 100,
+                output_path: PathBuf::from("x"),
+            }),
+            done(SegTone::Skipped, None)
+        );
+        assert_eq!(
+            SegState::from_outcome(&Outcome::DiscardedLargerThanExisting {
+                input_size: 100,
+                existing_size: 50,
+            }),
+            done(SegTone::Skipped, None)
+        );
+        assert_eq!(
+            SegState::from_outcome(&Outcome::Aborted),
+            done(SegTone::Skipped, None)
+        );
+        // errors are red
+        assert_eq!(
+            SegState::from_outcome(&Outcome::Error("boom".to_string())),
+            done(SegTone::Error, None)
+        );
+    }
+
+    #[test]
+    fn ratio_tone_bands_at_boundaries() {
+        assert_eq!(ratio_tone(0.0), SegTone::Good);
+        assert_eq!(ratio_tone(0.79), SegTone::Good);
+        assert_eq!(ratio_tone(0.8), SegTone::Good);
+        assert_eq!(ratio_tone(0.81), SegTone::Neutral);
+        assert_eq!(ratio_tone(1.0), SegTone::Neutral);
+        assert_eq!(ratio_tone(1.001), SegTone::Grew);
+        // non-finite ratios never crash the band lookup
+        assert_eq!(ratio_tone(f32::NAN), SegTone::Neutral);
+        assert_eq!(ratio_tone(f32::INFINITY), SegTone::Neutral);
+    }
+
+    // ---- plan 12 §3: celebration trigger ------------------------------------
+
+    fn run_report(successful: u64, input: u64, output: u64) -> RunReport {
+        RunReport {
+            elapsed: Duration::ZERO,
+            files: Vec::new(),
+            totals: byteshaver::job::Totals {
+                input_files: successful,
+                successful,
+                skipped: 0,
+                discarded: 0,
+                collisions: 0,
+                errors: 0,
+                aborted: 0,
+                input_size: input,
+                output_size: output,
+            },
+            metadata_dropped_count: 0,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn celebration_arms_per_report_and_settings() {
+        // Regular + a real gain → confetti (ratio 0.4 → factor 1.12 → 134)
+        let mut app = default_app();
+        app.celebrate_run(&run_report(2, 100, 40));
+        let confetti = app.confetti.as_ref().expect("confetti burst");
+        assert_eq!(confetti.visible(), 134);
+        assert!(app.flourish.is_none());
+
+        // Off → nothing at all
+        let mut app = default_app();
+        app.settings.confetti = ConfettiLevel::Off;
+        app.celebrate_run(&run_report(1, 100, 40));
+        assert!(app.confetti.is_none());
+        assert!(app.flourish.is_none());
+
+        // reduced motion → the text flourish with the saved percentage
+        let mut app = default_app();
+        app.settings.reduced_motion = true;
+        app.celebrate_run(&run_report(1, 100, 38));
+        let flourish = app.flourish.as_ref().expect("flourish");
+        assert_eq!(flourish.text, "✔ 62 % saved — nice run.");
+        assert!(app.confetti.is_none());
+
+        // grew / no gain / nothing successful → no celebration
+        let mut app = default_app();
+        app.celebrate_run(&run_report(1, 100, 120));
+        assert!(app.confetti.is_none() && app.flourish.is_none());
+        app.celebrate_run(&run_report(1, 100, 100));
+        assert!(app.confetti.is_none() && app.flourish.is_none());
+        app.celebrate_run(&run_report(0, 100, 40));
+        assert!(app.confetti.is_none() && app.flourish.is_none());
+
+        // pre-flight failure (report.error) → no celebration
+        let mut failed = run_report(1, 100, 40);
+        failed.error = Some("pre-flight broke".to_string());
+        app.celebrate_run(&failed);
+        assert!(app.confetti.is_none() && app.flourish.is_none());
+
+        // fully aborted run → no celebration (partial aborts still do)
+        let mut aborted = run_report(0, 100, 40);
+        aborted.totals.aborted = 3;
+        aborted.totals.input_files = 3;
+        app.celebrate_run(&aborted);
+        assert!(app.confetti.is_none() && app.flourish.is_none());
+        let mut partial = run_report(1, 100, 40);
+        partial.totals.aborted = 1;
+        partial.totals.input_files = 2;
+        app.celebrate_run(&partial);
+        assert!(app.confetti.is_some(), "partial success still celebrates");
     }
 
     // ---- files-vs-pattern run parity (headless, uses the real core) --------

@@ -79,6 +79,23 @@ impl ItemStatus {
         }
     }
 
+    /// Status-column glyph during a run, refined by the job's active set
+    /// (plan 12 §1): `Queue::begin_run` marks *every* row
+    /// [`ItemStatus::Running`], so only the cross-check against
+    /// `RunningJob::active` makes the glyph truthful — actively worked
+    /// rows keep `⟳`, rows still waiting in this run show the weak
+    /// pending `…`. Non-running rows delegate to [`ItemStatus::glyph`].
+    // consumed by plan 11's file-table rewrite; unused until then
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn glyph_while_running(self, active: bool) -> &'static str {
+        match self {
+            ItemStatus::Running if active => "⟳",
+            ItemStatus::Running => "…",
+            other => other.glyph(),
+        }
+    }
+
     /// Human-readable status text for the file table and report panel.
     #[must_use]
     pub fn label(self) -> &'static str {
@@ -573,6 +590,21 @@ mod tests {
         assert_eq!(item.status, ItemStatus::Error);
         assert_eq!(item.error.as_deref(), Some("nope"));
         assert!(!item.metadata_dropped);
+    }
+
+    // ---- Glyph truthfulness (plan 12 §1) ------------------------------------
+
+    #[test]
+    fn running_glyph_distinguishes_active_from_pending_rows() {
+        // actively worked rows keep the spinner…
+        assert_eq!(ItemStatus::Running.glyph_while_running(true), "⟳");
+        // …rows still waiting in this run show the pending dots
+        assert_eq!(ItemStatus::Running.glyph_while_running(false), "…");
+        // non-running statuses delegate unchanged
+        assert_eq!(ItemStatus::Queued.glyph_while_running(false), "…");
+        assert_eq!(ItemStatus::Queued.glyph_while_running(true), "…");
+        assert_eq!(ItemStatus::Encoded.glyph_while_running(true), "✔");
+        assert_eq!(ItemStatus::Aborted.glyph_while_running(false), "⏸");
     }
 
     // ---- Add / dedup / remove / clear ------------------------------------
