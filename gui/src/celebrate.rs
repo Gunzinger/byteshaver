@@ -414,7 +414,7 @@ pub fn palette(idx: ColorIdx, dark_mode: bool) -> egui::Color32 {
 /// the repaint cadence returns to idle.
 pub fn paint(app: &mut App, ctx: &egui::Context) {
     let dt = ctx.input(|input| input.stable_dt);
-    let dark_mode = ctx.style().visuals.dark_mode;
+    let dark_mode = ctx.theme() == egui::Theme::Dark;
 
     if let Some(confetti) = app.confetti.as_mut() {
         confetti.step(dt);

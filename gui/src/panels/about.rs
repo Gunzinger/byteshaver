@@ -24,15 +24,16 @@ pub fn show_embedded_window(app: &mut App, ctx: &egui::Context) {
 
 /// Renders the contents of the standalone viewport (called by
 /// [`crate::viewports`] while open): the About body in a `CentralPanel`
-/// of the viewport's own context, plus the OS-title-bar close handling.
-pub fn show_viewport_contents(app: &mut App, ctx: &egui::Context) {
+/// of the viewport's own ui, plus the OS-title-bar close handling.
+pub fn show_viewport_contents(app: &mut App, ui: &mut egui::Ui) {
+    let ctx = ui.ctx().clone();
     // closing via the OS title bar flips the flag off; the host hides the
     // viewport on the next frame and the header button reflects the state
     if ctx.input(|input| input.viewport().close_requested()) {
         app.show_about = false;
         return;
     }
-    egui::CentralPanel::default().show(ctx, |ui| about_body(app, ui));
+    egui::CentralPanel::default().show(ui, |ui| about_body(app, ui));
 }
 
 /// The window body shared by the viewport and the embedded fallback.

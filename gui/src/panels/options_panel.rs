@@ -111,8 +111,9 @@ fn panel_height_target(measured_content_height: f32, viewport_height: f32) -> f3
 }
 
 /// Renders the bottom options & policies panel (auto-sizing).
-pub fn show(app: &mut App, ctx: &egui::Context) {
-    let viewport_height = ctx.screen_rect().height();
+pub fn show(app: &mut App, ui: &mut egui::Ui) {
+    let ctx = ui.ctx().clone();
+    let viewport_height = ctx.viewport_rect().height();
     let measure_id = egui::Id::new(MEASURED_HEIGHT_ID);
     let measured = ctx
         .data_mut(|data| data.get_temp::<f32>(measure_id))
@@ -124,9 +125,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         PANEL_ANIMATION_TIME,
     );
 
-    egui::TopBottomPanel::bottom("byteshaver-options")
-        .exact_height(height)
-        .show(ctx, |ui| {
+    egui::Panel::bottom("byteshaver-options")
+        .exact_size(height)
+        .show(ui, |ui| {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
@@ -922,10 +923,11 @@ pub fn show_save_window(app: &mut App, ctx: &egui::Context) {
 /// [`crate::viewports`] while a draft is pending): the same form in a
 /// `CentralPanel` of the viewport's own context, plus the OS-title-bar
 /// close handling (same semantics as the embedded window's ✕).
-pub fn show_save_viewport_contents(app: &mut App, ctx: &egui::Context) {
+pub fn show_save_viewport_contents(app: &mut App, ui: &mut egui::Ui) {
     let Some(mut draft) = app.preset_save.clone() else {
         return;
     };
+    let ctx = ui.ctx().clone();
     if ctx.input(|input| input.viewport().close_requested()) {
         app.preset_save = None;
         return;
@@ -933,7 +935,7 @@ pub fn show_save_viewport_contents(app: &mut App, ctx: &egui::Context) {
     let mut cancel = false;
     let mut save: Option<PresetSaveDraft> = None;
     egui::CentralPanel::default()
-        .show(ctx, |ui| save_body(app, ui, &mut draft, &mut cancel, &mut save));
+        .show(ui, |ui| save_body(app, ui, &mut draft, &mut cancel, &mut save));
     save_actions(app, save, cancel);
 }
 
@@ -1096,10 +1098,11 @@ pub fn show_manage_window(app: &mut App, ctx: &egui::Context) {
 /// The standalone-viewport shape of the manage window (called by
 /// [`crate::viewports`] while open): the same body in a `CentralPanel` of
 /// the viewport's own context, plus the OS-title-bar close handling.
-pub fn show_manage_viewport_contents(app: &mut App, ctx: &egui::Context) {
+pub fn show_manage_viewport_contents(app: &mut App, ui: &mut egui::Ui) {
     if !app.show_preset_manager {
         return;
     }
+    let ctx = ui.ctx().clone();
     if ctx.input(|input| input.viewport().close_requested()) {
         app.show_preset_manager = false;
         return;
@@ -1107,8 +1110,8 @@ pub fn show_manage_viewport_contents(app: &mut App, ctx: &egui::Context) {
     let rows = manage_rows(app);
     let mut intents = ManageIntents::default();
     egui::CentralPanel::default()
-        .show(ctx, |ui| manage_body(app, ui, &rows, &mut intents));
-    manage_actions(app, ctx, intents);
+        .show(ui, |ui| manage_body(app, ui, &rows, &mut intents));
+    manage_actions(app, &ctx, intents);
 }
 
 /// Snapshots the manage-window row models (pure reads; the draw and

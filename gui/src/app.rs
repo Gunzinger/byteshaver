@@ -1224,9 +1224,11 @@ pub fn inject_exif_policy(encoder: &mut EncoderConfig, policy: &ExifPolicy) {
 }
 
 impl eframe::App for App {
-    /// Renders one frame: reads drag-and-drop input, drains job events,
-    /// draws all panels and handles settings persistence.
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    /// Runs the headless per-frame work (eframe 0.36 split of the old
+    /// `update`): reads drag-and-drop input, drains job events, polls the
+    /// thumbnail/metric workers and persists settings. No ui or painting
+    /// is allowed here.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // 1. drag & drop (the whole window is a drop target)
         let (dropped, hovered) = ctx.input(|input| {
             (
@@ -1238,7 +1240,7 @@ impl eframe::App for App {
         if !dropped.is_empty() {
             let paths = dropped
                 .into_iter()
-                .filter_map(|file| file.path)
+                .map(|file| file.path().to_path_buf())
                 .collect::<Vec<_>>();
             if !paths.is_empty() {
                 self.queue.add_paths(paths);
@@ -1286,15 +1288,12 @@ impl eframe::App for App {
         });
         self.metrics.set_paused(self.running.is_some());
 
-        // 3. panels
-        crate::panels::show(self, ctx);
-
-        // 4. keep repainting while a job runs
+        // 3. keep repainting while a job runs
         if self.running.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
 
-        // 5. remember the window size for the next launch
+        // 4. remember the window size for the next launch
         let size = ctx.input(|input| input.viewport().inner_rect.map(|rect| rect.size()));
         if let Some([width, height]) = size.map(|size| [size.x, size.y])
             && self.settings.window_size != Some([width, height])
@@ -1303,12 +1302,17 @@ impl eframe::App for App {
             self.settings_dirty = true;
         }
 
-        // 6. persist changed settings (cheap JSON write, at most per change);
+        // 5. persist changed settings (cheap JSON write, at most per change);
         // the per-frame window-size capture above keeps the persisted size
         // current without a separate on_exit hook
         if self.settings_dirty() {
             self.save_settings();
         }
+    }
+
+    /// Renders one frame: draws all panels of the single window.
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        crate::panels::show(self, ui);
     }
 }
 
