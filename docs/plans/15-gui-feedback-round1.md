@@ -1,10 +1,13 @@
 # 15 — GUI feedback round 1: adjustments & bug fixes
 
-**Size:** M (4 work packages) · **Status: in progress** on branch
-`plans/gui-ux-improvements`. Tracks all issues from the first real-use
-feedback round on the plan-09…14 implementation. Issues are numbered
-F1–F19 in feedback order; each lists root cause (where found), fix, owner
-work-package and acceptance criteria.
+**Size:** M (4 work packages) · **Status: implemented** on branch
+`plans/gui-ux-improvements` (all F1–F19; notable deviations: the
+persistent-viewport host degrades to on-demand creation on Wayland —
+winit's `set_visible` is a no-op there, so hidden windows would linger;
+egui_extras 0.32 has no `hscroll` builder, so the horizontal scrollbar
+wraps the table in an outer horizontally-scrolling area; preset ×
+OutputMode semantics are documented in `presets/mod.rs` — full presets
+apply the mode, the path string is kept locally unless opted in).
 
 ## Work packages / ownership
 
