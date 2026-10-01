@@ -73,6 +73,80 @@ Shared hot files and who may edit them:
    drop); Tauri 2 as the polished alternative. Requires WS7 (headless job API) first —
    see WS7 §1 for the audited conflict list against WS0.
 
+---
+
+# GUI improvement suite — Implementation Plan Suite 2
+
+> **STATUS: planned** (not yet implemented) on branch
+> `plans/gui-ux-improvements`, based on `main` (the repo has no `master`
+> branch; `main` is the default). Plans 09–14 cover the GUI feedback,
+> file-table, options-UX, presets and report-window workstreams. Each is
+> sized to be implementable by a single agent; shared-file ownership is
+> mapped inside each plan.
+
+| Plan | Workstream | Size | Depends on | Parallelizable with |
+|------|-----------|------|------------|---------------------|
+| [09-gui-report-window.md](09-gui-report-window.md) | report window as independent OS window + resize fixes | S | — | all |
+| [10-gui-quality-feedback.md](10-gui-quality-feedback.md) | compression ratio + color hint, DSSIM/PSNR quality metrics, visual difference inspector (feasibility: GO) | M | 11 (core `output_path` amendment, phase 3 only) | all |
+| [11-gui-file-table.md](11-gui-file-table.md) | sortable table columns, target-format column, configurable fields (date/EXIF), open/reveal actions, thumbnails (overhead-budgeted) | L | — (owns the core amendment, lands it first) | all after its first commit |
+| [12-gui-progress-feedback.md](12-gui-progress-feedback.md) | segmented progress bar (active-file shading, minimal animation), confetti scaled by compression ratio | M | — | all |
+| [13-gui-options-ux.md](13-gui-options-ux.md) | three candidate presentations of the target-format options (decision gate), restore-defaults, icons; auto-sizing collapsible sections | M | — (integrates with 14) | all |
+| [14-gui-presets.md](14-gui-presets.md) | user presets (persistence/sharing incl. titles+descriptions), literature-based built-in profiles for avif/webp/jxl | L | — (integrates with 13) | all |
+
+## Suggested execution order
+
+```
+09 (S, independent)  ─┐
+11 first commit ──────┼─▶ 10 (uses output_path)   13 ◀──(chips◀──built-ins)──▶ 14
+12 (independent)     ─┘
+```
+
+09, 12 and 13 are fully independent; 11's isolated first commit (the core
+`Outcome::Encoded { output_path }` amendment) unblocks 10's phase 3; 13
+and 14 interlock via the quality-ladder chips / built-in profiles (either
+order, migration path specced in 13 §2B).
+
+## Shared-file ownership (cross-plan hot files)
+
+| File | Owner | Others may |
+|------|-------|-----------|
+| `src/pipeline.rs` (`Outcome` amendment) | 11, first commit only | 10 consumes |
+| `gui/src/panels/file_table.rs` | 11 (rewrite) | 10's ratio cell + context menu carried over by 11 |
+| `gui/src/panels/footer.rs` | 12 (progress area) | 10 appends ratio text to `stats_line` |
+| `gui/src/panels/options_panel.rs`, `gui/src/options.rs` | 13 | 14 adds the preset dropdown hook |
+| `gui/src/queue.rs` | 11 (row model) | 10 ratio helpers, 12 pending/active glyph fix |
+| `gui/src/settings.rs` | additive `#[serde(default)]` fields per plan (11/12/14) | — |
+| `gui/Cargo.toml` | per-plan appends: 11 `egui_extras`+`image`, 10 `dssim` | — |
+
+## Global decision points (need project-owner sign-off)
+
+1. **13 D1** which target-format presentation ships (A aligned form /
+   B quality ladder — recommended / C comparison matrix).
+2. **10 D1/D2** metric engine (DSSIM recommended) and default mode
+   (Manual recommended vs auto-after-run).
+3. **11 D1** adopt `egui_extras` 0.32 (recommended) vs hand-rolled sort
+   headers.
+4. **12 D1** confetti default level (proposed: Regular).
+5. **14 D2** which formats get built-in profiles (proposed: avif, webp,
+   jxl + oxipng safe re-optimize).
+
+## Verified ecosystem facts used by suite 2 (as of 2026-10)
+
+- egui 0.32.3 (the pinned line, `gui/Cargo.toml`): `Context::
+  show_viewport_immediate` (native OS windows; `context.rs:3920`),
+  `Response::context_menu` (`response.rs:940`),
+  `Context::animate_value_with_time` (`context.rs:3025`) all present.
+- All core config types (`EncoderConfig`, policy enums) derive
+  `Serialize + Deserialize` (WS7 C6) — presets/settings persistence is
+  serde-native.
+- `Outcome::Encoded` carries sizes but **no output path** today — suite 2
+  amends it (11 §0).
+- `Queue::begin_run` marks every row `Running`, so "currently being worked
+  on" needs a distinct active-file set (12 §1).
+- Candidate crates marked *verify at implementation time* in the plans:
+  `egui_extras` 0.32, `dssim`/`ssimulacra2` (licence+API), `opener`/
+  `open` reveal support, `image::io::Limits` sizing.
+
 ## Verified ecosystem facts used by the plans (as of 2026-09)
 
 - `image` 0.25.10 (MIT OR Apache-2.0): `GifDecoder`/`WebPDecoder`/`png::ApngDecoder`
