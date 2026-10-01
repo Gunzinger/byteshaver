@@ -1,9 +1,10 @@
 //! Background thumbnail + EXIF-summary worker (plan 11 §6): one dedicated
 //! decode thread fed through a `std::sync::mpsc` channel, **paused while
-//! a job runs**, with a bounded decode (`image::io::Limits`, 512 MiB
-//! allocation cap) and an LRU texture cache (cap 1024 entries ≈ ≤ 40 MiB
-//! of 96 px RGBA textures; key `(path, mtime)` — re-conversion invalidates
-//! via the newer mtime).
+//! a job runs**, with a bounded decode (512 MiB RGBA allocation cap,
+//! checked header-first) through the core input decoders (jxl/heif
+//! included — plan 15 F15) and an LRU texture cache (cap 1024 entries ≈
+//! ≤ 40 MiB of 96 px RGBA textures; key `(path, mtime)` — re-conversion
+//! invalidates via the newer mtime).
 //!
 //! Requests come from the file table's visible rows only (the
 //! virtualized `body.rows` callback yields the visible index range each
@@ -314,23 +315,40 @@ fn worker_loop(jobs: Receiver<WorkerJob>, results: Sender<WorkerResult>, paused:
 }
 
 /// Bounded decode + downscale to [`THUMB_EDGE`] (never on the UI thread).
-/// `None` on any failure (missing file, unsupported/corrupt format,
-/// allocation-limit hit).
+/// Decodes through the core input decoders (jxl/heif included — plan 15
+/// F15) behind the 512 MiB allocation cap. `None` on any failure (missing
+/// file, unsupported/corrupt format, allocation-cap hit) — the caller
+/// renders the placeholder.
 #[must_use]
 fn decode_thumbnail(path: &Path) -> Option<RgbaImage> {
-    let mut reader = image::ImageReader::open(path).ok()?;
-    let mut limits = image::Limits::default();
-    limits.max_alloc = Some(MAX_DECODE_ALLOC);
-    reader.limits(limits);
-    let reader = reader.with_guessed_format().ok()?;
-    let image = reader.decode().ok()?;
-    let rgba = image.to_rgba8();
+    // header-only allocation guard (image-crate formats) before decoding
+    if let Ok((width, height)) = header_dimensions(path)
+        && u64::from(width) * u64::from(height) * 4 > MAX_DECODE_ALLOC
+    {
+        return None;
+    }
+    let rgba = byteshaver::input::decode_rgba(path).ok()?;
+    // formats without a sniffable header (jxl, heif): capped post-decode
+    if u64::from(rgba.width()) * u64::from(rgba.height()) * 4 > MAX_DECODE_ALLOC {
+        return None;
+    }
     let (width, height) = fit_inside(rgba.width(), rgba.height(), THUMB_EDGE);
     Some(image::imageops::thumbnail(
         &rgba,
         width.max(1),
         height.max(1),
     ))
+}
+
+/// Header-only `(width, height)` via the image crate; errors for unknown
+/// formats (jxl/heif) and unreadable files — those fall through to the
+/// full decode.
+fn header_dimensions(path: &Path) -> Result<(u32, u32), ()> {
+    let file = std::fs::File::open(path).map_err(|_| ())?;
+    let mut reader = image::ImageReader::new(std::io::BufReader::new(file));
+    reader.no_limits();
+    let reader = reader.with_guessed_format().map_err(|_| ())?;
+    reader.into_dimensions().map_err(|_| ())
 }
 
 /// Scales `(width, height)` to fit inside `edge` (aspect preserved, no

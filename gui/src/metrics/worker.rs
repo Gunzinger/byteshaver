@@ -268,11 +268,13 @@ fn worker_loop(
                         engine,
                         max_edge,
                     } => {
-                        let pair = decode::load_pair(&input, &output, max_edge);
-                        let result = pair.map(|(a, b)| {
-                            let metric: Box<dyn QualityMetric> = engine.engine();
-                            metric.compare(&a, &b)
-                        });
+                        let result =
+                            decode::load_pair(&input, &output, max_edge)
+                                .ok()
+                                .map(|(a, b)| {
+                                    let metric: Box<dyn QualityMetric> = engine.engine();
+                                    metric.compare(&a, &b)
+                                });
                         MetricOutcome::Measured {
                             output_mtime: file_mtime(&output),
                             input,
@@ -280,10 +282,9 @@ fn worker_loop(
                         }
                     }
                     MetricJob::Inspect { input, output } => {
-                        let pair = decode::load_pair(&input, &output, DISPLAY_MAX_EDGE);
-                        let (a, b) = match pair {
-                            Some((a, b)) => (Some(a), Some(b)),
-                            None => (None, None),
+                        let (a, b) = match decode::load_pair(&input, &output, DISPLAY_MAX_EDGE) {
+                            Ok((a, b)) => (Some(a), Some(b)),
+                            Err(_) => (None, None),
                         };
                         MetricOutcome::Inspected { input, output, a, b }
                     }

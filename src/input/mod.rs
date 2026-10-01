@@ -87,6 +87,29 @@ pub fn load_source(path: &Path) -> Result<SourceImage, Error> {
     load_source_with_index(path, None)
 }
 
+/// Decodes any supported input file into an 8-bit RGBA buffer — the same
+/// decoder dispatch as the conversion pipeline (image-crate formats,
+/// JPEG XL via jxl-oxide, HEIC/HEIF/AVIF via libheif when the `dec-heif`
+/// feature is compiled in); animated input yields its **first frame**
+/// (consistent with still targets).
+///
+/// Front-end helpers (quality metrics, visual-difference inspector,
+/// thumbnails) use this so previews work for every format the pipeline
+/// can read (plan 15 F15).
+pub fn decode_rgba(path: &Path) -> Result<image::RgbaImage, Error> {
+    let source = load_source_with_index(path, None)?;
+    match source.content {
+        ImageContent::Still(image) => Ok(image.to_rgba8()),
+        ImageContent::Animated(animation) => match animation.first_frame() {
+            Some(frame) => Ok(frame.buffer.clone()),
+            None => Err(Error::from_string(format!(
+                "Animated image {} does not contain any frames",
+                path.display()
+            ))),
+        },
+    }
+}
+
 /// Like [`load_source`], but `Some(index)` decodes the `index`-th image of a
 /// multi-image HEIC/HEIF container (`--heif-image-policy all`).
 ///
@@ -511,6 +534,85 @@ mod tests {
             panic!("expected still content");
         };
         assert_eq!((image.width(), image.height()), (4, 4));
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn decode_rgba_round_trips_a_png() {
+        let path = temp_path("decode-rgba.png");
+        let mut rgba = RgbaImage::from_pixel(5, 3, image::Rgba([9, 8, 7, 255]));
+        rgba.get_pixel_mut(4, 2).0 = [1, 2, 3, 40];
+        image::save_buffer(&path, rgba.as_raw(), 5, 3, ExtendedColorType::Rgba8)
+            .expect("write png");
+
+        let decoded = decode_rgba(&path).expect("decode png");
+        assert_eq!(decoded.dimensions(), (5, 3));
+        assert_eq!(decoded.as_raw(), rgba.as_raw(), "pixel-exact round trip");
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn decode_rgba_takes_the_first_frame_of_an_animation() {
+        let path = temp_path("decode-rgba.gif");
+        let file = fs::File::create(&path).expect("create temp gif");
+        let mut encoder = GifEncoder::new(file);
+        for i in 0..3u8 {
+            let buffer = RgbaImage::from_pixel(6, 6, image::Rgba([i, 0, 0, 255]));
+            encoder.encode_frame(Frame::new(buffer)).expect("encode");
+        }
+        drop(encoder);
+
+        let decoded = decode_rgba(&path).expect("decode gif");
+        assert_eq!(decoded.dimensions(), (6, 6));
+        assert_eq!(decoded.get_pixel(0, 0), &image::Rgba([0, 0, 0, 255]));
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn decode_rgba_reports_unreadable_and_unsupported_files() {
+        // missing file: io error
+        assert!(decode_rgba(&temp_path("does-not-exist.png")).is_err());
+        // existing file in an unsupported container: per-file error
+        let junk = temp_path("junk.txt");
+        fs::write(&junk, b"definitely not an image").expect("write junk");
+        let error = decode_rgba(&junk).expect_err("unsupported extension");
+        assert!(
+            error.to_string().contains("format"),
+            "honest per-file format error: {error}"
+        );
+        let _ = fs::remove_file(&junk);
+    }
+
+    #[cfg(feature = "jxl")]
+    #[test]
+    fn decode_rgba_reads_jxl_outputs_via_jxl_oxide() {
+        use crate::config::{EncoderConfig, JxlOptions};
+
+        let path = temp_path("decode-rgba.jxl");
+        let rgba = RgbaImage::from_pixel(9, 7, image::Rgba([42, 43, 44, 255]));
+        let encoder = crate::converter::EncoderRegistry::build(
+            &EncoderConfig::Jxl(JxlOptions {
+                lossless: true,
+                effort: 1,
+                ..JxlOptions::default()
+            }),
+            crate::converter::ThreadBudget::global(),
+        );
+        let source = SourceImage {
+            content: ImageContent::Still(DynamicImage::ImageRgba8(rgba.clone())),
+            metadata: ImageMetadata::default(),
+            source_format: ImageFormat::Png,
+            source_path: path.clone(),
+        };
+        let encoded = encoder.encode(&source).expect("encode jxl fixture");
+        fs::write(&path, &encoded).expect("write jxl");
+
+        let decoded = decode_rgba(&path).expect("decode jxl (plan 15 F15)");
+        assert_eq!(decoded.dimensions(), (9, 7));
+        assert_eq!(decoded.as_raw(), rgba.as_raw(), "lossless round trip");
 
         let _ = fs::remove_file(&path);
     }
