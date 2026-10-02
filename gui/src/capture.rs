@@ -228,6 +228,11 @@ pub struct Scene {
     pub id: &'static str,
     /// One-line description (`--list` output).
     pub description: &'static str,
+    /// Whether the scene is a video scene (frame sequence for the animated
+    /// WebP encode). The xtask media pipeline passes `--frames-dir` only
+    /// for video scenes; still scenes dump nothing, so the post stage never
+    /// mistakes their settle frames for video beats.
+    pub video: bool,
     /// The scripted steps.
     pub steps: Vec<Step>,
 }
@@ -678,6 +683,8 @@ fn build_scenes() -> Vec<Scene> {
         Scene {
             id: "gui-empty",
             description: "first-run drop zone",
+
+            video: false,
             steps: vec![
                 Step::Stable { frames: 20 },
                 Step::Snapshot {
@@ -689,6 +696,8 @@ fn build_scenes() -> Vec<Scene> {
         Scene {
             id: "gui-queue",
             description: "mixed-format queue, thumbnails settled",
+
+            video: false,
             steps: vec![
                 Step::AddPaths(paths(&[DEMO_PHOTOS, DEMO_ANIM, DEMO_LOGO, DEMO_DASHBOARD])),
                 Step::PumpUntil(Predicate::ThumbsSettled),
@@ -704,6 +713,8 @@ fn build_scenes() -> Vec<Scene> {
         Scene {
             id: "gui-options",
             description: "options panel with AVIF · quality 85 selected",
+
+            video: false,
             steps: vec![
                 Step::AddPaths(paths(&[DEMO_LOGO, DEMO_DASHBOARD])),
                 Step::SelectEncoder("avif".to_string()),
@@ -723,6 +734,8 @@ fn build_scenes() -> Vec<Scene> {
         Scene {
             id: "gui-running",
             description: "mid-conversion run state",
+
+            video: false,
             steps: vec![
                 Step::AddPaths(paths(&[DEMO_DASHBOARD, DEMO_LOGO, DEMO_PHOTOS])),
                 Step::PumpUntil(Predicate::ThumbsSettled),
@@ -742,6 +755,8 @@ fn build_scenes() -> Vec<Scene> {
         Scene {
             id: "gui-report",
             description: "finished run with confetti and report",
+
+            video: false,
             steps: vec![
                 Step::AddPaths(paths(&[DEMO_PHOTOS, DEMO_LOGO, DEMO_DASHBOARD])),
                 Step::SelectEncoder("webp".to_string()),
@@ -762,6 +777,8 @@ fn build_scenes() -> Vec<Scene> {
         Scene {
             id: "gui-inspector",
             description: "visual difference inspector on a converted pair",
+
+            video: false,
             steps: vec![
                 Step::AddPaths(paths(&[DEMO_DASHBOARD, DEMO_LOGO])),
                 Step::SelectEncoder("webp".to_string()),
@@ -778,29 +795,33 @@ fn build_scenes() -> Vec<Scene> {
                 },
             ],
         },
-        // the tour video (video scene, ~8 s @ 30 fps): empty → queue →
-        // options → run → report (confetti) → inspector. The frame beats
-        // are the scripted Pump/Stable steps; the PumpUntil waits dump
-        // nothing (module docs), so the video's length is this step list,
-        // not the encoder's real duration.
+        // the tour video (video scene): empty → queue → options → run →
+        // report (confetti) → inspector. The frame beats are the scripted
+        // Pump/Stable steps; the PumpUntil waits dump nothing (module
+        // docs), so the video's length is this step list, not the encoder's
+        // real duration. Beats are trimmed deliberately (~115 frames):
+        // README assets are size-budgeted (plan 17 §7), and the confetti
+        // particles are the worst case for inter-frame compression.
         Scene {
             id: "gui-tour",
             description: "tour video: empty, queue, options, run, report, inspector",
+
+            video: true,
             steps: vec![
                 Step::Animate(true),
-                Step::Stable { frames: 20 },
+                Step::Stable { frames: 12 },
                 Step::Snapshot {
                     name: "gui-tour-00-empty".to_string(),
                 },
                 Step::AddPaths(paths(&[DEMO_PHOTOS, DEMO_LOGO, DEMO_ANIM])),
                 Step::PumpUntil(Predicate::ThumbsSettled),
-                Step::Stable { frames: 15 },
+                Step::Stable { frames: 10 },
                 Step::Snapshot {
                     name: "gui-tour-01-queue".to_string(),
                 },
                 Step::SelectEncoder("avif".to_string()),
                 Step::SetQuality(85.0),
-                Step::Stable { frames: 20 },
+                Step::Stable { frames: 10 },
                 Step::Snapshot {
                     name: "gui-tour-02-options".to_string(),
                 },
@@ -817,7 +838,7 @@ fn build_scenes() -> Vec<Scene> {
                 Step::PumpUntil(Predicate::JobDone),
                 Step::Pump { frames: 8 },
                 Step::OpenReport,
-                Step::Stable { frames: 12 },
+                Step::Stable { frames: 10 },
                 Step::Snapshot {
                     name: "gui-tour-04-report".to_string(),
                 },
@@ -825,12 +846,12 @@ fn build_scenes() -> Vec<Scene> {
                 // sit at 0 and 2 and never carry a converted output)
                 Step::OpenInspector(1),
                 Step::PumpUntil(Predicate::MetricsSettled),
-                Step::Stable { frames: 15 },
+                Step::Stable { frames: 10 },
                 Step::Snapshot {
                     name: "gui-tour-05-inspector".to_string(),
                 },
                 // tail: confetti burst and fade-out
-                Step::Pump { frames: 120 },
+                Step::Pump { frames: 45 },
             ],
         },
     ]

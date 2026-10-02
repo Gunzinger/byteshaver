@@ -81,7 +81,10 @@ fn main() {
 
     if args.list {
         for scene in scenes() {
-            println!("{:<14} {}", scene.id, scene.description);
+            // the [video] tag is part of the xtask contract: the media
+            // pipeline passes --frames-dir only for video scenes
+            let tag = if scene.video { " [video]" } else { "" };
+            println!("{:<14}{} {}", scene.id, tag, scene.description);
         }
         return;
     }

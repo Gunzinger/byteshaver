@@ -41,6 +41,18 @@ pub struct StageEnv {
 }
 
 impl StageEnv {
+    /// The staged isolated HOME (e.g. for FONT_HOME in the tape font
+    /// setup).
+    pub fn home(&self) -> &Path {
+        &self.home
+    }
+
+    /// Same-filesystem scratch dir handed to children as `TMPDIR` (see the
+    /// comment in [`Self::command`]).
+    pub fn tmp_dir(&self) -> PathBuf {
+        self.home.parent().unwrap_or(&self.home).join("tmp")
+    }
+
     /// Wraps a program in a `Command` with the overlay applied. Callers set
     /// cwd explicitly (byteshaver/ffmpeg run in the stage root, vhs in
     /// `<stage>/tapes`, so tape/asset paths stay relative and portable).
@@ -50,7 +62,13 @@ impl StageEnv {
             .env("XDG_CONFIG_HOME", self.home.join(".config"))
             .env("XDG_CACHE_HOME", self.home.join(".cache"))
             .env("XDG_DATA_HOME", self.home.join(".local/share"))
-            .env("XDG_DATA_DIRS", xdg_data_dirs(&self.home));
+            .env("XDG_DATA_DIRS", xdg_data_dirs(&self.home))
+            // TMPDIR on the same filesystem as the stage: vhs records tape
+            // frames into a MkdirTemp dir and moves them to the output with
+            // an error-ignored os.Rename - a cross-device rename (tmpfs
+            // /tmp -> ext4 target/) fails silently and the frames vanish
+            // (plan 17 §5, vhs 0.12 evaluator.go)
+            .env("TMPDIR", self.tmp_dir());
         // PATH = staged bin + pinned tool dirs + whatever the parent had.
         // Everything else in the parent env stays (overlay semantics).
         let mut dirs = self.path_prepend.clone();
@@ -110,6 +128,7 @@ impl Stage {
             "bin",
             "demo",
             "tapes",
+            "tmp",
             "out",
             "final",
             "post-tmp",

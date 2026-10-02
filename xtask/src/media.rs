@@ -154,7 +154,7 @@ pub fn run_pipeline(opts: &MediaOpts) -> Result<()> {
 
     // ---- 3. gui -----------------------------------------------------------
     if sel.wants_stage("gui") {
-        run_gui(&stage, &sel)?;
+        run_gui(&repo, &stage, &sel)?;
     }
 
     // ---- 4. post ----------------------------------------------------------
@@ -250,60 +250,184 @@ fn run_terminal(repo: &Path, stage: &Stage, sel: &Selection) -> Result<()> {
     // repo-relative paths inside the tapes (Source, Output, Screenshot)
     // stay portable between the repo and the stage (plan 17 §5.2).
     util::copy_tree(&tapes_src, &stage.tapes_dir())?;
+
+    // pre-create each scene's output parent: vhs 0.12 applies `Output <dir>/`
+    // as a rename that fails *silently* when the parent is missing (the
+    // ascii file output would create it, but only after the frames rename
+    // already failed) - see docs/media/tapes/README.md
+    for tape in &tapes {
+        util::ensure_dir(&stage.tapes_dir().join("out").join(tape))?;
+    }
+
+    // fonts: install the committed JetBrains Mono copies into the stage's
+    // isolated HOME so fontconfig resolves the pinned family without any
+    // system font packages (plan 17 §5.2; script documented in
+    // docs/media/tapes/setup-fonts.sh)
+    let setup_fonts = stage.tapes_dir().join("setup-fonts.sh");
+    if setup_fonts.is_file() {
+        let font_src = repo.join("docs/media/fonts/JetBrainsMono");
+        tools::run(
+            stage
+                .env
+                .command("bash")
+                .arg(&setup_fonts)
+                .env("FONT_HOME", stage.env.home().join(".fonts"))
+                .env("BH_TAPE_FONT_DIR", &font_src),
+        )
+        .context("installing tape fonts into the staged HOME")?;
+    }
+
     for tape in &tapes {
         println!("[terminal] vhs {tape}.tape");
+        // VHS_NO_SANDBOX=1: vhs (go-rod) only passes --no-sandbox to its
+        // headless chromium when set; without it the sandboxed browser
+        // fails in root-less/containerized environments
         tools::run(
             stage
                 .env
                 .command(&vhs)
                 .arg(format!("{tape}.tape"))
+                .env("VHS_NO_SANDBOX", "1")
                 .current_dir(stage.tapes_dir()),
         )
         .with_context(|| format!("vhs run for tape '{tape}'"))?;
+        // vhs exits 0 even when the recording failed (e.g. `Require` not
+        // met, chromium crash), so the artifacts are the real signal
+        verify_tape_artifacts(stage, tape)?;
     }
     Ok(())
 }
 
-/// GUI engine plumbing (plan 17 §6). Discovery via `bh-gui-capture --list`
-/// is real; the per-scene invocation is a marked stub until P2 lands.
-fn run_gui(stage: &Stage, sel: &Selection) -> Result<()> {
-    let capture = stage.bin("bh-gui-capture");
-    if !capture.is_file() {
-        println!(
-            "[gui] not available: no staged bh-gui-capture (built by \
-             `cargo build --release -p byteshaver-gui --features capture`, plan 17 P2) - skipping"
-        );
-        return Ok(());
+/// Verifies a tape produced its outputs: `out/<tape>/<tape>.ascii`, the
+/// `Screenshot` still and a non-empty `frames/` dir (all three are part of
+/// the tape conventions, docs/media/tapes/README.md).
+fn verify_tape_artifacts(stage: &Stage, tape: &str) -> Result<()> {
+    let scene_dir = stage.tapes_dir().join("out").join(tape);
+    let mut missing = Vec::new();
+    if !scene_dir.join(format!("{tape}.ascii")).is_file() {
+        missing.push(format!("{}.ascii", tape));
     }
-    // scene discovery contract: one scene id per line on stdout; '#' lines
-    // are comments (plan 17 §6.2)
+    if !scene_dir.join("still.png").is_file() {
+        missing.push("still.png".to_string());
+    }
+    let frames = scene_dir.join("frames");
+    let frame_count = match util::list_files(&frames) {
+        Ok(files) => files.len(),
+        Err(_) => 0,
+    };
+    if frame_count == 0 {
+        missing.push("frames/ (empty or missing)".to_string());
+    }
+    if !missing.is_empty() {
+        bail!(
+            "[terminal] tape '{tape}' produced no {} - vhs exits 0 on failure, so this is \
+             a real recording error (see the vhs output above)",
+            missing.join(", ")
+        );
+    }
+    println!("[terminal] tape '{tape}': {frame_count} frame(s) + still + ascii");
+    Ok(())
+}
+
+/// GUI engine (plan 17 §6): builds `bh-gui-capture` (release, `capture`
+/// feature) when missing, then runs each registered scene headlessly in the
+/// stage root. Stills land as `out/<name>.png`; video scenes additionally
+/// dump their frame beats under `out/<scene-id>/NNNN.png` (post.rs owns the
+/// layouts).
+fn run_gui(repo: &Path, stage: &Stage, sel: &Selection) -> Result<()> {
+    // build the capture binary on demand (the wgpu-backed software
+    // rasterizer makes this a hefty first build, so it happens only when
+    // the gui stage actually runs)
+    let capture_src = repo.join("target/release/bh-gui-capture");
+    let staged = stage.bin("bh-gui-capture");
+    if !staged.is_file() {
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        println!(
+            "[gui] building capture binary ({cargo} build --release -p byteshaver-gui \
+             --features capture)..."
+        );
+        let status = std::process::Command::new(&cargo)
+            .args([
+                "build",
+                "--release",
+                "-p",
+                "byteshaver-gui",
+                "--features",
+                "capture",
+            ])
+            .current_dir(repo)
+            .status()
+            .with_context(|| format!("spawning {cargo} (set CARGO to override)"))?;
+        if !status.success() {
+            bail!("cargo build -p byteshaver-gui --features capture failed ({status})");
+        }
+        stage.copy_binary(&capture_src, "bh-gui-capture")?;
+    }
+
+    // scene discovery contract (`--list`): `<id> [ [video]] <description>`
+    // per line; '#' lines are comments
     let listing = tools::run(
         stage
             .env
-            .command(&capture)
+            .command(&staged)
             .arg("--list")
             .current_dir(&stage.root),
     )
     .context("bh-gui-capture --list failed")?;
-    let mut scenes: Vec<String> = listing
+    let mut scenes: Vec<(String, bool)> = listing
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .map(str::to_string)
+        .map(|line| {
+            let mut parts = line.split_whitespace();
+            let id = parts.next().unwrap_or_default().to_string();
+            let video = parts.next() == Some("[video]");
+            (id, video)
+        })
+        .filter(|(id, _)| !id.is_empty())
         .collect();
     if let Some(filter) = sel.scene_filter() {
-        scenes.retain(|scene| filter.contains(scene));
+        scenes.retain(|(id, _)| filter.contains(id));
     }
     if scenes.is_empty() {
         println!("[gui] no scenes to capture (--list output empty or filtered out) - skipped");
         return Ok(());
     }
-    for scene in &scenes {
-        // TODO(plan-17-P2): per-scene capture invocation. The flag surface
-        // (--scene <id> [--frames-dir D] [--still P]) is defined together
-        // with the capture binary; integration here then only fills in this
-        // call - discovery, staging and env are ready.
-        println!("[gui] scene '{scene}': capture engine not implemented yet (TODO plan-17-P2) - skipped");
+
+    // committed symbol-font copies so glyph rendering does not depend on
+    // the host's font packages (plan 17 §6.2)
+    let fonts_dir = repo.join("docs/media/fonts/symbols");
+
+    for (scene, video) in &scenes {
+        println!("[gui] bh-gui-capture --scene {scene}{}", if *video { " (+frames)" } else { "" });
+        // wipe the scene's previous artifacts first: a re-capture that
+        // produces fewer frames than the last run would otherwise leave
+        // stale trailing frames behind that the post stage would encode,
+        // and stale conversion outputs would make the run report show
+        // "skipped" rows (collision policy keeps existing files)
+        let scene_frame_dir = stage.out_dir().join(scene);
+        if scene_frame_dir.is_dir() {
+            std::fs::remove_dir_all(&scene_frame_dir)
+                .with_context(|| format!("clearing stale frames of scene '{scene}'"))?;
+        }
+        let scene_run_dir = stage.out_dir().join("capture-run").join(scene);
+        if scene_run_dir.is_dir() {
+            std::fs::remove_dir_all(&scene_run_dir)
+                .with_context(|| format!("clearing stale conversion outputs of scene '{scene}'"))?;
+        }
+        let mut cmd = stage.env.command(&staged);
+        cmd.arg("--scene")
+            .arg(scene)
+            .arg("--out-dir")
+            .arg(stage.out_dir())
+            .current_dir(&stage.root);
+        if *video {
+            cmd.arg("--frames-dir").arg(stage.out_dir());
+        }
+        if fonts_dir.is_dir() {
+            cmd.arg("--fonts-dir").arg(&fonts_dir);
+        }
+        tools::run(&mut cmd).with_context(|| format!("gui capture scene '{scene}'"))?;
     }
     Ok(())
 }
