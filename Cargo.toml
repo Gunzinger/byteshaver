@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "gui"]
+members = [".", "gui", "xtask"]
 resolver = "2"
 
 [package]
