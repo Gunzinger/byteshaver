@@ -23,7 +23,7 @@
 //!   stub capture stages producing nothing, "nothing produced" is reported
 //!   as *skipped*, not failed.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 use std::time::Instant;
@@ -98,7 +98,10 @@ impl MediaOpts {
 pub fn run_pipeline(opts: &MediaOpts) -> Result<()> {
     let repo = util::repo_root();
     let started = Instant::now();
-    println!("byteshaver media pipeline (plan 17) - root: {}", repo.display());
+    println!(
+        "byteshaver media pipeline (plan 17) - root: {}",
+        repo.display()
+    );
     let sel = opts.selection();
     if !sel.is_empty() {
         println!("--only: {}", opts.only.join(", "));
@@ -399,7 +402,10 @@ fn run_gui(repo: &Path, stage: &Stage, sel: &Selection) -> Result<()> {
     let fonts_dir = repo.join("docs/media/fonts/symbols");
 
     for (scene, video) in &scenes {
-        println!("[gui] bh-gui-capture --scene {scene}{}", if *video { " (+frames)" } else { "" });
+        println!(
+            "[gui] bh-gui-capture --scene {scene}{}",
+            if *video { " (+frames)" } else { "" }
+        );
         // wipe the scene's previous artifacts first: a re-capture that
         // produces fewer frames than the last run would otherwise leave
         // stale trailing frames behind that the post stage would encode,
@@ -511,7 +517,10 @@ fn run_check(repo: &Path, stage: &Stage) -> Result<()> {
     }
     let mut regenerated: BTreeMap<String, String> = BTreeMap::new();
     for name in util::list_files(&stage.final_dir())? {
-        regenerated.insert(name.clone(), util::sha256_file(&stage.final_dir().join(&name))?);
+        regenerated.insert(
+            name.clone(),
+            util::sha256_file(&stage.final_dir().join(&name))?,
+        );
     }
 
     let names: BTreeSet<String> = committed
@@ -531,6 +540,7 @@ fn run_check(repo: &Path, stage: &Stage) -> Result<()> {
     let mut skipped = 0_usize;
     let mut untracked = 0_usize;
     let mut drift = 0_usize;
+    let mut unstable_stale = 0_usize;
     for name in &names {
         let regen = regenerated.get(name);
         let com = committed.get(name);
@@ -540,13 +550,18 @@ fn run_check(repo: &Path, stage: &Stage) -> Result<()> {
         // (plan 17 P1 exit criterion); fails the check regardless of
         // freshness
         let drifted = matches!((com, record), (Some(old), Some(rec)) if old != &rec.sha256);
+        let stable = record.map(|r| r.stable).unwrap_or(true);
         let state = if drifted {
             "manifest-drift"
         } else if let (Some(new), Some(old)) = (regen, com) {
             if new == old {
                 "fresh"
-            } else {
+            } else if stable {
                 "stale"
+            } else {
+                // wall-clock assets drift by design (plan 17 §9): report,
+                // don't fail - their freshness signal is `generated_by`
+                "stale (unstable)"
             }
         } else if regen.is_some() {
             // produced but not committed: docs is behind the pipeline
@@ -565,6 +580,7 @@ fn run_check(repo: &Path, stage: &Stage) -> Result<()> {
             "missing" => missing += 1,
             "skipped" => skipped += 1,
             "untracked" => untracked += 1,
+            "stale (unstable)" => unstable_stale += 1,
             _ => drift += 1,
         }
         println!(
@@ -577,14 +593,20 @@ fn run_check(repo: &Path, stage: &Stage) -> Result<()> {
     }
     println!();
     println!(
-        "[check] {fresh} fresh, {stale} stale, {missing} missing, {drift} manifest-drift, \
-         {skipped} skipped, {untracked} untracked"
+        "[check] {fresh} fresh, {stale} stale, {unstable_stale} stale (unstable), \
+         {missing} missing, {drift} manifest-drift, {skipped} skipped, {untracked} untracked"
     );
     let problems = stale + missing + drift;
     if problems > 0 {
-        bail!("[check] {problems} asset(s) not fresh - regenerate and publish");
+        bail!("[check] {problems} stable asset(s) not fresh - regenerate and publish");
     }
-    println!("[check] no drift detected (nothing to publish)");
+    if unstable_stale > 0 {
+        println!(
+            "[check] {unstable_stale} unstable asset(s) drifted (wall-clock content by design) - \
+             advisory only, refresh them with a regular publish run"
+        );
+    }
+    println!("[check] no stable drift detected (nothing to publish)");
     Ok(())
 }
 
@@ -637,7 +659,10 @@ pub fn run_deps() -> Result<()> {
             "terminal capture (https://github.com/charmbracelet/vhs)",
         ),
         ("ttyd", "vhs prerequisite (e.g. apt install ttyd)"),
-        ("ffmpeg", "vhs prerequisite + post-processing (e.g. apt install ffmpeg)"),
+        (
+            "ffmpeg",
+            "vhs prerequisite + post-processing (e.g. apt install ffmpeg)",
+        ),
     ] {
         match tools::lookup(name) {
             Some(path) => println!(
@@ -686,8 +711,7 @@ fn rewrite_readmes(repo: &Path, manifest: &Manifest) -> Result<()> {
         if !path.is_file() {
             continue;
         }
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {rel}"))?;
+        let text = std::fs::read_to_string(&path).with_context(|| format!("reading {rel}"))?;
         let rewritten = readme::rewrite(&text, &versions);
         if rewritten != text {
             std::fs::write(&path, rewritten).with_context(|| format!("rewriting {rel}"))?;
@@ -745,5 +769,3 @@ fn tools_hint() -> String {
         None => " (searched PATH)".to_string(),
     }
 }
-
-

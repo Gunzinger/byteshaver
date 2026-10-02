@@ -166,11 +166,15 @@ impl Stage {
 
     /// Copies `docs/media/fixtures/**` under `demo/`, preserving the natural
     /// tree (photos/, anim/, screens/) so queue tables and globs look right
-    /// on camera.
+    /// on camera. Every staged file's mtime is normalized to a fixed epoch:
+    /// the GUI file table shows a "modified" column, and git checkout times
+    /// differ per machine — without normalization every GUI still with a
+    /// visible table would be sha-unstable (plan 17 §9).
     pub fn copy_fixtures(&self) -> Result<()> {
         let fixtures = repo_root().join("docs/media/fixtures");
         util::copy_tree(&fixtures, &self.demo_dir())
             .context("staging docs/media/fixtures into demo/")?;
+        normalize_mtimes(&self.demo_dir())?;
         Ok(())
     }
 
@@ -178,9 +182,43 @@ impl Stage {
     /// cargo leaves it, so `Require byteshaver` in tapes keeps working).
     pub fn copy_binary(&self, src: &Path, name: &str) -> Result<()> {
         let dst = self.bin(name);
-        std::fs::copy(src, &dst).with_context(|| {
-            format!("staging binary {} -> {}", src.display(), dst.display())
-        })?;
+        std::fs::copy(src, &dst)
+            .with_context(|| format!("staging binary {} -> {}", src.display(), dst.display()))?;
         Ok(())
     }
+}
+
+/// The fixed mtime every staged fixture gets: 2026-01-01T00:00:00Z. The
+/// GUI's "modified" column renders UTC, so all machines see the same date.
+pub const FIXTURE_EPOCH_SECS: i64 = 1_767_225_600;
+
+/// Recursively sets `FIXTURE_EPOCH_SECS` on every file AND directory below
+/// `root` (the GUI queue shows directory rows too, and a directory's mtime
+/// is its last content change - i.e. the staging time - unless normalized).
+/// Post-order so children are normalized before their parent dir is stamped.
+fn normalize_mtimes(root: &Path) -> Result<()> {
+    fn walk(dir: &Path) -> Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                walk(&path)?;
+            } else {
+                set_epoch(&path)?;
+            }
+        }
+        set_epoch(dir)
+    }
+    walk(root)
+}
+
+/// Sets a path's mtime to [`FIXTURE_EPOCH_SECS`]. Opens read-only: writing
+/// handles cannot be opened for directories, and `futimens` (behind
+/// `File::set_modified`) is allowed for the owner on a read-only fd.
+fn set_epoch(path: &Path) -> Result<()> {
+    let file = std::fs::File::open(path)?;
+    file.set_modified(
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(FIXTURE_EPOCH_SECS as u64),
+    )
+    .with_context(|| format!("normalizing mtime of {}", path.display()))?;
+    Ok(())
 }

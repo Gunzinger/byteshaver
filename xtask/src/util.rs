@@ -35,21 +35,19 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 /// directory structure relative to `src`. Regular files only; anything else
 /// (symlinks etc.) is a hard error - the fixture/tape trees contain none.
 pub fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
-    fs::create_dir_all(dst)
-        .with_context(|| format!("creating directory {}", dst.display()))?;
+    fs::create_dir_all(dst).with_context(|| format!("creating directory {}", dst.display()))?;
     for entry in fs::read_dir(src).with_context(|| format!("reading {}", src.display()))? {
         let entry = entry.with_context(|| format!("reading {}", src.display()))?;
         let from = entry.path();
         let to = dst.join(entry.file_name());
-        let file_type = entry.file_type().with_context(|| {
-            format!("reading type of {}", from.display())
-        })?;
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("reading type of {}", from.display()))?;
         if file_type.is_dir() {
             copy_tree(&from, &to)?;
         } else if file_type.is_file() {
-            fs::copy(&from, &to).with_context(|| {
-                format!("copying {} -> {}", from.display(), to.display())
-            })?;
+            fs::copy(&from, &to)
+                .with_context(|| format!("copying {} -> {}", from.display(), to.display()))?;
         } else {
             anyhow::bail!("unsupported file type (symlink?): {}", from.display());
         }
@@ -59,8 +57,7 @@ pub fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
 
 pub fn remove_dir_if_exists(path: &Path) -> Result<()> {
     if path.exists() {
-        fs::remove_dir_all(path)
-            .with_context(|| format!("removing {}", path.display()))?;
+        fs::remove_dir_all(path).with_context(|| format!("removing {}", path.display()))?;
     }
     Ok(())
 }
@@ -82,7 +79,11 @@ pub fn list_files(dir: &Path) -> Result<Vec<String>> {
     }
     for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let entry = entry.with_context(|| format!("reading {}", dir.display()))?;
-        if entry.file_type().with_context(|| format!("reading {}", dir.display()))?.is_file() {
+        if entry
+            .file_type()
+            .with_context(|| format!("reading {}", dir.display()))?
+            .is_file()
+        {
             names.push(entry.file_name().to_string_lossy().into_owned());
         }
     }

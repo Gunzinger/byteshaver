@@ -85,8 +85,9 @@ fn copy_photos(repo: &Path, dst: &Path) -> Result<()> {
             "fixture source {} is missing - the PHOTOS table in fixtures.rs must list existing files",
             src.display()
         );
-        std::fs::copy(&src, dst.join(name))
-            .with_context(|| format!("copying {} -> {}", src.display(), dst.join(name).display()))?;
+        std::fs::copy(&src, dst.join(name)).with_context(|| {
+            format!("copying {} -> {}", src.display(), dst.join(name).display())
+        })?;
     }
     Ok(())
 }
@@ -171,7 +172,14 @@ fn build_dashboard_master() -> RgbaImage {
     // mini bar chart
     let heights = [60_i64, 110, 80, 140, 95, 120];
     for (i, h) in heights.iter().enumerate() {
-        fill_rect(&mut img, 720 + i as i64 * 36, 560 - h, 22, *h, [108, 160, 220, 255]);
+        fill_rect(
+            &mut img,
+            720 + i as i64 * 36,
+            560 - h,
+            22,
+            *h,
+            [108, 160, 220, 255],
+        );
     }
     img
 }
@@ -220,8 +228,8 @@ fn build_logo_image() -> RgbaImage {
 fn encode_png(out: &mut Vec<u8>, img: &RgbaImage, exif: Option<Vec<u8>>) -> Result<()> {
     let mut info = png::Info::with_size(img.width(), img.height());
     info.exif_metadata = exif.map(Cow::Owned);
-    let mut encoder = png::Encoder::with_info(Cursor::new(out), info)
-        .context("creating png encoder")?;
+    let mut encoder =
+        png::Encoder::with_info(Cursor::new(out), info).context("creating png encoder")?;
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().context("writing png header")?;
@@ -299,7 +307,10 @@ fn build_logo_exif() -> Result<Vec<u8>> {
             value: Value::Rational(vec![
                 Rational { num: 48, denom: 1 },
                 Rational { num: 8, denom: 1 },
-                Rational { num: 15348, denom: 1000 },
+                Rational {
+                    num: 15348,
+                    denom: 1000,
+                },
             ]),
         },
         Field {
@@ -313,7 +324,10 @@ fn build_logo_exif() -> Result<Vec<u8>> {
             value: Value::Rational(vec![
                 Rational { num: 11, denom: 1 },
                 Rational { num: 34, denom: 1 },
-                Rational { num: 52380, denom: 1000 },
+                Rational {
+                    num: 52380,
+                    denom: 1000,
+                },
             ]),
         },
     ];
@@ -322,7 +336,9 @@ fn build_logo_exif() -> Result<Vec<u8>> {
         writer.push_field(field);
     }
     let mut cursor = Cursor::new(Vec::new());
-    writer.write(&mut cursor, true).context("writing EXIF blob")?;
+    writer
+        .write(&mut cursor, true)
+        .context("writing EXIF blob")?;
     Ok(cursor.into_inner())
 }
 
@@ -342,7 +358,14 @@ fn loading_frame(i: usize) -> RgbaImage {
     fill_circle(&mut img, cx, cy, 18, [86, 204, 158, 255]);
     fill_circle(&mut img, cx, cy, 8, [240, 246, 252, 255]);
     fill_rect(&mut img, 20, 150, 200, 12, [52, 62, 82, 255]);
-    fill_rect(&mut img, 20, 150, 200 * (i + 1) as i64 / 8, 12, [86, 204, 158, 255]);
+    fill_rect(
+        &mut img,
+        20,
+        150,
+        200 * (i + 1) as i64 / 8,
+        12,
+        [86, 204, 158, 255],
+    );
     img
 }
 
@@ -505,7 +528,10 @@ mod tests {
         // every encoder used here (png/gif/webp) must emit identical bytes
         // for identical input; this is the in-process guard behind the
         // "run gen-fixtures twice, diff the tree" verification
-        assert_eq!(build_dashboard_png().unwrap(), build_dashboard_png().unwrap());
+        assert_eq!(
+            build_dashboard_png().unwrap(),
+            build_dashboard_png().unwrap()
+        );
         assert_eq!(build_logo_png().unwrap(), build_logo_png().unwrap());
         assert_eq!(build_loading_gif().unwrap(), build_loading_gif().unwrap());
         assert_eq!(build_sparkle_apng().unwrap(), build_sparkle_apng().unwrap());

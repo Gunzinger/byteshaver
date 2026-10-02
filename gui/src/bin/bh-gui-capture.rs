@@ -97,10 +97,7 @@ fn main() {
     // font override must happen before the first harness/app construction
     if let Some(dir) = &args.fonts_dir {
         if !dir.is_dir() {
-            eprintln!(
-                "bh-gui-capture: fonts dir {} does not exist",
-                dir.display()
-            );
+            eprintln!("bh-gui-capture: fonts dir {} does not exist", dir.display());
             std::process::exit(2);
         }
         // single-threaded startup: process-env mutation is sound here;
@@ -147,7 +144,10 @@ fn main() {
                     window_size[1] * args.points_per_pixel,
                 );
                 for name in result.stills {
-                    println!("  still: {}", args.out_dir.join(format!("{name}.png")).display());
+                    println!(
+                        "  still: {}",
+                        args.out_dir.join(format!("{name}.png")).display()
+                    );
                 }
             }
             Err(err) => {
@@ -180,7 +180,11 @@ fn run_scene(scene: &Scene, options: &SceneOptions, animate: bool) -> anyhow::Re
     }
     runner.run(&scene.steps)?;
     Ok(SceneResult {
-        stills: runner.snapshots().iter().map(|(name, _)| name.clone()).collect(),
+        stills: runner
+            .snapshots()
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect(),
         frames: runner.frame_count(),
         fps: runner.fps(),
     })

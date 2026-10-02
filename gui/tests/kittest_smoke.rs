@@ -39,8 +39,16 @@ fn empty_state_renders_headlessly() {
         .expect("software rasterizer must render the empty state");
 
     // sanity: the frame is the requested size and not blank
-    assert_eq!(image.width(), 1100, "render width must match the harness size");
-    assert_eq!(image.height(), 720, "render height must match the harness size");
+    assert_eq!(
+        image.width(),
+        1100,
+        "render width must match the harness size"
+    );
+    assert_eq!(
+        image.height(),
+        720,
+        "render height must match the harness size"
+    );
     let non_background = image
         .pixels()
         .filter(|px| px.0[0] < 250 || px.0[1] < 250 || px.0[2] < 250)
@@ -85,7 +93,11 @@ fn gui_empty_scene_renders_without_viewport_artifacts() {
     let image = runner.render().expect("the scene renders");
 
     assert_eq!(image.width(), 1100, "render width matches the harness size");
-    assert_eq!(image.height(), 720, "render height matches the harness size");
+    assert_eq!(
+        image.height(),
+        720,
+        "render height matches the harness size"
+    );
 
     // no popup shells: the empty state hosts all five popups closed (see
     // `viewports::PopupKind`); the single remaining visible area is the

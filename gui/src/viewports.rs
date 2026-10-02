@@ -339,7 +339,8 @@ mod tests {
 
     #[test]
     fn spec_title_overrides_the_kind_default() {
-        let spec = PopupSpec::new(PopupKind::Inspector, true).with_title("visual difference — pair");
+        let spec =
+            PopupSpec::new(PopupKind::Inspector, true).with_title("visual difference — pair");
         assert_eq!(spec.effective_title(), "visual difference — pair");
         let plain = PopupSpec::new(PopupKind::About, false);
         assert_eq!(plain.effective_title(), PopupKind::About.title());
@@ -366,8 +367,8 @@ mod tests {
         );
         assert_eq!(plain.position, None);
 
-        let spec = PopupSpec::new(PopupKind::Report, true)
-            .with_geometry(Some([12.0, 34.0, 800.0, 600.0]));
+        let spec =
+            PopupSpec::new(PopupKind::Report, true).with_geometry(Some([12.0, 34.0, 800.0, 600.0]));
         let restored = popup_builder(&spec, true);
         assert_eq!(restored.position, Some(egui::Pos2::new(12.0, 34.0)));
         assert_eq!(restored.inner_size, Some(egui::vec2(800.0, 600.0)));
@@ -379,8 +380,8 @@ mod tests {
         // the probe must react to both Wayland env vars (the pure mapping
         // itself is covered by `builder_maps_visibility_per_mode`)
         let probe = supports_persistent_viewports();
-        let on_wayland =
-            std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("WAYLAND_SOCKET").is_some();
+        let on_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some()
+            || std::env::var_os("WAYLAND_SOCKET").is_some();
         assert_eq!(probe, !on_wayland);
     }
 }

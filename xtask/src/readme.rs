@@ -14,7 +14,7 @@
 //! asset reference - other URLs, other directories, plain prose - is left
 //! untouched.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -138,7 +138,11 @@ pub fn lint(
             continue;
         }
         // 1-based line of the reference: newlines before the byte offset
-        let line = text[..img_ref.range.start].bytes().filter(|b| *b == b'\n').count() + 1;
+        let line = text[..img_ref.range.start]
+            .bytes()
+            .filter(|b| *b == b'\n')
+            .count()
+            + 1;
         missing.push(format!(
             "{label}:{line}: docs/img/{} does not exist",
             img_ref.name
@@ -159,10 +163,7 @@ mod tests {
     use super::*;
 
     fn versions(pairs: &[(&str, u64)]) -> BTreeMap<String, u64> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), *v))
-            .collect()
+        pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
     }
 
     const BASIC: &str = "![Webp command example](/docs/img/webp_cmd.webp)";
@@ -198,10 +199,7 @@ mod tests {
     #[test]
     fn rewrite_sets_query_on_first_embed() {
         let out = rewrite(BASIC, &versions(&[("webp_cmd.webp", 1)]));
-        assert_eq!(
-            out,
-            "![Webp command example](/docs/img/webp_cmd.webp?v=1)"
-        );
+        assert_eq!(out, "![Webp command example](/docs/img/webp_cmd.webp?v=1)");
     }
 
     #[test]
@@ -243,7 +241,15 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("exists.webp"), b"png").unwrap();
         // existing reference passes
-        assert!(lint("README.md", "![x](docs/img/exists.webp)", &dir, &BTreeSet::new()).is_ok());
+        assert!(
+            lint(
+                "README.md",
+                "![x](docs/img/exists.webp)",
+                &dir,
+                &BTreeSet::new()
+            )
+            .is_ok()
+        );
         // missing reference fails, with file + line in the message
         let err = lint(
             "README.md",

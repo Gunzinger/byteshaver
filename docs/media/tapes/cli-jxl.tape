@@ -4,11 +4,11 @@ Source "_shared.tape"
 Output out/cli-jxl/frames/
 Output out/cli-jxl/cli-jxl.ascii
 Hide
-Type "cd .." Enter
+Type "cd .. && rm -rf out-jxl" Enter
 Ctrl+L
 Sleep 200ms
 Show
-Type `byteshaver "demo/photos/179zrSg.jpg" jxl --quality 85 --overwrite-existing`
+Type `byteshaver "demo/photos/deno.png" jxl --quality 85 -o out-jxl --overwrite-existing`
 Enter
 # Wait (bare): vhs default pattern />$/ - the shell prompt returning,
 # i.e. the conversion finished. Wait+Screen is unusable here: vhs 0.12

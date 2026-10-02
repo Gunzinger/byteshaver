@@ -5,11 +5,11 @@ Source "_shared.tape"
 Output out/cli-exif/frames/
 Output out/cli-exif/cli-exif.ascii
 Hide
-Type "cd .." Enter
+Type "cd .. && rm -rf out-exif" Enter
 Ctrl+L
 Sleep 200ms
 Show
-Type `byteshaver "demo/screens/logo.png" webp --exif filter --exif-except gps,GPSInfo --overwrite-existing`
+Type `byteshaver "demo/screens/logo.png" webp --exif filter --exif-except gps,GPSInfo -o out-exif --overwrite-existing`
 Enter
 # Wait (bare): vhs default pattern />$/ - the shell prompt returning,
 # i.e. the conversion finished. Wait+Screen is unusable here: vhs 0.12

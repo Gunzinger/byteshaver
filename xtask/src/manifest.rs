@@ -22,11 +22,47 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 
+/// Assets that embed wall-clock output and therefore cannot be byte-stable
+/// across runs (plan 17 §9): terminal demo videos carry the progress-bar
+/// redraw timing, and the run-state GUI stills show real job durations
+/// ("in 0.4s"). `--check` reports drift on these but does not fail; their
+/// freshness signal is the manifest's `generated_by` + the auto-PR diff.
+const UNSTABLE_ASSETS: &[&str] = &[
+    "cli-anim-demo.webp",
+    "cli-avif-demo.webp",
+    "cli-basic-demo.webp",
+    "cli-clean-demo.webp",
+    "cli-exif-demo.webp",
+    "cli-jxl-demo.webp",
+    "gui-running.webp",
+    "gui-report.webp",
+    "gui-inspector.webp",
+    "gui-tour.webp",
+];
+
+/// Classification lookup for [`Manifest::upsert`].
+pub fn is_unstable(name: &str) -> bool {
+    UNSTABLE_ASSETS.contains(&name)
+}
+
 /// Per-asset record: hash of the committed bytes + cache-busting version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssetRecord {
     pub sha256: String,
     pub version: u64,
+    /// Whether the asset is expected to be byte-stable across pipeline runs
+    /// (plan 17 §9). Stills of static UI states are `stable`; anything that
+    /// embeds wall-clock output ("Time taken: 3 seconds", run durations,
+    /// progress-bar redraw timing) is `unstable` and only advisory in
+    /// `--check` (reported, but not failed). Absent = stable.
+    #[serde(default = "default_true")]
+    pub stable: bool,
+}
+
+/// Serde default so manifests written before the flag existed parse as
+/// `stable = true` (the conservative pre-flag behavior was: stale = fail).
+fn default_true() -> bool {
+    true
 }
 
 /// The manifest document. `BTreeMap` keeps asset order stable so re-saving
@@ -49,8 +85,7 @@ impl Manifest {
     pub fn load(path: &Path) -> Result<Manifest> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading manifest {}", path.display()))?;
-        serde_json::from_str(&text)
-            .with_context(|| format!("parsing manifest {}", path.display()))
+        serde_json::from_str(&text).with_context(|| format!("parsing manifest {}", path.display()))
     }
 
     /// Loads the manifest, treating a missing file as an empty manifest
@@ -76,31 +111,59 @@ impl Manifest {
 
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!("creating manifest directory {}", parent.display())
-            })?;
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating manifest directory {}", parent.display()))?;
         }
         std::fs::write(path, self.to_json()?)
             .with_context(|| format!("writing manifest {}", path.display()))?;
         Ok(())
     }
 
-    /// Inserts or refreshes an asset record. Returns `true` when the version
+    /// Inserts or refreshes an asset record, applying `stable` from
+    /// [`UNSTABLE_ASSETS`]. Returns `true` when the version
     /// was bumped: either the bytes changed vs the record (version + 1) or
     /// the asset is new (version 1). Unchanged assets keep their version so
     /// the README `?v=` queries (and thereby the camo cache) stay stable.
     pub fn upsert(&mut self, name: &str, sha256: String) -> bool {
+        let stable = !is_unstable(name);
         match self.assets.get(name) {
-            Some(record) if record.sha256 == sha256 => false,
+            Some(record) if record.sha256 == sha256 => {
+                if record.stable != stable {
+                    // classification change only: refresh in place, keep the
+                    // version (a camo cache bust for a flag flip helps nobody)
+                    let version = record.version;
+                    self.assets.insert(
+                        name.to_string(),
+                        AssetRecord {
+                            sha256,
+                            version,
+                            stable,
+                        },
+                    );
+                }
+                false
+            }
             Some(record) => {
                 let version = record.version + 1;
-                self.assets
-                    .insert(name.to_string(), AssetRecord { sha256, version });
+                self.assets.insert(
+                    name.to_string(),
+                    AssetRecord {
+                        sha256,
+                        version,
+                        stable,
+                    },
+                );
                 true
             }
             None => {
-                self.assets
-                    .insert(name.to_string(), AssetRecord { sha256, version: 1 });
+                self.assets.insert(
+                    name.to_string(),
+                    AssetRecord {
+                        sha256,
+                        version: 1,
+                        stable,
+                    },
+                );
                 true
             }
         }
@@ -128,6 +191,7 @@ mod tests {
                 AssetRecord {
                     sha256: sha.to_string(),
                     version,
+                    stable: true,
                 },
             )]),
         }

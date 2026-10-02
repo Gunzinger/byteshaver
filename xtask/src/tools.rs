@@ -6,7 +6,7 @@
 //! pinned/known-good tool set win over whatever happens to be installed
 //! system-wide, while system tools still work when nothing is pinned.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 

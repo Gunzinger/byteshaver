@@ -7,7 +7,7 @@ Source "_shared.tape"
 Output out/cli-basic/frames/
 Output out/cli-basic/cli-basic.ascii
 Hide
-Type "cd .." Enter
+Type "cd .. && rm -rf out-webp" Enter
 Ctrl+L
 Sleep 200ms
 Show

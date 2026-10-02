@@ -4,11 +4,11 @@ Source "_shared.tape"
 Output out/cli-anim/frames/
 Output out/cli-anim/cli-anim.ascii
 Hide
-Type "cd .." Enter
+Type "cd .. && rm -rf out-anim" Enter
 Ctrl+L
 Sleep 200ms
 Show
-Type `byteshaver "demo/anim/loading.gif" webp-anim --overwrite-existing`
+Type `byteshaver "demo/anim/loading.gif" webp-anim -o out-anim --overwrite-existing`
 Enter
 # Wait (bare): vhs default pattern />$/ - the shell prompt returning,
 # i.e. the conversion finished. Wait+Screen is unusable here: vhs 0.12

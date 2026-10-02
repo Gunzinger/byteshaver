@@ -8,14 +8,14 @@
 #![deny(missing_docs)]
 
 pub mod app;
-pub mod celebrate;
-pub mod chips;
 /// Headless capture pipeline (plan 17 §6, feature `capture`): the scene
 /// runner that drives [`app::App`] through `egui_kittest`, the viewport
 /// adapter switch and the built-in scene registry; the `bh-gui-capture`
 /// binary (`src/bin/bh-gui-capture.rs`) is its CLI.
 #[cfg(feature = "capture")]
 pub mod capture;
+pub mod celebrate;
+pub mod chips;
 pub mod metrics;
 pub mod options;
 pub mod panels;
@@ -59,7 +59,11 @@ pub fn install_symbol_fonts(ctx: &egui::Context) {
                 })
                 .collect();
             paths.sort();
-            candidates.extend(paths.into_iter().map(|path| path.to_string_lossy().into_owned()));
+            candidates.extend(
+                paths
+                    .into_iter()
+                    .map(|path| path.to_string_lossy().into_owned()),
+            );
         }
     }
     candidates.extend(

@@ -322,8 +322,9 @@ impl SceneRunner {
         // before the scene runs, not halfway through a video
         let frames_dir = options.frames_dir.as_ref().map(|dir| {
             let dir = dir.join(scene_id);
-            std::fs::create_dir_all(&dir)
-                .unwrap_or_else(|err| panic!("cannot create the frames dir {}: {err}", dir.display()));
+            std::fs::create_dir_all(&dir).unwrap_or_else(|err| {
+                panic!("cannot create the frames dir {}: {err}", dir.display())
+            });
             dir
         });
         SceneRunner {
@@ -355,7 +356,9 @@ impl SceneRunner {
     /// `animation_time`; see [`Step::Animate`]).
     pub fn set_animate(&mut self, animate: bool) {
         let time = if animate { ANIMATION_TIME } else { 0.0 };
-        self.harness.ctx.all_styles_mut(|style| style.animation_time = time);
+        self.harness
+            .ctx
+            .all_styles_mut(|style| style.animation_time = time);
         self.animate = animate;
     }
 
@@ -588,9 +591,7 @@ impl SceneRunner {
         self.clock += f64::from(self.dt);
         self.harness.input_mut().time = Some(self.clock);
         self.harness.step();
-        if dump
-            && let Some(dir) = &self.frames_dir
-        {
+        if dump && let Some(dir) = &self.frames_dir {
             let path = dir.join(format!("{:04}.png", self.frame_count));
             let image = self.harness.render().map_err(anyhow::Error::msg)?;
             image
@@ -633,9 +634,9 @@ fn set_quality(app: &mut App, quality: f32) -> anyhow::Result<()> {
     let (set, range) = match row.control {
         crate::options::ControlSpec::Slider { set, range, .. }
         | crate::options::ControlSpec::Drag { set, range, .. } => (set, range),
-        other => bail!(
-            "SetQuality: the --quality row of {encoder_name:?} is not numeric ({other:?})"
-        ),
+        other => {
+            bail!("SetQuality: the --quality row of {encoder_name:?} is not numeric ({other:?})")
+        }
     };
     let clamped = f64::from(quality).clamp(range.0, range.1);
     set(
@@ -866,10 +867,8 @@ mod tests {
     /// A real tiny PNG on disk (queue rows stat/sniff at enqueue; the
     /// run scenes need a decodable file).
     fn tiny_png(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "byteshaver-capture-{name}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("byteshaver-capture-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let path = dir.join(format!("{name}.png"));
         image::RgbaImage::from_pixel(24, 16, image::Rgba([40, 120, 200, 255]))
@@ -920,8 +919,11 @@ mod tests {
     #[test]
     fn add_paths_rejects_missing_fixtures() {
         let mut app = App::with_settings(Settings::default());
-        let err = add_paths_checked(&mut app, std::iter::once(&PathBuf::from("demo/missing.png")))
-            .expect_err("missing path");
+        let err = add_paths_checked(
+            &mut app,
+            std::iter::once(&PathBuf::from("demo/missing.png")),
+        )
+        .expect_err("missing path");
         assert!(err.to_string().contains("does not exist"), "{err}");
         assert!(app.queue.is_empty(), "nothing enqueued on failure");
     }
