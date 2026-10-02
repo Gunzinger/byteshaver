@@ -1,0 +1,37 @@
+[package]
+name = "xtask"
+version = "0.0.0-git"
+edition = "2024"
+authors = ["Duy NG <hi@tduyng.com>", "Daniel Gunzinger <daniel.gunzinger@posteo.de>"]
+description = "Repository automation for byteshaver: the README media capture pipeline (plan 17)."
+license = "MIT"
+documentation = "https://docs.rs/byteshaver"
+homepage = "https://github.com/Gunzinger/byteshaver"
+repository = "https://github.com/Gunzinger/byteshaver"
+keywords = ["CLI", "build", "automation", "media"]
+categories = ["development-tools::build-utils"]
+publish = false
+
+# Never published; this crate is workspace automation in the `cargo xtask`
+# tradition and is excluded from release packaging entirely.
+
+[dependencies]
+# CLI surface (derive); same 4.x line as the workspace to share the tree
+clap = { version = "4", features = ["derive"] }
+# error plumbing; repo-wide convention
+anyhow = "1"
+# manifest.json model + (de)serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# asset hashing for the manifest + --check freshness table
+sha2 = "0.10"
+# deterministic fixture generation (screens/ procedurals, animated GIF)
+image = "0.25"
+# APNG fixture + PNG encoding with an eXIf chunk (screens/logo.png)
+png = "0.18"
+# EXIF writing for the logo.png fixture (experimental::Writer) and read-back
+# verification; already in the graph via the core's `exif` feature
+kamadak-exif = "0.6"
+# animated WebP fixture; `static` keeps libwebp-sys2 bundled, matching the
+# core crate so only one libwebp is built in the workspace graph
+webp-animation = { version = "0.10", features = ["static"] }

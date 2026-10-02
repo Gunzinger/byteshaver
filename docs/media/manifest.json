@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "generated_by": "xtask v0.6.0-10-gf919bf3; vhs vhs version v0.12.1 (24fa225); ffmpeg ffmpeg version 7.0.2-static https://johnvansickle.com/ffmpeg/  Copyright (c) 2000-2024 the FFmpeg developers",
+  "assets": {
+    "cli-anim-demo.webp": {
+      "sha256": "ab90e72318ed8ab4dd5477a7e77e3ad5facda64d7c5be66a7b77a080b7131705",
+      "version": 4,
+      "stable": false
+    },
+    "cli-anim.webp": {
+      "sha256": "26256f93e0f59347fa994b5666e9e9ed62cd22b73c0c80dbec5b3e6044762ef7",
+      "version": 2,
+      "stable": true
+    },
+    "cli-avif-demo.webp": {
+      "sha256": "b2631d8049571569a98ae1a32f09e2c9ed210c9169db3d5beafd886b77c7a5c4",
+      "version": 4,
+      "stable": false
+    },
+    "cli-avif.webp": {
+      "sha256": "a87f28965b0f28e7cad9d08f74c6affbeb028b015a84343a6c6f2b20b167e03b",
+      "version": 3,
+      "stable": true
+    },
+    "cli-basic-demo.webp": {
+      "sha256": "4a1f3ed75890de6e0afcc70d8fb52254cec38a29b80998c53a892b69b8f1eed5",
+      "version": 4,
+      "stable": false
+    },
+    "cli-basic.webp": {
+      "sha256": "9f232d8ff277fd9c0aa47bedf9a4a1712bba8017fbdc092dfbfc1e9f5d026e74",
+      "version": 3,
+      "stable": true
+    },
+    "cli-clean-demo.webp": {
+      "sha256": "70ce58392194ca2af3fb302190a7ef3641ad05ccbf2ca25b0dfc106bbd5c7702",
+      "version": 4,
+      "stable": false
+    },
+    "cli-clean.webp": {
+      "sha256": "23c9adb170b227beb33e45b164d461486d1837c7b9b4ed5e69c518c211ee6f73",
+      "version": 2,
+      "stable": true
+    },
+    "cli-exif-demo.webp": {
+      "sha256": "d0345036504136c9af6b9385d1094946d7224f42fab872374301fb62ee2d646e",
+      "version": 4,
+      "stable": false
+    },
+    "cli-exif.webp": {
+      "sha256": "cf99ea833d07d44d4e9829a3d81fa30769142ac1ab256576f3c7a968368a38a5",
+      "version": 3,
+      "stable": true
+    },
+    "cli-jxl-demo.webp": {
+      "sha256": "ed8112db150022808b8268d44fdb1bf4e74097bb4ddcef3dace6e6ef438c2ab9",
+      "version": 4,
+      "stable": false
+    },
+    "cli-jxl.webp": {
+      "sha256": "be13015cdfa8f8b78a33748d2e0bc494119babca6e9e793b4a9a03ca0ddcf6d6",
+      "version": 3,
+      "stable": true
+    },
+    "gui-empty.webp": {
+      "sha256": "56da4811937b35ac0fa8f72f6e6adb1e69ba096f31ffe0d23ed34773cb2cb4c7",
+      "version": 1,
+      "stable": true
+    },
+    "gui-inspector.webp": {
+      "sha256": "dc8140009756519331eb9df0afdc52dd349df648bdeb9c7aac1a4b9fd046c762",
+      "version": 3,
+      "stable": false
+    },
+    "gui-options.webp": {
+      "sha256": "49e6589938b03b428e76ad938971aa058f921c93df8d136b8fddb18937cddb36",
+      "version": 2,
+      "stable": true
+    },
+    "gui-queue.webp": {
+      "sha256": "af8bc9fa0ab405ed75f40fa46d120f406747755318bc411f698badd1ad45a8e6",
+      "version": 4,
+      "stable": true
+    },
+    "gui-report.webp": {
+      "sha256": "f382132cdba185d4bfbbffe6ed44187043377e3b0bab2fed0b37a61ef6271139",
+      "version": 4,
+      "stable": false
+    },
+    "gui-running.webp": {
+      "sha256": "3fa35967688d33827bd2fe6f5b6303fc5cfe5106631082513f02ab2e2396cd87",
+      "version": 3,
+      "stable": false
+    },
+    "gui-tour.webp": {
+      "sha256": "3a16cc508a74762d385e6f67121eed7860ece9c3fc2c9e53bf7b042f5a25c949",
+      "version": 4,
+      "stable": false
+    }
+  }
+}

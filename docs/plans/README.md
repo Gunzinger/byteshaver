@@ -179,3 +179,29 @@ order, migration path specced in 13 §2B).
   `libwebp-sys2` 0.2 (BSD-3; bundles libwebp, works static/musl).
 - `ravif` 0.13 (BSD-3): stills only, **no** sequence support; `avif-serialize` 0.8.9:
   no `avis` (animated AVIF) muxing.
+
+---
+
+# Media capture pipeline — Plan Suite 3
+
+> **STATUS: implemented** on branch `plans/media-capture-pipeline` (P0–P5;
+> plan 17 §17 lists the deviations that landed differently: wgpu-based
+> renderer, VHS 0.12 quirk handling in the xtask, a `stable`/`unstable`
+> freshness classification in the manifest, Rust-scene registry).
+
+| Plan | Workstream | Size | Depends on | Parallelizable with |
+|------|-----------|------|------------|---------------------|
+| [17-media-capture-pipeline.md](17-media-capture-pipeline.md) | scripted README screenshots/videos for CLI + GUI incl. post-processing, cache busting, CI auto-refresh | L | pending egui 0.36 upgrade landing | all |
+
+## Verified ecosystem facts used by suite 3 (as of 2026-10)
+
+- `egui_kittest` 0.36.2 (MIT OR Apache-2.0) tracks egui 0.36 exactly: `eframe`
+  feature hosts a real `eframe::App` headlessly (no display, software raster by
+  default; `snapshot` feature for PNG output; optional `wgpu` for GPU parity);
+  MSRV 1.95.
+- VHS (charmbracelet, MIT) requires `ttyd` + `ffmpeg`; `Output` supports
+  gif/mp4/webm/**PNG-frame dirs** (no WebP — animated WebP comes from our
+  ffmpeg post-process); `Wait /regex/` screen-content sync, `Screenshot`
+  stills, `Source`-able shared settings, theme JSON, pinned font/geometry/
+  margin/windowbar/framerate; `.ascii` golden output; docker image and CI
+  action available.

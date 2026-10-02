@@ -18,6 +18,25 @@ categories = [
 # Versioned in lockstep with the core `byteshaver` crate (displayed in the
 # About panel; the gui crate has no independent release version).
 
+# lib + bin split (plan 17 §6.1): the application modules live in the
+# `byteshaver_gui` library so the binary, tests and the feature-gated
+# `bh-gui-capture` capture binary share one implementation.
+[lib]
+name = "byteshaver_gui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "byteshaver-gui"
+path = "src/main.rs"
+
+# headless capture binary (plan 17 §6): drives the real App through
+# scripted scenes and writes PNG stills/frame sequences for the README
+# media pipeline. Skipped entirely unless the `capture` feature is on.
+[[bin]]
+name = "bh-gui-capture"
+path = "src/bin/bh-gui-capture.rs"
+required-features = ["capture"]
+
 [features]
 default = ["wayland", "x11"]
 # windowing backend passthrough: the static musl GUI build uses
@@ -25,6 +44,11 @@ default = ["wayland", "x11"]
 # desktop builds use the default (wayland + x11)
 wayland = ["eframe/wayland"]
 x11 = ["eframe/x11"]
+# headless capture pipeline (plan 17 §6.2): pulls the egui_kittest
+# harness plus the scene runner's error type. Deliberately NOT in the
+# default features — nothing capture-related compiles into shipped
+# binaries.
+capture = ["dep:egui_kittest", "dep:anyhow"]
 
 [dependencies]
 # egui/eframe 0.36: `App::update(ctx, frame)` split into `logic`/`ui`,
@@ -59,9 +83,26 @@ dirs = "7"
 # the CLI parity tests build CliArgs exactly like the CLI binary does
 clap = "4"
 
+# error type of the capture scene runner (plan 17 §6.3); optional and
+# pulled in only by the `capture` feature
+anyhow = { version = "1", optional = true }
+
+# headless egui harness (plan 17 §6): optional, off in shipped builds.
+# `default-features = false` + explicit features: `eframe` hosts the real
+# `App` without a display server, `wgpu` renders through the software
+# rasterizer (lavapipe) — the same rendering path the kittest smoke test
+# exercises.
+egui_kittest = { version = "0.36", optional = true, default-features = false, features = [
+    "eframe",
+    "wgpu",
+] }
+
 # DSSIM (multi-scale SSIM) quality metric, plan 10 §phase 2: pure Rust,
 # internally downsamples (large-image friendly), score 0.0 = identical.
 # The `rgb` types are part of dssim's public API (`create_image_rgba`
 # takes `&[RGBA<u8>]`) — same 0.8 line the core already uses.
 dssim = "3"
 rgb = "0.8"
+
+[dev-dependencies]
+egui_kittest = { version = "0.36", features = ["eframe", "wgpu"] }

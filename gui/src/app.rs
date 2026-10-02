@@ -311,6 +311,16 @@ pub struct App {
     /// (a matching chip highlights; drift highlights Custom as the
     /// *derived* state) — see `crate::chips::chip_selection`.
     pub custom_chip_explicit: bool,
+    /// Capture-pipeline popup adapter (plan 17 §6.2, feature `capture`):
+    /// when set, the popup host renders open popups through their
+    /// in-canvas embedded `egui::Window` fallbacks and closed popups as
+    /// nothing — the headless capture harness has a single canvas, and
+    /// the persistent-viewport machinery would paint every popup as an
+    /// empty stacked window shell there. Per-instance (not a global) so
+    /// tests running several apps in one process stay independent;
+    /// production apps never set it.
+    #[cfg(feature = "capture")]
+    pub(crate) capture_embedded_windows: bool,
     settings_dirty: bool,
 }
 
@@ -395,6 +405,8 @@ impl App {
             preset_save: None,
             preset_status: None,
             custom_chip_explicit: false,
+            #[cfg(feature = "capture")]
+            capture_embedded_windows: false,
             settings_dirty: false,
         }
     }
@@ -525,8 +537,7 @@ impl App {
             &self.user_presets,
             self.active_preset.as_ref()?,
         )?;
-        if crate::presets::preset_matches(preset, &self.settings.encoder, &self.settings.policies)
-        {
+        if crate::presets::preset_matches(preset, &self.settings.encoder, &self.settings.policies) {
             Some(preset.title.clone())
         } else {
             Some(format!("{} ·modified", preset.title))
@@ -713,9 +724,10 @@ impl App {
         let mut imported = 0;
         let mut errors = Vec::new();
         for path in paths {
-            let file_name = path
-                .file_name()
-                .map_or_else(|| "?".to_string(), |name| name.to_string_lossy().into_owned());
+            let file_name = path.file_name().map_or_else(
+                || "?".to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
             let outcome = std::fs::read_to_string(path)
                 .map_err(|err| err.to_string())
                 .and_then(|text| crate::presets::parse_preset_text(&text));
@@ -801,10 +813,7 @@ impl App {
             reverse_processing_order: self.settings.policies.reverse_processing_order,
             overwrite_if_smaller,
             overwrite_existing,
-            discard_if_larger_than_input: self
-                .settings
-                .policies
-                .discard_if_larger_than_input,
+            discard_if_larger_than_input: self.settings.policies.discard_if_larger_than_input,
             discard_input_alpha_channel: self.settings.policies.discard_input_alpha_channel,
             exif: self.exif_policy()?,
             heif_image_policy: self.settings.policies.heif_image_policy,
@@ -1133,8 +1142,7 @@ impl App {
         self.celebrate_run(&report);
         // plan 10 §phase 2 AutoAfterRun: enqueue measurements for every
         // successfully encoded file (the metric worker just un-paused)
-        let auto_pairs =
-            crate::metrics::auto_measure_pairs(&report, self.settings.quality_metric);
+        let auto_pairs = crate::metrics::auto_measure_pairs(&report, self.settings.quality_metric);
         self.report = Some(report);
         for (input, output) in auto_pairs {
             self.metrics.request_measure(
@@ -2061,9 +2069,7 @@ mod tests {
             ..PolicySet::default()
         });
         preset.content.include_output_dir = include_output_dir;
-        if include_output_dir
-            && let Some(policies) = &mut preset.content.policies
-        {
+        if include_output_dir && let Some(policies) = &mut preset.content.policies {
             policies.output_mode = OutputMode::Directory;
             policies.output_dir = "/preset/dir".to_string();
         }
@@ -2169,7 +2175,11 @@ mod tests {
         };
         let preset = builtin_preset("JXL · Visually lossless");
         app.apply_preset(&preset).expect("applies");
-        assert_eq!(app.jxl_draft, JxlAdvancedDraft::default(), "draft state reset");
+        assert_eq!(
+            app.jxl_draft,
+            JxlAdvancedDraft::default(),
+            "draft state reset"
+        );
         let index = app
             .builtins
             .iter()
@@ -2241,7 +2251,10 @@ mod tests {
         app.save_preset_from_current(&draft).expect("saved");
         assert_eq!(app.user_presets.len(), 1);
         assert_eq!(app.user_presets[0].file_name, "my-webp.json");
-        assert_eq!(app.active_preset, Some(PresetRef::User("My Webp".to_string())));
+        assert_eq!(
+            app.active_preset,
+            Some(PresetRef::User("My Webp".to_string()))
+        );
 
         // duplicate title rejected
         let err = app
@@ -2253,7 +2266,8 @@ mod tests {
         assert!(err.contains("already exists"));
 
         // rename re-slugs
-        app.preset_rename("My Webp", "Renamed Preset").expect("renamed");
+        app.preset_rename("My Webp", "Renamed Preset")
+            .expect("renamed");
         assert_eq!(app.user_presets[0].file_name, "renamed-preset.json");
         assert_eq!(
             app.active_preset,
@@ -2345,7 +2359,8 @@ mod tests {
             "byteshaver-gui-app-export-{}.json",
             std::process::id()
         ));
-        app.preset_export(&preset, target.clone()).expect("exported");
+        app.preset_export(&preset, target.clone())
+            .expect("exported");
         let text = std::fs::read_to_string(&target).expect("read export");
         assert!(
             !text.contains("/local/secret"),
@@ -2434,7 +2449,10 @@ mod tests {
             "content": { "encoder": { "NotAnEncoder": {} }, "include_output_dir": false }
         }"#;
         let parsed: Result<Preset, _> = serde_json::from_str(json);
-        assert!(parsed.is_err(), "unknown variants fail serde (unreadable list)");
+        assert!(
+            parsed.is_err(),
+            "unknown variants fail serde (unreadable list)"
+        );
         // while the empty-content guard still trips
         let json = r#"{
             "schema": 1, "title": "X", "description": "", "created_unix": 0,
@@ -2448,7 +2466,11 @@ mod tests {
     fn preset_content_carries_the_documented_fields() {
         // a structural smoke test of the plan-§1 shape
         let preset = full_preset(true);
-        let PresetContent { encoder, policies, include_output_dir } = preset.content;
+        let PresetContent {
+            encoder,
+            policies,
+            include_output_dir,
+        } = preset.content;
         assert!(matches!(encoder, EncoderConfig::Webp(_)));
         assert!(policies.is_some());
         assert!(include_output_dir);

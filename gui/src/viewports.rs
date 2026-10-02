@@ -186,9 +186,24 @@ pub fn show_popup(
     app: &mut App,
     ctx: &egui::Context,
     spec: PopupSpec,
-    render_embedded: impl FnMut(&mut App, &egui::Context),
+    mut render_embedded: impl FnMut(&mut App, &egui::Context),
     mut render_contents: impl FnMut(&mut App, &mut egui::Ui),
 ) {
+    // plan 17 §6.2: capture mode renders open popups through the existing
+    // embedded `egui::Window` fallbacks inside the single harness canvas
+    // and closed popups as nothing (no stacked empty window shells). The
+    // flag lives on the App instance (set by the capture scene runner for
+    // its harness app only), so tests running several apps in one process
+    // stay independent. With the `capture` feature compiled out this
+    // branch does not exist and the persistent-viewport behavior below is
+    // untouched.
+    #[cfg(feature = "capture")]
+    if app.capture_embedded_windows {
+        if spec.open {
+            render_embedded(app, ctx);
+        }
+        return;
+    }
     let persistent = supports_persistent_viewports();
     if !persistent && !spec.open {
         // Wayland fallback: create viewports on demand (no hiding there).
@@ -197,7 +212,6 @@ pub fn show_popup(
     let open = spec.open;
     let id = spec.kind.viewport_id();
     let builder = popup_builder(&spec, persistent);
-    let mut render_embedded = render_embedded;
     ctx.show_viewport_immediate(id, builder, move |vui, class| {
         if class == egui::ViewportClass::EmbeddedWindow {
             if open {
@@ -325,7 +339,8 @@ mod tests {
 
     #[test]
     fn spec_title_overrides_the_kind_default() {
-        let spec = PopupSpec::new(PopupKind::Inspector, true).with_title("visual difference — pair");
+        let spec =
+            PopupSpec::new(PopupKind::Inspector, true).with_title("visual difference — pair");
         assert_eq!(spec.effective_title(), "visual difference — pair");
         let plain = PopupSpec::new(PopupKind::About, false);
         assert_eq!(plain.effective_title(), PopupKind::About.title());
@@ -352,8 +367,8 @@ mod tests {
         );
         assert_eq!(plain.position, None);
 
-        let spec = PopupSpec::new(PopupKind::Report, true)
-            .with_geometry(Some([12.0, 34.0, 800.0, 600.0]));
+        let spec =
+            PopupSpec::new(PopupKind::Report, true).with_geometry(Some([12.0, 34.0, 800.0, 600.0]));
         let restored = popup_builder(&spec, true);
         assert_eq!(restored.position, Some(egui::Pos2::new(12.0, 34.0)));
         assert_eq!(restored.inner_size, Some(egui::vec2(800.0, 600.0)));
@@ -365,8 +380,8 @@ mod tests {
         // the probe must react to both Wayland env vars (the pure mapping
         // itself is covered by `builder_maps_visibility_per_mode`)
         let probe = supports_persistent_viewports();
-        let on_wayland =
-            std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("WAYLAND_SOCKET").is_some();
+        let on_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some()
+            || std::env::var_os("WAYLAND_SOCKET").is_some();
         assert_eq!(probe, !on_wayland);
     }
 }

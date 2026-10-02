@@ -59,21 +59,31 @@ pub enum ThumbEntry {
 /// Work item handed to the decode thread.
 pub enum WorkerJob {
     /// Decode + downscale one image.
-    Thumbnail { key: ThumbKey },
+    Thumbnail {
+        /// Cache key of the enqueued file.
+        key: ThumbKey,
+    },
     /// Read the typed EXIF summary of one file.
-    Exif { path: PathBuf },
+    Exif {
+        /// File to read.
+        path: PathBuf,
+    },
 }
 
 /// Result produced by the decode thread.
 pub enum WorkerResult {
     /// `None` = decode failed (placeholder).
     Thumbnail {
+        /// Cache key the result belongs to.
         key: ThumbKey,
+        /// Decoded+downscaled pixels, `None` on failure.
         image: Option<RgbaImage>,
     },
     /// Summary read outcome (`None` = no EXIF/unparsable).
     Exif {
+        /// File the summary belongs to.
         path: PathBuf,
+        /// Typed summary, `None` if absent/unparsable.
         summary: Option<ExifSummary>,
     },
 }
@@ -189,6 +199,16 @@ impl ThumbState {
     /// saturating conversion job for no user-visible benefit).
     pub fn set_paused(&self, paused: bool) {
         self.paused.store(paused, Ordering::Relaxed);
+    }
+
+    /// Number of thumbnail + EXIF requests currently in flight (the
+    /// capture pipeline's `ThumbsSettled` quiescence signal, plan 17
+    /// §6.3: zero means the decode worker has drained every request).
+    /// Note the worker pauses while a job runs — poll this *before*
+    /// starting a run, never while one is active.
+    #[must_use]
+    pub fn pending_count(&self) -> usize {
+        self.pending_thumbs.len() + self.pending_exif.len()
     }
 
     /// Takes the previous frame's visible-row keys (the texture pre-pass

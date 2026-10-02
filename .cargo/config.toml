@@ -4,3 +4,10 @@ rustflags = [
     # see: rustc --print target-cpus ; e.g. x86-64, x86-64-v3, x86-64-v4, znver3, znver5
     # see: https://en.wikipedia.org/wiki/X86-64#Microarchitecture_levels
 ]
+
+# cargo xtask pattern (plan 17): repository automation lives in the `xtask`
+# workspace member. Both spellings run it in release mode; everything after
+# the command is passed through to the xtask binary.
+[alias]
+xtask = "run --release -p xtask --"     # e.g. cargo xtask media --help
+media = "run --release -p xtask --"     # e.g. cargo media gen-fixtures
