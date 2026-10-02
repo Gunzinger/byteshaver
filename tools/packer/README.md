@@ -15,13 +15,20 @@ pthread per frame) into a `memfd(MFD_EXEC)` and `fexecve()`s it — one `execve`
 total, argv/env/exit-code preserved. Works with static and static-pie ELF
 payloads (the byteshaver release artifacts).
 
-| variant (byteshaver CLI, musl static-pie) | size | startup `--version` |
-|---|---:|---:|
-| plain | 16.23 MB | 3.4 ms |
-| `upx --best` (NRV) | 33.4 % | 47.2 ms |
-| **zpack, 2 frames** | **31.5 %** | **18.1 ms** |
-| **zpack, 4 frames** | 33.3 % | **11.8 ms** |
-| **zpack, 6 frames** | 33.5 % | **8.9 ms** |
+| variant (byteshaver CLI, musl static-pie) | size | startup `--version` | peak RSS |
+|---|---:|---:|---:|
+| plain | 16.23 MB | 3.4 ms | 2.5 MB |
+| `upx --best` (NRV) | 33.4 % | 47.2 ms | 17.3 MB |
+| **zpack, 2 frames** | **31.5 %** | **18.1 ms** | ~18 MB |
+| **zpack, 4 frames** | 33.3 % | 11.8 ms | 19.7 MB |
+| **zpack, 6 frames** | 33.5 % | **8.9 ms** | 19.0 MB |
+| **zpack, 12 frames (RSS mode)** | 34.7 % | 9.3 ms | **17.0 MB** |
+
+The stub uses an atomic work queue (any frame count parallelizes over
+`min(ncpu, nframes)` workers) and each worker `madvise(MADV_DONTNEED)`s its
+input pages when done, so with `--frames` well above the worker count the
+resident input stays at ~workers × chunk size and peak RSS approaches the
+16.2 MB output floor.
 
 ## Build the stub
 
@@ -49,9 +56,10 @@ python3 zpack.py zpack-stub byteshaver byteshaver-zpk --frames 4
 ./byteshaver-zpk --version
 ```
 
-- `--frames n` — 2 = best ratio, 4 = balanced (recommended), 6 = fastest.
-  More frames lose cross-boundary matches (~+1 %pt per doubling) and gain
-  decompression parallelism.
+- `--frames n` — 2 = best ratio, 4 = balanced, 6 = fastest, 12 = lowest RSS
+  (frames beyond the worker count pull from a work queue; each finished frame
+  releases its input pages, so peak RSS approaches the unpacked image size).
+  More frames lose cross-boundary matches (~+1 %pt per doubling).
 - `--page 65536` — use when the artifact must also run on 16K/64K-page ARM
   kernels (payload offset must be page-aligned for `mmap`).
 
@@ -62,10 +70,43 @@ python3 zpack.py zpack-stub byteshaver byteshaver-zpk --frames 4
 
 ## Known limitations
 
-- Linux only (macOS lacks memfd/fexecve; Windows needs a PE stub — see the
-  analysis doc's roadmap).
-- `/proc` must be mounted (the stub locates itself via `/proc/self/exe`).
+- `/proc` must be mounted on Linux (the stub locates itself via `/proc/self/exe`).
 - `memfd_create` needs Linux ≥ 3.17; the `MFD_EXEC` flag needs ≥ 6.3
   (graceful fallback implemented).
 - Payloads are plain zstd frames — recoverable via `dd` + `zstd -d`, and the
   AV-heuristic caveats of self-extracting executables apply.
+
+## Windows (`zpe_stub.c`) — in-memory PE loader
+
+The same container format works for PE32+ payloads. The stub reads its own
+file, decompresses the frames in parallel (`CreateThread` work queue), then
+loads the payload entirely in memory:
+
+headers + sections → base relocation (`.reloc`) → imports
+(`LoadLibraryA`/`GetProcAddress`) → `RtlAddFunctionTable` (`.pdata` unwind
+info) → per-section `VirtualProtect` → `CreateThread(AddressOfEntryPoint)`;
+argv and the exit code are propagated.
+
+Validated under wine 10 with a mingw C payload, a Rust windows-gnu payload
+and the real `byteshaver.exe` (16.96 MB → **32.8 %**, image conversion
+byte-identical to the unpacked exe).
+
+Build:
+
+```sh
+# in an alpine container with the mingw-w64 cross toolchain
+apk add mingw-w64-gcc make curl
+curl -sL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz | tar xz
+make -C zstd-1.5.7/lib libzstd.a -j4 CC=x86_64-w64-mingw32-gcc AR=x86_64-w64-mingw32-ar \
+  CFLAGS="-Os -ffunction-sections -fdata-sections -DDYNAMIC_BMI2=0" ZSTD_LEGACY_SUPPORT=0
+x86_64-w64-mingw32-gcc -Os -static -s -ffunction-sections -fdata-sections \
+  -Wl,--gc-sections zpe_stub.c zstd-1.5.7/lib/libzstd.a -Izstd-1.5.7/lib \
+  -lpthread -o zpe-stub.exe
+python3 zpack.py zpe-stub.exe byteshaver.exe byteshaver-packed.exe --frames 6
+```
+
+Scope notes: TLS-callback-heavy or plugin-style payloads, .NET and side-by-side
+(WinSxS) assemblies are not wired up; the payload is not registered as a
+loaded module (its own `GetModuleFileName` reports the stub's path). For the
+byteshaver CLI and GUI this is all irrelevant; anything fancier should stay
+unpacked (see the analysis doc's Windows roadmap).

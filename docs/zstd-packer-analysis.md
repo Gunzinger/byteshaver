@@ -201,21 +201,39 @@ same idle machine / same 16,234,560 B musl static-pie reference binary.**
 
 ### 7.2 Frame-count sweep (idle machine, warm cache)
 
-| frames | total size | ratio | startup median | serial control (ZPK_THREADS=1) |
-|---:|---:|---:|---:|---:|
-| 1 | 5,173,887 | 31.9 % | 31.37 ms | 31.37 ms |
-| 2 | 5,117,970 | **31.5 %** | 18.05 ms | 31.20 ms |
-| 4 | 5,401,456 | 33.3 % | 11.79 ms | 32.42 ms |
-| 6 | 5,441,917 | 33.5 % | **8.93 ms** | 33.17 ms |
-| 8 | 5,661,491 | 34.9 % | 8.83 ms | 34.29 ms |
+Final stub: atomic **work queue** (any frame count spreads over
+`min(ncpu, nframes)` workers — frames beyond the worker count are no longer
+run inline) + **per-frame `madvise(MADV_DONTNEED)`**: every worker releases
+its input pages when its frame completes, so resident input is
+`~workers × chunk`, not the whole payload.
 
-Reference points on the same binary: plain 3.36 ms / 100 %, `upx --best`
-(NRV) 47.17 ms / 33.4 %, `upx --best --lzma` 247.7 ms / 28.2 %.
+| frames | total size | ratio | startup median | peak RSS |
+|---:|---:|---:|---:|---:|
+| 1 | 5,173,887 | 31.9 % | 31.37 ms | — |
+| 2 | 5,117,970 | **31.5 %** | 18.05 ms | ~18 MB |
+| 4 | 5,401,456 | 33.3 % | 11.73 ms | 19.7 MB |
+| 6 | 5,441,917 | 33.5 % | **8.93 ms** | 19.0 MB |
+| 12 | 5,630,523 | 34.7 % | 9.26 ms | **17.0 MB** |
+
+Reference points on the same binary: plain 3.36 ms / 100 % / 2.5 MB RSS,
+`upx --best` (NRV) 47.17 ms / 33.4 % / 17.3 MB, `upx --best --lzma`
+247.7 ms / 28.2 % / 16.7 MB.
 
 - **2 frames beats UPX NRV on both axes** (31.5 % vs 33.4 %, 18.1 vs 47.2 ms).
 - 6 frames ≈ 8.9 ms — the memory-bandwidth knee (~3.2 GB/s aggregate decode).
-- 8 frames gains nothing over 6 (ratio loss outpaces parallelism).
-- Max RSS is flat across frame counts: 20.8–21.1 MB (thread stacks are lazy).
+- **12 frames ≈ RSS floor**: with only ~6 workers in flight, resident input
+  drops to ~0.8 MB and peak RSS lands at 17.0 MB — within 0.3 MB of UPX NRV
+  and 0.8 MB above the theoretical floor — *without* giving up the ~9 ms
+  startup (the work queue makes the extra frames free).
+- Max RSS is otherwise flat; thread stacks are lazy.
+
+Two design notes recorded for posterity:
+1. The first v2 dispatched frames beyond `workers-1` *inline* on the main
+   thread — 12 frames/6 threads degenerated to 23.4 ms. The work-queue
+   restructure fixed exactly that.
+2. Worker-side `madvise` after the *pre-queue* layout already recovered
+   ~1.4 MB (21.0 → 19.6 MB); combined with the queue (smaller in-flight
+   chunks) it reaches 17.0 MB. Startup cost: unmeasurable (< 0.2 ms).
 
 ### 7.3 Core scaling (6 frames, `taskset`)
 
@@ -292,17 +310,21 @@ floor is the decompressed output itself (irreducible).
 | Skip `--check` frames (`zstd --no-check`) | ~0.2 ms | trivial | marginal; loses integrity check |
 | Higher-level: don't pack (the standing decision) | −5.5 ms | — | still the right default |
 
-### 8.2 Max RSS (current peak: ~21 MB = 16.2 output + ~5.3 payload mapping + ~0.2)
+### 8.2 Max RSS — **done** (was "planned madvise")
 
-- **Irreducible floor: 16.2 MB** — the unpacked image must exist in full
-  before `fexecve`. (A pipe into a kernel loader doesn't exist; UPX has the
-  same floor.)
-- Streaming input rejected empirically (§7.6).
-- **Planned (cheap win): per-frame `madvise(MADV_DONTNEED)`** — restructure
-  the join loop so each finished frame's payload range is dropped
-  immediately; projected peak ≈ 16.2 + ~1.3 (last frame) ≈ **17.5 MB**,
-  i.e. parity with UPX NRV (17.3 MB). No measurable time cost.
-- Optional: `MADV_SEQUENTIAL` on the payload mapping (trivial, likely noise).
+Per-frame worker-side `madvise(MADV_DONTNEED)` + the work queue achieved it:
+
+| config | peak RSS | notes |
+|---|---:|---|
+| UPX NRV | 17.3 MB | reference |
+| zpack 6 frames | 19.0 MB | speed-optimal |
+| **zpack 12 frames** | **17.0 MB** | **UPX parity, at 9.3 ms** |
+| theoretical floor | 16.2 MB | the unpacked image itself |
+
+The floor is the output image (irreducible by design — `fexecve`/PE load need
+the full image). Streaming-input decomposition was measured and rejected
+earlier (§7.6); per-frame input drop after the queue restructure is the
+winning combination. Nothing further planned here.
 
 ### 8.3 Stub size (done: 194.6 → 91.8 KB; remaining ≈ 0.17 % of artifact)
 
@@ -322,23 +344,68 @@ Conclusion: **closed** — further shrinking is cosmetic.
 | Linux arm64 | expected to work unchanged | pad stub to 64 KB (`--page 65536`) for 16K/64K-page kernels; add CI smoke |
 | Linux dynamic-ELF payloads | expected to work (ld.so loads from disk as usual) | smoke-test once |
 | FreeBSD | memfd + fexecve exist (13+) | port = recompile; low priority |
+| **Windows PE32+** | **implemented (`tools/packer/zpe_stub.c`) and wine-tested — see §10** | real-Windows smoke test in CI remains |
 | macOS | no `memfd`/`fexecve` | out of scope; a temp-file fallback weakens the model (on-disk artifact re-appears, AV scans it). Keep macOS unpacked. |
-| Windows | needs a PE stub: decompress → map sections → apply `.reloc` → run. In-memory PE loading is exactly the malware heuristic sweet spot | **recommend: keep Windows unpacked** (or keep `upx --best`, whose PE handling is mature). Do not hand-roll a PE loader. |
 
 ### 8.5 CI integration plan (concrete)
 
-1. ~~Vendor `tools/packer/{zpack_stub.c,zpack.py,README.md}`~~ **done**.
-2. `pack_binaries` job: build the stub once in the alpine stage (pin zstd
-   1.5.7, cache by `Cargo.lock`-independent key), then replace
-   `upx --best` with `zpack.py --frames 4` for **Linux** artifacts.
+1. ~~Vendor `tools/packer/{zpack_stub.c,zpe_stub.c,zpack.py,README.md}`~~ **done**.
+2. `pack_binaries` job: build the stubs once (alpine stage: musl + mingw-w64
+   cross zstd, pin zstd 1.5.7, cache), then replace
+   `upx --best` with `zpack.py --frames 6` for Linux **and Windows** artifacts.
 3. Rename artifact suffix `-upx` → `-packed` (format-agnostic).
-4. Windows: keep plain-only (drop packed Windows variants) — simplest
-   honest option; revisit only if size pressure appears.
-5. CI checks for packed artifacts: `--version` smoke (exists), plus a
-   packed-vs-plain output diff on one sample image (cheap, catches format
-   regressions).
-6. Track a release metric: packed size + `--version` latency of the packed
+4. CI checks for packed artifacts: `--version` smoke (exists) — Windows smoke
+   can run the packed exe under wine on the runner — plus a
+   packed-vs-plain output diff on one sample image.
+5. Track a release metric: packed size + startup latency of the packed
    artifact on the runner, one log line per release (regression tripwire).
+
+---
+
+## 10. Windows: in-memory PE loader (`zpe_stub.c`) — implemented & wine-tested
+
+Same container format, new stub for PE32+ x64 payloads:
+
+1. locate self via `GetModuleFileNameA` (no `/proc` on Windows),
+2. parallel decompress — `CreateThread` work queue (same atomic-claim pattern
+   as Linux) into one `VirtualAlloc` buffer,
+3. in-memory load of the payload PE:
+   headers + sections → **base relocation** (`.reloc`, DIR64/HIGHLOW) →
+   **imports** (`LoadLibraryA` + `GetProcAddress`, name & ordinal) →
+   **`RtlAddFunctionTable`** on `.pdata` (x64 unwind info) → per-section
+   `VirtualProtect` → start `AddressOfEntryPoint` on a fresh thread with the
+   header's stack reserve; wait; propagate the exit code via `ExitProcess`.
+
+### 10.1 Wine validation (wine 10.0, mingw-w64 GCC 15 toolchain)
+
+| payload | packed size | result under wine |
+|---|---:|---|
+| mingw C `hello.exe` (59 KB) | 109 KB | args/env passed, exit code 42 propagated ✓ |
+| Rust windows-gnu `rshello.exe` (857 KB) | 450 KB (52.5 %) | identical output, exit 0 ✓ |
+| corrupted payload | — | clean `zpe: a frame failed`, exit 127 ✓ |
+| **real `byteshaver.exe` (16.96 MB, full features)** | **5.57 MB (32.8 %)** | real conversion: 2 JPEGs → webp, outputs **byte-identical** to the unpacked exe ✓ |
+
+(The C-payload ratio is meaningless at 59 KB — the 94 KB stub dominates.
+For real artifacts the Linux ratios apply.)
+
+### 10.2 Windows-specific caveats (honest scope)
+
+- The payload is *not* registered in the loader's module list: its
+  `GetModuleFileName` sees the stub's path; anything enumerating its own
+  module (some updaters) breaks.
+- TLS callbacks run in stub context — not chained to the payload (mingw
+  emutls unaffected in tested payloads; flagged for exotic cases).
+- C++ exceptions *unwind* via the registered `.pdata`; `catch`-less SEH
+  filters or needs-CLI payloads are untested.
+- In-memory PE loading is a known AV heuristic trigger — same class of risk
+  as UPX, but less "known-good"; code-signing the packed output is required
+  for enterprise distribution.
+- Real-Windows validation (11/10 Defender, ARM64-on-x64 emulation) still
+  pending — CI follow-up.
+
+**Verdict:** Windows packed variants are technically solved and validated
+under wine; whether to ship them stays a product decision (the standing
+"unpacked by default" logic applies identically).
 
 ## 9. Reproducing (v2)
 

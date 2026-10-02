@@ -13,14 +13,12 @@
  * frame, capped by ZPK_THREADS env or CPU count) into one memfd, then fexecve()s it.
  *
  * Env knobs (debug/benchmarking):
- *   ZPK_THREADS=n         cap worker threads at n (1 => serial)
+ *   ZPK_THREADS=n      cap worker threads at n (1 => serial)
  *   ZPK_DEBUG_SLEEP_MS=n  nanosleep before fexecve (for external /proc sampling)
  *
- * Build (musl, static; see tools/packer/README.md for the full recipe):
+ * Build (musl, static):
  *   gcc -Os -static -s -ffunction-sections -fdata-sections -Wl,--gc-sections \
- *     zpack_stub.c libzstd.a -I<zstd>/lib -lpthread -o zpack-stub
- *   libzstd.a must be built with: ZSTD_LEGACY_SUPPORT=0 CFLAGS+=" -DDYNAMIC_BMI2=0"
- *   (drops legacy-format decoders and the duplicated BMI2 code paths: 194 KB => 92 KB)
+ *     zpack_stub2.c <zstd decompress objects> -I<zstd>/lib -lpthread -o zpack-stub2
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -59,11 +57,34 @@ typedef struct {
     int rc;              /* 0 ok */
 } job_t;
 
-static void *worker(void *arg) {
-    job_t *j = (job_t *)arg;
+static job_t *g_jobs;
+static uint64_t g_nframes;
+static volatile long g_next;          /* atomic work-queue cursor */
+static volatile int g_rc;             /* sticky failure flag */
+
+/* process one frame; returns 0 on success */
+static int do_frame(job_t *j) {
     size_t r = ZSTD_decompress(j->dst, j->uncomp, j->src, j->comp);
     j->rc = (ZSTD_isError(r) || r != j->uncomp) ? 1 : 0;
-    return j;
+    /* release this frame's clean file-backed input pages immediately so the
+     * RSS peak is output + in-flight inputs, not output + whole payload */
+    if (j->rc == 0) {
+        long ps = sysconf(_SC_PAGESIZE);
+        uintptr_t a = (uintptr_t)j->src & ~((uintptr_t)ps - 1);
+        uintptr_t e = ((uintptr_t)j->src + j->comp + ps - 1) & ~((uintptr_t)ps - 1);
+        madvise((void *)a, e - a, MADV_DONTNEED);
+    }
+    return j->rc;
+}
+
+static void *worker(void *arg) {
+    (void)arg;
+    for (;;) {
+        long i = __atomic_fetch_add(&g_next, 1, __ATOMIC_RELAXED);
+        if (i >= (long)g_nframes || g_rc) return NULL;
+        if (do_frame(&g_jobs[i]) != 0) g_rc = 1;
+    }
+    return NULL;
 }
 
 static void werr(const char *msg, size_t n) { (void)write(2, msg, n); }
@@ -104,7 +125,10 @@ int main(int argc, char **argv, char **envp) {
     unsigned char *dst = mmap(NULL, unpacked_len, PROT_READ | PROT_WRITE, MAP_SHARED, mfd, 0);
     if (dst == MAP_FAILED) { werr("mmap memfd\n", 13); die(""); }
 
-    /* parallel decompression: one thread per frame, capped */
+    /* parallel decompression via a shared atomic frame queue: any frame count
+     * spreads over min(ncpu, nframes) workers; workers also drop their input
+     * pages after each frame, so with nframes >> workers the resident input
+     * stays at ~workers x chunk instead of the whole payload */
     long maxth = ncpu();
     const char *env = getenv("ZPK_THREADS");
     if (env) { long v = atol(env); if (v >= 1) maxth = v; }
@@ -113,30 +137,23 @@ int main(int argc, char **argv, char **envp) {
     pthread_t *tid = calloc(maxth > 1 ? maxth - 1 : 1, sizeof(pthread_t));
     job_t *jobs = calloc(nframes, sizeof(job_t));
     if (!tid || !jobs) { werr("alloc\n", 8); die(""); }
+    g_jobs = jobs; g_nframes = nframes; g_next = 0; g_rc = 0;
 
     size_t so = 0, doff = 0;
-    uint64_t t_i = 0;
     for (uint64_t i = 0; i < nframes; i++) {
         jobs[i].src = src + so; jobs[i].dst = dst + doff;
         jobs[i].comp = tbl[2*i]; jobs[i].uncomp = tbl[2*i+1];
         so += tbl[2*i]; doff += tbl[2*i+1];
-        if (t_i == (uint64_t)maxth - 1) {          /* main thread does these inline */
-            worker(&jobs[i]);
-            if (jobs[i].rc) { werr("zpk: frame failed\n", 19); return 127; }
-        } else {
-            if (pthread_create(&tid[t_i], NULL, worker, &jobs[i]) != 0) {
-                worker(&jobs[i]);                   /* degrade to inline on failure */
-                if (jobs[i].rc) { werr("zpk: frame failed\n", 19); return 127; }
-            }
-            t_i++;
-        }
     }
-    int rc = 0;
-    for (long t = 0; t < t_i; t++) {
-        job_t *j; pthread_join(tid[t], (void **)&j);
-        if (j->rc) rc = 1;
+
+    long spawned = 0;
+    for (long t = 0; t < maxth - 1; t++) {
+        if (pthread_create(&tid[t], NULL, worker, NULL) != 0) break;
+        spawned++;
     }
-    if (rc) { werr("zpk: a frame failed\n", 21); return 127; }
+    worker(NULL);                                    /* main thread pulls from the queue too */
+    for (long t = 0; t < spawned; t++) pthread_join(tid[t], NULL);
+    if (g_rc) { werr("zpk: a frame failed\n", 21); return 127; }
 
     if (getenv("ZPK_DEBUG_SLEEP_MS")) {
         long ms = atol(getenv("ZPK_DEBUG_SLEEP_MS"));
