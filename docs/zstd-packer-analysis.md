@@ -172,6 +172,190 @@ hyperfine -N --warmup 20 --min-runs 200 './byteshaver-zpk --version'
 /usr/bin/time -v ./byteshaver-zpk --version    # Max RSS
 ```
 
+> The single-threaded packer described above has been superseded by the
+> **multithreaded v2** (`tools/packer/` in the repo) — see §7. The v2 stub
+> additionally requires `ZSTD_LEGACY_SUPPORT=0` and `-DDYNAMIC_BMI2=0`
+> (92 KB stub instead of 194 KB).
+
+---
+
+# Part 2 — multithreaded decompression (v2, implemented) & roadmap
+
+The v1 prototype left three levers on the table: decompression is
+single-threaded, the stub was 194 KB, and RSS attribution was unmeasured.
+All three are now closed, plus one negative result that settles the max-RSS
+question empirically. **Everything below is implemented and measured on the
+same idle machine / same 16,234,560 B musl static-pie reference binary.**
+
+## 7. v2: split-frame multithreaded decompression
+
+### 7.1 Design
+
+- Packer splits the image into *n* contiguous chunks, compresses each as an
+  **independent zstd frame** (`-19 -T1`); frame table (comp/uncomp lengths)
+  goes into a v2 trailer (`"ZPK2zstd"`).
+- Stub spawns one pthread per frame (capped to `nframes`, overridable via
+  `ZPK_THREADS`), each decompresses its disjoint region of one big
+  `memfd` mapping — no locks, no cross-frame dependencies — then `fexecve`.
+- Sources: `tools/packer/zpack_stub.c` + `tools/packer/zpack.py` (vendored).
+
+### 7.2 Frame-count sweep (idle machine, warm cache)
+
+| frames | total size | ratio | startup median | serial control (ZPK_THREADS=1) |
+|---:|---:|---:|---:|---:|
+| 1 | 5,173,887 | 31.9 % | 31.37 ms | 31.37 ms |
+| 2 | 5,117,970 | **31.5 %** | 18.05 ms | 31.20 ms |
+| 4 | 5,401,456 | 33.3 % | 11.79 ms | 32.42 ms |
+| 6 | 5,441,917 | 33.5 % | **8.93 ms** | 33.17 ms |
+| 8 | 5,661,491 | 34.9 % | 8.83 ms | 34.29 ms |
+
+Reference points on the same binary: plain 3.36 ms / 100 %, `upx --best`
+(NRV) 47.17 ms / 33.4 %, `upx --best --lzma` 247.7 ms / 28.2 %.
+
+- **2 frames beats UPX NRV on both axes** (31.5 % vs 33.4 %, 18.1 vs 47.2 ms).
+- 6 frames ≈ 8.9 ms — the memory-bandwidth knee (~3.2 GB/s aggregate decode).
+- 8 frames gains nothing over 6 (ratio loss outpaces parallelism).
+- Max RSS is flat across frame counts: 20.8–21.1 MB (thread stacks are lazy).
+
+### 7.3 Core scaling (6 frames, `taskset`)
+
+| CPUs available | startup median |
+|---|---:|
+| 8 | 11.9 ms (8.8 ms without the `taskset` exec layer) |
+| 4 | 18.0 ms |
+| 2 | 28.1 ms |
+| 1 | 32.4 ms (≈ serial, as designed) |
+
+Degrades gracefully: MT never hurts, even on single-core machines.
+
+### 7.4 Robustness (all pass)
+
+- Corrupted payload (bytes flipped at 2 offsets) → clean `zpk: a frame failed`,
+  exit 127 — no crash, no partial exec.
+- `--help | head` (SIGPIPE), env passthrough, foreign CWD, symlink invocation ✓
+- 50 concurrent instances → 50× correct output (memfd/shmem isolation) ✓
+- Outputs byte-identical to the plain binary ✓
+- Debug hook `ZPK_DEBUG_SLEEP_MS` (sleep before `fexecve`) for external
+  `/proc/<pid>/smaps_rollup` sampling.
+
+### 7.5 Stub size: 194.6 KB → 91.8 KB
+
+Size attribution found three layers of ballast in the naive build:
+
+| change | stub size |
+|---|---:|
+| naive `-Os -static` against stock `libzstd.a` | 194,576 B |
+| + `ZSTD_LEGACY_SUPPORT=0` (drops v0.6/v0.7 legacy decoders the archive pulls in) | 124,608 B |
+| + stdio-free error reporting (`write(2)` instead of `perror`/`fprintf` → no `printf_core`) | 124,608 B (stdio was ≤2.7 KB here; kept for hygiene) |
+| + `-DDYNAMIC_BMI2=0` (drops zstd's duplicated BMI2 decoder variants) | **91,840 B** |
+
+`-Oz`, `--gc-sections`, `-ffunction-sections` were already applied everywhere.
+Remaining: ~60 KB zstd decompressor + ~20 KB musl + pthread glue ≈ **0.17 %**
+of the packed artifact — UPX's ~2 KB asm stub is smaller, but at this scale
+the difference is no longer material.
+
+### 7.6 Negative result: streaming input (stub v3)
+
+Hypothesis: replacing the payload `mmap` with `pread` + streaming
+`ZSTD_decompressStream` into a reused 256 KB buffer should cut ~5 MB of RSS.
+**Measured: worse on both axes.**
+
+| | mmap + `ZSTD_decompress` (v2) | pread + `ZSTD_decompressStream` (v3) |
+|---|---:|---:|
+| startup (6 frames) | 8.93 ms | 20.06 ms |
+| max RSS | 21.0 MB | 28.3 MB |
+| minor faults | 4,391 | 8,755 |
+
+Cause: per-thread `DStream` workspaces + double-copy through kernel buffers
+outweigh the removed file mapping, which is clean page-cache the kernel
+reclaims on demand anyway. **mmap-based input is the right design** — the RSS
+floor is the decompressed output itself (irreducible).
+
+### 7.7 Updated verdict
+
+| config | size | startup | vs UPX NRV |
+|---|---:|---:|---|
+| zpack 2 frames | **31.5 %** | 18.1 ms | smaller **and** 2.6× faster |
+| zpack 4 frames (recommended default) | 33.3 % | 11.8 ms | ≈ size, 4× faster |
+| zpack 6 frames | 33.5 % | 8.9 ms | +0.1 %pt size, 5.3× faster |
+
+## 8. Roadmap — further startup, RSS, stub-size, portability
+
+### 8.1 Startup latency (current floor: ~8.9 ms = 3.4 plain + ~5.5 unpack+mechanics)
+
+| idea | expected | effort | verdict |
+|---|---|---|---|
+| `posix_fadvise(WILLNEED)` on payload before decompress | cold-cache only | trivial | do it (helps first-run-after-download) |
+| Hugepage memfd (`MFD_HUGEPAGE`, 2 MiB-aligned) → ~2,000 fewer minor faults | ~0.5–1 ms | low | try; needs hugetlb pool → keep fallback |
+| Decompress directly at final addresses (UPX-style section loader, no memfd + no second ELF load) | −3–4 ms | **high** (custom ELF loader in the stub) | only if the ~4 ms floor ever matters; big complexity jump |
+| Parallel decode > 6 threads | 0 (bandwidth-bound) | — | measured: don't |
+| Skip `--check` frames (`zstd --no-check`) | ~0.2 ms | trivial | marginal; loses integrity check |
+| Higher-level: don't pack (the standing decision) | −5.5 ms | — | still the right default |
+
+### 8.2 Max RSS (current peak: ~21 MB = 16.2 output + ~5.3 payload mapping + ~0.2)
+
+- **Irreducible floor: 16.2 MB** — the unpacked image must exist in full
+  before `fexecve`. (A pipe into a kernel loader doesn't exist; UPX has the
+  same floor.)
+- Streaming input rejected empirically (§7.6).
+- **Planned (cheap win): per-frame `madvise(MADV_DONTNEED)`** — restructure
+  the join loop so each finished frame's payload range is dropped
+  immediately; projected peak ≈ 16.2 + ~1.3 (last frame) ≈ **17.5 MB**,
+  i.e. parity with UPX NRV (17.3 MB). No measurable time cost.
+- Optional: `MADV_SEQUENTIAL` on the payload mapping (trivial, likely noise).
+
+### 8.3 Stub size (done: 194.6 → 91.8 KB; remaining ≈ 0.17 % of artifact)
+
+| idea | expected | verdict |
+|---|---|---|
+| `-nostdlib` + raw syscalls + custom `_start` (drop musl remainder) | −15–20 KB | possible, poor ROI |
+| zstd decoder subset (drop 4X2-Huffman or sequence variants) | −20–30 KB | format risk; upstream-unfriendly |
+| UPX-style compressed stub (chained bootstrapping) | −80 KB | complexity not justified at 0.17 % |
+
+Conclusion: **closed** — further shrinking is cosmetic.
+
+### 8.4 Cross-platform
+
+| platform | status | plan |
+|---|---|---|
+| Linux x86-64 (musl/glibc, static & static-pie, dynamic) | **works** (validated) | — |
+| Linux arm64 | expected to work unchanged | pad stub to 64 KB (`--page 65536`) for 16K/64K-page kernels; add CI smoke |
+| Linux dynamic-ELF payloads | expected to work (ld.so loads from disk as usual) | smoke-test once |
+| FreeBSD | memfd + fexecve exist (13+) | port = recompile; low priority |
+| macOS | no `memfd`/`fexecve` | out of scope; a temp-file fallback weakens the model (on-disk artifact re-appears, AV scans it). Keep macOS unpacked. |
+| Windows | needs a PE stub: decompress → map sections → apply `.reloc` → run. In-memory PE loading is exactly the malware heuristic sweet spot | **recommend: keep Windows unpacked** (or keep `upx --best`, whose PE handling is mature). Do not hand-roll a PE loader. |
+
+### 8.5 CI integration plan (concrete)
+
+1. ~~Vendor `tools/packer/{zpack_stub.c,zpack.py,README.md}`~~ **done**.
+2. `pack_binaries` job: build the stub once in the alpine stage (pin zstd
+   1.5.7, cache by `Cargo.lock`-independent key), then replace
+   `upx --best` with `zpack.py --frames 4` for **Linux** artifacts.
+3. Rename artifact suffix `-upx` → `-packed` (format-agnostic).
+4. Windows: keep plain-only (drop packed Windows variants) — simplest
+   honest option; revisit only if size pressure appears.
+5. CI checks for packed artifacts: `--version` smoke (exists), plus a
+   packed-vs-plain output diff on one sample image (cheap, catches format
+   regressions).
+6. Track a release metric: packed size + `--version` latency of the packed
+   artifact on the runner, one log line per release (regression tripwire).
+
+## 9. Reproducing (v2)
+
+```sh
+# stub — see tools/packer/README.md (legacy-free, bmi2-free libzstd build)
+python3 tools/packer/zpack.py zpack-stub byteshaver byteshaver-zpk --frames 4
+
+# startup + scaling
+hyperfine -N --warmup 20 --min-runs 200 './byteshaver-zpk --version'
+ZPK_THREADS=1 hyperfine -N --warmup 20 --min-runs 200 './byteshaver-zpk --version'  # serial control
+taskset -c 0-3 hyperfine -N --warmup 10 --min-runs 100 './byteshaver-zpk --version' # core scaling
+
+# memory
+/usr/bin/time -v ./byteshaver-zpk --version
+ZPK_DEBUG_SLEEP_MS=2000 ./byteshaver-zpk --version &   # then sample /proc/<pid>/smaps_rollup
+```
+
 ---
 
 ## Appendix A: stub source (zpack_stub.c)
