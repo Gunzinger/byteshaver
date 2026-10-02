@@ -186,9 +186,24 @@ pub fn show_popup(
     app: &mut App,
     ctx: &egui::Context,
     spec: PopupSpec,
-    render_embedded: impl FnMut(&mut App, &egui::Context),
+    mut render_embedded: impl FnMut(&mut App, &egui::Context),
     mut render_contents: impl FnMut(&mut App, &mut egui::Ui),
 ) {
+    // plan 17 §6.2: capture mode renders open popups through the existing
+    // embedded `egui::Window` fallbacks inside the single harness canvas
+    // and closed popups as nothing (no stacked empty window shells). The
+    // flag lives on the App instance (set by the capture scene runner for
+    // its harness app only), so tests running several apps in one process
+    // stay independent. With the `capture` feature compiled out this
+    // branch does not exist and the persistent-viewport behavior below is
+    // untouched.
+    #[cfg(feature = "capture")]
+    if app.capture_embedded_windows {
+        if spec.open {
+            render_embedded(app, ctx);
+        }
+        return;
+    }
     let persistent = supports_persistent_viewports();
     if !persistent && !spec.open {
         // Wayland fallback: create viewports on demand (no hiding there).
@@ -197,7 +212,6 @@ pub fn show_popup(
     let open = spec.open;
     let id = spec.kind.viewport_id();
     let builder = popup_builder(&spec, persistent);
-    let mut render_embedded = render_embedded;
     ctx.show_viewport_immediate(id, builder, move |vui, class| {
         if class == egui::ViewportClass::EmbeddedWindow {
             if open {

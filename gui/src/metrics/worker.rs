@@ -168,6 +168,16 @@ impl MetricState {
         self.pending.contains(input)
     }
 
+    /// Number of measure/inspect requests currently in flight (the
+    /// capture pipeline's `MetricsSettled` quiescence signal, plan 17
+    /// §6.3: zero means the worker has drained every request — including
+    /// the visual-difference inspector's decode pair). The worker pauses
+    /// while a job runs, like the thumbnail worker.
+    #[must_use]
+    pub fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
+
     /// Requests a measurement unless one is in flight or a fresh result
     /// for the current output mtime is already cached. `max_edge` is the
     /// settings' clamped [`clamp_metric_max_edge`] value.

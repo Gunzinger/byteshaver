@@ -55,3 +55,45 @@ fn empty_state_renders_headlessly() {
     image.save(&out).expect("save spike png");
     println!("wrote {}", out.display());
 }
+
+/// Runs the `gui-empty` capture scene end-to-end through the scene runner
+/// (only built with `--features capture`, like `bh-gui-capture`) and
+/// guards the plan-17 §6.2 viewport adapter: closed popups must not paint
+/// stacked embedded window shells into the single harness canvas. Before
+/// the adapter, every `show_viewport_immediate` call became an empty
+/// `egui::Window` shell in the harness — one visible egui area per hosted
+/// popup, five shells stacked over the main window. The adapted in-canvas
+/// popups leave exactly the app's own base layer (measured: 1 clean vs 6
+/// broken on egui 0.36), so the assertion is on the visible-area count —
+/// crisp and independent of where the shells would happen to paint.
+#[cfg(feature = "capture")]
+#[test]
+fn gui_empty_scene_renders_without_viewport_artifacts() {
+    use byteshaver_gui::capture::{SceneOptions, SceneRunner, scene};
+
+    let scene = scene("gui-empty").expect("gui-empty is registered");
+    let mut runner = SceneRunner::new(
+        scene.id,
+        &SceneOptions {
+            window_size: [1100.0, 720.0],
+            pixels_per_point: 1.0,
+            snapshot_dir: None,
+            frames_dir: None,
+        },
+    );
+    runner.run(&scene.steps).expect("scene executes in-memory");
+    let image = runner.render().expect("the scene renders");
+
+    assert_eq!(image.width(), 1100, "render width matches the harness size");
+    assert_eq!(image.height(), 720, "render height matches the harness size");
+
+    // no popup shells: the empty state hosts all five popups closed (see
+    // `viewports::PopupKind`); the single remaining visible area is the
+    // app's own base layer
+    let areas = runner.visible_area_count();
+    assert!(
+        areas <= 2,
+        "expected only the app's own area layer, got {areas} visible areas — \
+         stacked viewport shells are leaking into the capture canvas"
+    );
+}

@@ -201,6 +201,16 @@ impl ThumbState {
         self.paused.store(paused, Ordering::Relaxed);
     }
 
+    /// Number of thumbnail + EXIF requests currently in flight (the
+    /// capture pipeline's `ThumbsSettled` quiescence signal, plan 17
+    /// §6.3: zero means the decode worker has drained every request).
+    /// Note the worker pauses while a job runs — poll this *before*
+    /// starting a run, never while one is active.
+    #[must_use]
+    pub fn pending_count(&self) -> usize {
+        self.pending_thumbs.len() + self.pending_exif.len()
+    }
+
     /// Takes the previous frame's visible-row keys (the texture pre-pass
     /// input of the file table).
     pub fn take_visible(&mut self) -> Vec<ThumbKey> {

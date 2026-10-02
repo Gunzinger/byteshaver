@@ -311,6 +311,16 @@ pub struct App {
     /// (a matching chip highlights; drift highlights Custom as the
     /// *derived* state) — see `crate::chips::chip_selection`.
     pub custom_chip_explicit: bool,
+    /// Capture-pipeline popup adapter (plan 17 §6.2, feature `capture`):
+    /// when set, the popup host renders open popups through their
+    /// in-canvas embedded `egui::Window` fallbacks and closed popups as
+    /// nothing — the headless capture harness has a single canvas, and
+    /// the persistent-viewport machinery would paint every popup as an
+    /// empty stacked window shell there. Per-instance (not a global) so
+    /// tests running several apps in one process stay independent;
+    /// production apps never set it.
+    #[cfg(feature = "capture")]
+    pub(crate) capture_embedded_windows: bool,
     settings_dirty: bool,
 }
 
@@ -395,6 +405,8 @@ impl App {
             preset_save: None,
             preset_status: None,
             custom_chip_explicit: false,
+            #[cfg(feature = "capture")]
+            capture_embedded_windows: false,
             settings_dirty: false,
         }
     }
