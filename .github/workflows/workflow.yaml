@@ -171,7 +171,7 @@ jobs:
               set -e
               unset RUSTFLAGS
               # binaries are shipped UNPACKED (instant startup, no AV
-              # false-positive surface); an optional UPX-packed variant set
+              # false-positive surface); an optional packed variant set
               # is produced later by the dedicated pack_binaries job.
               # NOTE: the static-pie assertion must run before any packing.
               apk add --no-cache nasm musl-dev gcc g++ make cmake file >/dev/null
@@ -224,7 +224,7 @@ jobs:
             fi
           done
           # binaries are shipped UNPACKED (see the linux step note); the
-          # dedicated pack_binaries job produces the optional UPX variants
+          # dedicated pack_binaries job produces the optional packed variants
           mkdir -p current_release
           if [ "${{ matrix.cpu_target }}" == "${{ env.BASE_CPU }}" ]; then SUFFIX=""; else SUFFIX="-${{ matrix.cpu_target }}"; fi
           cp target/x86_64-pc-windows-gnu/release/byteshaver.exe "current_release/byteshaver-${{ env.VERSION }}${SUFFIX}.exe"
@@ -241,7 +241,7 @@ jobs:
           files: current_release/*
 
       # Always upload the (unpacked) binaries as workflow artifacts: on tag
-      # runs the pack_binaries job consumes them to build the UPX variants;
+      # runs the pack_binaries job consumes them to build the packed variants;
       # on manual workflow_dispatch runs they ARE the deliverable.
       - name: Upload binaries as workflow artifacts
         uses: actions/upload-artifact@v7
@@ -250,22 +250,22 @@ jobs:
           path: current_release/*
 
   # ---------------------------------------------------------------
-  # UPX packing (single job, after ALL matrix builds finished).
+  # Optional packed variants (single job, after ALL matrix builds).
   #
-  # The release ships the unpacked binaries by default: UPX saves 60-70%
-  # size but decompression adds ~45 ms (NRV --best) to every single
-  # invocation, and packed exes are a classic AV false-positive trigger.
-  # This job therefore produces UPX variants *in addition* (suffix
-  # `-upx`), for size-constrained setups. See docs/upx-binary-size-report.md
-  # for the full benchmark backing this split.
+  # The release ships the unpacked binaries by default: packing saves
+  # ~65-70% size but decompression adds a per-invocation startup toll,
+  # and packed exes are a classic AV false-positive trigger. This job
+  # produces packed copies *in addition* (suffix `-packed`) using the
+  # in-repo zstd packer (tools/packer/, BSD-2 zstd, see
+  # THIRD-PARTY-NOTICES.md and docs/zstd-packer-analysis.md).
   # ---------------------------------------------------------------
   pack_binaries:
     needs: build_binaries
     runs-on: ubuntu-latest
-    name: UPX-pack all binaries
+    name: Pack binaries (zpack)
     steps:
-      - name: Install UPX
-        run: sudo apt-get install --yes --no-install-recommends upx-ucl
+      - name: Checkout code
+        uses: actions/checkout@v7
 
       - name: Download all built binaries
         uses: actions/download-artifact@v7
@@ -282,6 +282,33 @@ jobs:
             echo "VERSION=0.0.0-dispatch" >> $GITHUB_ENV
           fi
 
+      # Build both self-extracting stubs in one alpine run: the ELF stub
+      # against musl, the PE stub against the mingw-w64 cross toolchain.
+      # libzstd is built decompression-only without legacy decoders and
+      # without the duplicated BMI2 paths (92 KB stubs instead of 194 KB);
+      # see tools/packer/README.md for the flags' rationale.
+      - name: Build zpack stubs
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD":/w -w /w alpine:3.22 sh -c '
+            set -e
+            apk add --no-cache gcc musl-dev make curl mingw-w64-gcc >/dev/null
+            curl -sL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz | tar xz
+            ZFLAGS="-Os -ffunction-sections -fdata-sections -DDYNAMIC_BMI2=0"
+            make -C zstd-1.5.7/lib libzstd.a -j4 CFLAGS="$ZFLAGS" ZSTD_LEGACY_SUPPORT=0 >/dev/null
+            gcc -Os -static -s -ffunction-sections -fdata-sections -Wl,--gc-sections \
+              tools/packer/zpack_stub.c zstd-1.5.7/lib/libzstd.a -Izstd-1.5.7/lib \
+              -lpthread -o zpack-stub
+            cp -a zstd-1.5.7 zstd-win
+            make -C zstd-win/lib clean >/dev/null 2>&1 || true
+            make -C zstd-win/lib libzstd.a -j4 CC=x86_64-w64-mingw32-gcc AR=x86_64-w64-mingw32-ar \
+              CFLAGS="$ZFLAGS" ZSTD_LEGACY_SUPPORT=0 >/dev/null
+            x86_64-w64-mingw32-gcc -Os -static -s -ffunction-sections -fdata-sections \
+              -Wl,--gc-sections tools/packer/zpe_stub.c zstd-win/lib/libzstd.a \
+              -Izstd-win/lib -lpthread -o zpe-stub.exe
+            ls -l zpack-stub zpe-stub.exe
+          '
+
       - name: Pack, verify and checksum
         shell: bash
         run: |
@@ -290,22 +317,22 @@ jobs:
           for f in to_pack/byteshaver*; do
             case "$f" in *.sha256) continue ;; esac
             base="$(basename "$f")"
-            # byteshaver-<version>[-cpu][.exe] -> byteshaver-<version>[-cpu]-upx[.exe]
+            # byteshaver-<version>[-cpu][.exe] -> byteshaver-<version>[-cpu]-packed[.exe]
             if [[ "$base" == *.exe ]]; then
-              out="${base%.exe}-upx.exe"
+              out="${base%.exe}-packed.exe"
+              # PE flow: image-layout frames (headers + 4 MiB section chunks)
+              python3 tools/packer/zpack.py zpe-stub.exe "$f" "current_release/$out" --pe
             else
-              out="${base}-upx"
+              out="${base}-packed"
+              # ELF flow: 6 balanced frames (fastest unpack, ~33.5% ratio)
+              python3 tools/packer/zpack.py zpack-stub "$f" "current_release/$out" --frames 6
             fi
-            cp "$f" "current_release/$out"
-            upx --best "current_release/$out"
-            # integrity check of the packed executable
-            upx -t "current_release/$out"
           done
           # smoke test: only the suffixless linux CLI (x86-64-v3) is
           # guaranteed to run on any runner CPU; cpu-tuned variants may
           # legitimately SIGILL here (e.g. AVX-512 on non-v4 runners)
-          if [ -x "current_release/byteshaver-${VERSION}-upx" ]; then
-            "current_release/byteshaver-${VERSION}-upx" --version
+          if [ -x "current_release/byteshaver-${VERSION}-packed" ]; then
+            "current_release/byteshaver-${VERSION}-packed" --version
           fi
           ls -la current_release/
           ( cd current_release && for f in byteshaver*; do
@@ -325,7 +352,7 @@ jobs:
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         uses: actions/upload-artifact@v7
         with:
-          name: byteshaver-binaries-upx
+          name: byteshaver-binaries-packed
           path: current_release/*
 
   # ---------------------------------------------------------------

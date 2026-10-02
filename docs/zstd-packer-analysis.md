@@ -455,7 +455,34 @@ validated under wine (32.0 % size, +5.4 ms startup, 20 MB commit); whether to
 ship them stays a product decision (the standing "unpacked by default" logic
 applies identically).
 
-## 9. Reproducing (v2)
+---
+
+## 11. Licensing
+
+The packer statically embeds **libzstd** (decompression only) in both stubs.
+zstd's library is dual-licensed **BSD-2-Clause OR GPLv2+**; this project
+elects the BSD-2-Clause grant, which is MIT-compatible (byteshaver is MIT).
+
+- Obligations under BSD-2-Clause: retain the copyright notice, license text
+  and disclaimer in distributions → satisfied by
+  [`THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md) at the repository
+  root (release notes should link it, or distributions ship it).
+- The bundled `xxhash` (zstd `lib/common`) carries the same dual license.
+- Legacy-format decoders are **not linked** (`ZSTD_LEGACY_SUPPORT=0`).
+- The `zstd` CLI used for compression is GPLv3+ but runs **only inside CI**
+  and is never distributed or embedded; compression output is not a
+  derivative work.
+- The Windows stubs statically include the mingw-w64 runtime (permissive,
+  attribution in notices) — the same runtime already embedded in the
+  project's regular Windows binaries.
+- Comparison: the replaced UPX pipeline carried GPL-2.0+ with a special
+  exception for packed executables; the zstd-based packer reduces the whole
+  question to a BSD notice.
+
+Net effect: **no licensing obstacle** to building, distributing and selling
+software packed with this packer.
+
+## 12. Reproducing (v2)
 
 ```sh
 # stub — see tools/packer/README.md (legacy-free, bmi2-free libzstd build)

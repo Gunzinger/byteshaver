@@ -303,18 +303,23 @@ CLI binary **and** the desktop GUI as separate downloads:
 - `byteshaver-<version>[-cpu].exe` — CLI, Windows
 - `byteshaver-gui-<version>[-cpu]` — desktop GUI, Linux (musl, static-pie, X11)
 - `byteshaver-gui-<version>[-cpu].exe` — desktop GUI, Windows
-- `...-upx[.exe]` variants of each of the above — optional UPX-packed copies
-  (60–70 % smaller download/disk at the cost of ~45 ms slower process startup)
+- `...-packed[.exe]` variants of each of the above — optional self-extracting
+  packed copies (65–70 % smaller download/disk at the cost of ~9 ms slower
+  process startup on Linux)
 
 The default artifacts are **not** packed: measurements
-([docs/upx-binary-size-report.md](docs/upx-binary-size-report.md)) show UPX
-decompression adds a fixed per-invocation startup toll for no runtime benefit.
-The packed `-upx` variants are produced by a dedicated CI job for
-size-constrained setups.
+([docs/zstd-packer-analysis.md](docs/zstd-packer-analysis.md),
+[docs/upx-binary-size-report.md](docs/upx-binary-size-report.md)) show packed
+variants pay a fixed per-invocation decompression toll. The `-packed`
+variants are produced by the in-repo zstd packer
+([tools/packer](tools/packer)) in a dedicated CI job for size-constrained
+setups; they are plain zstd frames and can be restored with `zstd -d`.
 
 `-cpu` suffixes (x86-64-v4, znver3, znver5) are tuned builds; the suffixless
 artifacts target x86-64-v3 (Intel Haswell / AMD Zen and newer). Every artifact
-ships with a `.sha256` checksum.
+ships with a `.sha256` checksum. Third-party code embedded by the packer
+(zstd, BSD-2-Clause) is attributed in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 Feature notes: the static Linux/Windows binaries include everything except
 `dec-heif` — HEIC/HEIF/AVIF input requires the native libheif libraries and is
