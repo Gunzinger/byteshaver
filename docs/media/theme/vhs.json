@@ -1,0 +1,23 @@
+{
+  "name": "byteshaver",
+  "black": "#1a1d24",
+  "red": "#ef6487",
+  "green": "#5eca89",
+  "yellow": "#fdd877",
+  "blue": "#65aef7",
+  "magenta": "#aa7ff0",
+  "cyan": "#43c1be",
+  "white": "#f1f5f9",
+  "brightBlack": "#5c6672",
+  "brightRed": "#ff7d9c",
+  "brightGreen": "#7ce69f",
+  "brightYellow": "#ffe49b",
+  "brightBlue": "#8cc4fa",
+  "brightMagenta": "#c39bfa",
+  "brightCyan": "#6ad8d5",
+  "brightWhite": "#ffffff",
+  "background": "#16181d",
+  "foreground": "#e2e8f0",
+  "selection": "#2d3640",
+  "cursor": "#5eca89"
+}
