@@ -344,7 +344,7 @@ Conclusion: **closed** — further shrinking is cosmetic.
 | Linux arm64 | expected to work unchanged | pad stub to 64 KB (`--page 65536`) for 16K/64K-page kernels; add CI smoke |
 | Linux dynamic-ELF payloads | expected to work (ld.so loads from disk as usual) | smoke-test once |
 | FreeBSD | memfd + fexecve exist (13+) | port = recompile; low priority |
-| **Windows PE32+** | **implemented (`tools/packer/zpe_stub.c`) and wine-tested — see §10** | real-Windows smoke test in CI remains |
+| **Windows PE32+** | **implemented (`tools/packer/zpe_stub.c`), image-layout v2, wine-tested with full metrics — see §10** | real-Windows smoke test in CI remains |
 | macOS | no `memfd`/`fexecve` | out of scope; a temp-file fallback weakens the model (on-disk artifact re-appears, AV scans it). Keep macOS unpacked. |
 
 ### 8.5 CI integration plan (concrete)
@@ -382,13 +382,56 @@ Same container format, new stub for PE32+ x64 payloads:
 |---|---:|---|
 | mingw C `hello.exe` (59 KB) | 109 KB | args/env passed, exit code 42 propagated ✓ |
 | Rust windows-gnu `rshello.exe` (857 KB) | 450 KB (52.5 %) | identical output, exit 0 ✓ |
+| **GUI-subsystem payload** | — | subsystem passthrough works: silent, no console, side effects + exit 7 ✓ |
 | corrupted payload | — | clean `zpe: a frame failed`, exit 127 ✓ |
-| **real `byteshaver.exe` (16.96 MB, full features)** | **5.57 MB (32.8 %)** | real conversion: 2 JPEGs → webp, outputs **byte-identical** to the unpacked exe ✓ |
+| **real `byteshaver.exe` (16.96 MB, full features)** | **5.42 MB (32.0 %)** | real conversion: JPEGs → webp, outputs **byte-identical** to the unpacked exe ✓ |
 
 (The C-payload ratio is meaningless at 59 KB — the 94 KB stub dominates.
 For real artifacts the Linux ratios apply.)
 
-### 10.2 Windows-specific caveats (honest scope)
+### 10.2 v2: image-layout container — fixing the triple buffer & wine latency
+
+A critical pass flagged that the naive Windows stub triple-buffered
+(packed file + unpacked scratch + image copy ≈ 50 MB WS) and was never
+performance-measured. The v2 redesign measures and fixes both:
+
+**Design change** (`zpack.py --pe`, magic `ZPK3pe64`): the packer knows the
+PE layout — frame 0 = headers, remaining frames = sections *split at
+`--pe-chunk` MiB* (default 4) with per-frame destination RVAs. The stub
+memory-maps its own file and decompresses section frames **directly into the
+final image allocation**; the intermediate unpacked copy and the loader's
+17 MB memcpy both disappear. Per-frame input views (or `VirtualUnlock`) are
+*not* used — measured as pure overhead under wine.
+
+Measured with the real `byteshaver.exe` under wine 10 (idle machine):
+
+| design | size | in-stub decomp | in-stub load | startup median | WS peak | commit peak |
+|---|---:|---:|---:|---:|---:|---:|
+| v1 naive (flat frames, ReadFile+copy) | 32.8 % | 9.5 ms | 8.2 ms | 31.4–32.3 ms | 50.1 MB | 42.5 MB |
+| v2 image-layout, unsplitted sections | 30.0 % | 28.9 ms | 1.9 ms | 41.6 ms | 32.0 MB | 20.0 MB |
+| **v2 image-layout, 4 MiB split (default)** | **32.0 %** | **10.2–11.1 ms** | **1.9 ms** | **23.8 ms** | 35.4 MB | 20.0 MB |
+
+Two non-obvious findings worth recording:
+
+1. **Section frames are unbalanced** — `.text` is ~12 of 17 MB, so per-section
+   frames serialize on one worker (28.9 ms). Splitting large sections into
+   ~4 MiB pieces restores balance (10.6 ms) at +2 %pt size. 8 MiB pieces
+   overshoot (29.5 ms), 1.5 MiB pieces add ratio loss without speed gain.
+2. **Under wine, multithreaded decompression into one `VirtualAlloc` region
+   does not scale** — both designs were flat with worker count (wine's
+   process-wide virtual-memory lock serializes the write faults; the Linux
+   memfd path has no such serialization and scales to ~3.2 GB/s). Real
+   Windows (native fault handling, no wineserver) is expected to sit closer
+   to Linux; the wine numbers are a lower bound. Consequence: balanced
+   frames matter *more* on wine, and the 8-worker benefit seen on Linux
+   should not be assumed for wine/CI smoke tests.
+
+Also fixed along the way: the packer now passes the payload's `Subsystem`
+through to the packed stub (GUI payloads no longer pop a console window), and
+`ZPE_DEBUG=1` prints per-phase `GetProcessMemoryInfo` checkpoints (WS/commit
+peaks) — the instrumentation used for the table above.
+
+### 10.3 Windows-specific caveats (honest scope)
 
 - The payload is *not* registered in the loader's module list: its
   `GetModuleFileName` sees the stub's path; anything enumerating its own
@@ -400,12 +443,17 @@ For real artifacts the Linux ratios apply.)
 - In-memory PE loading is a known AV heuristic trigger — same class of risk
   as UPX, but less "known-good"; code-signing the packed output is required
   for enterprise distribution.
+- The payload's preferred `ImageBase` is honored when free (no relocation);
+  otherwise the image loads where wine/Windows places it and relocates — a
+  fixed-base payload therefore does not get ASLR randomization when its base
+  is available.
 - Real-Windows validation (11/10 Defender, ARM64-on-x64 emulation) still
   pending — CI follow-up.
 
-**Verdict:** Windows packed variants are technically solved and validated
-under wine; whether to ship them stays a product decision (the standing
-"unpacked by default" logic applies identically).
+**Verdict:** Windows packed variants are technically solved, measured and
+validated under wine (32.0 % size, +5.4 ms startup, 20 MB commit); whether to
+ship them stays a product decision (the standing "unpacked by default" logic
+applies identically).
 
 ## 9. Reproducing (v2)
 
