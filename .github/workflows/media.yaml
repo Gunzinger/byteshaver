@@ -1,0 +1,242 @@
+# README media pipeline (plan 17 §10): regenerates every asset the README
+# embeds from the committed sources in docs/media/ and opens a
+# "docs: refresh README media" PR when the committed bytes change.
+#
+# Like workflow.yaml this relies on the runner's preinstalled rustup stable
+# toolchain (the repo has no toolchain-setup action and no rust-toolchain.toml).
+#
+# The external tools (vhs/ttyd/ffmpeg/chromium) are NOT apt-installed:
+# docs/media/bootstrap-tools.sh installs pinned releases into
+# target/media-tools/bin; MEDIA_TOOLS_PATH (job env) points the xtask at them
+# (xtask/src/tools.rs searches those dirs before PATH).
+name: byteshaver README media
+
+on:
+  # D7 (plan 17 §12): dispatch-only for now. To earn a weekly auto-refresh,
+  # add a schedule trigger and gate the advisory `check` job with
+  # `if: github.event_name == 'workflow_dispatch'`:
+  #   schedule:
+  #     - cron: "17 4 * * 1" # mondays 04:17 UTC
+  workflow_dispatch:
+    inputs:
+      only:
+        description: 'Restrict to stages/scenes (comma-separated: "terminal", "gui", "cli-basic", "gui-tour", ...). Empty = everything.'
+        type: string
+        required: false
+        default: ''
+      dry_run:
+        description: 'Regenerate into target/ only - never writes docs/img or opens a PR (previews go to artifacts).'
+        type: boolean
+        required: false
+        default: false
+
+# One refresh at a time; a queued run supersedes the previous PR by
+# force-pushing the same branch (create-pull-request behavior).
+concurrency:
+  group: media-refresh
+  cancel-in-progress: false
+
+env:
+  # colon-separated extra bin dirs the xtask searches before PATH;
+  # populated by docs/media/bootstrap-tools.sh below
+  MEDIA_TOOLS_PATH: ${{ github.workspace }}/target/media-tools/bin
+
+jobs:
+  # ---------------------------------------------------------------
+  # Regenerate + auto-PR. Dispatch with:
+  #   gh workflow run media.yaml [-f only=gui] [-f dry_run=true]
+  # ---------------------------------------------------------------
+  refresh:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout code
+        # full history: the publish step records `git describe` in the
+        # manifest's generated_by provenance line
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      # The vendored libjxl (jxl feature) needs nasm + cmake + a C++
+      # compiler; meson/ninja/pkg-config cover libjxl's newer build glue.
+      # "|| true" keeps a flaky apt mirror from failing the run - a
+      # genuinely missing package fails the cargo build below with a
+      # clearer error anyway.
+      - name: Install build prerequisites
+        run: sudo apt-get update && sudo apt-get install -y nasm cmake meson ninja-build pkg-config || true
+
+      # Headless GUI capture renders via wgpu + lavapipe (software Vulkan,
+      # CPU adapter). ubuntu-latest runners ship mesa-vulkan-drivers; the
+      # conditional install keeps older/private runner images working too.
+      - name: Install software Vulkan (lavapipe)
+        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers || true
+
+      # Pinned vhs + ttyd + static ffmpeg + chromium snapshot into
+      # target/media-tools/bin (idempotent, no root); VERSIONS.txt lands in
+      # the PR body for traceability.
+      - name: Bootstrap media tools
+        run: |
+          bash docs/media/bootstrap-tools.sh
+          cat target/media-tools/VERSIONS.txt
+
+      # plan 17 §4: assert the tool set first; proves MEDIA_TOOLS_PATH
+      # resolution finds the pinned tools (the bootstrap script only
+      # verifies its own bin dir)
+      - name: Check media tools
+        run: cargo xtask media deps
+
+      # Explicit (the xtask would build it in the stage phase anyway) so
+      # rust-cache warms even when --only skips that phase.
+      - name: Build CLI
+        run: cargo build --release -p byteshaver
+
+      - name: Run media pipeline
+        env:
+          ONLY: ${{ inputs.only }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          args=""
+          if [ -n "$ONLY" ]; then
+            args="$args --only $ONLY"
+          fi
+          if [ "$DRY_RUN" = "true" ]; then
+            args="$args --dry-run"
+          fi
+          # intentional word splitting: --only values are comma-separated
+          # stage/scene names, never quoted strings with spaces
+          # shellcheck disable=SC2086
+          cargo xtask media $args 2>&1 | tee media-run.log
+
+      # dry runs never write outside target/, so the porcelain check is
+      # empty there and the PR steps below are skipped twice over
+      - name: Detect regenerated assets
+        id: changes
+        run: |
+          if [ -n "$(git status --porcelain docs/img docs/media/manifest.json README.md gui/README.md)" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build PR body
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          {
+            echo "## Refreshed README media"
+            echo
+            echo "Pipeline log (publish summary with version bumps):"
+            echo
+            echo '```'
+            tail -n 80 media-run.log
+            echo '```'
+            echo
+            echo "### Diff stat"
+            echo
+            echo '```'
+            git diff --stat
+            echo '```'
+            echo
+            echo "### Tool versions (target/media-tools/VERSIONS.txt)"
+            echo
+            echo '```'
+            cat target/media-tools/VERSIONS.txt
+            echo '```'
+          } > media-pr-body.md
+
+      # create-pull-request force-pushes docs/media-refresh, superseding any
+      # open media PR (one PR per concurrency group, plan 17 §9)
+      - name: Create refresh PR
+        if: steps.changes.outputs.changed == 'true' && inputs.dry_run != true
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: docs/media-refresh
+          title: 'docs: refresh README media'
+          labels: documentation
+          commit-message: 'docs(media): regenerate README assets (plan 17 pipeline)'
+          body-path: media-pr-body.md
+          add-paths: |
+            docs/img
+            docs/media/manifest.json
+            README.md
+            gui/README.md
+
+      - name: Upload regenerated assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: docs-img
+          path: docs/img
+
+      - name: Upload run log
+        uses: actions/upload-artifact@v7
+        with:
+          name: media-run-log
+          path: media-run.log
+
+      # dry-run previews live only in target/ (docs/img stays untouched);
+      # upload them so a dry run is still inspectable
+      - name: Upload dry-run previews
+        if: inputs.dry_run == true
+        uses: actions/upload-artifact@v7
+        with:
+          name: dry-run-final-assets
+          path: target/media-stage/final
+
+  # ---------------------------------------------------------------
+  # Advisory freshness report (plan 17 §9/§10): the same pipeline in
+  # --check mode - regenerates into target/, never publishes, exits
+  # non-zero listing stale/missing assets. Never opens a PR.
+  # ---------------------------------------------------------------
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install build prerequisites
+        run: sudo apt-get update && sudo apt-get install -y nasm cmake meson ninja-build pkg-config || true
+
+      - name: Install software Vulkan (lavapipe)
+        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers || true
+
+      - name: Bootstrap media tools
+        run: |
+          bash docs/media/bootstrap-tools.sh
+          cat target/media-tools/VERSIONS.txt
+
+      # plan 17 §4: assert the tool set first (also proves MEDIA_TOOLS_PATH
+      # resolution finds the pinned tools)
+      - name: Check media tools
+        run: cargo xtask media deps
+
+      # the check still captures + post-processes everything, so the CLI
+      # (and via the gui stage, the capture binary) must build
+      - name: Build CLI
+        run: cargo build --release -p byteshaver
+
+      - name: Run freshness check
+        id: freshness
+        run: |
+          status=0
+          cargo xtask media --check 2>&1 | tee media-check.log || status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      # post the table even (especially) when the check failed
+      - name: Post freshness table to the run summary
+        if: always()
+        run: |
+          {
+            echo '## media freshness (`cargo xtask media --check`)'
+            echo
+            echo '```'
+            tail -n 60 media-check.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,7 +1,53 @@
 # 17 — README media capture pipeline: scripted screenshots & videos of the CLI and GUI
 
-**Size:** L (7 phases, P0–P6) · **Status: planned** — decisions D1–D4 resolved with the
-project owner (see §12); D5–D7 remain open with recommendations.
+**Size:** L (7 phases, P0–P6) · **Status: implemented** on branch
+`plans/media-capture-pipeline` (P0–P5 done; P6 polish partially: no GIF
+variants wired into CI, no synthetic cursor, decorations skipped in favor of
+chrome-less consistency). Decisions D1–D4 as planned; D5 resolved
+cursor-free; D6 resolved as the manifest `stable`/`unstable` classification
+(§9 addendum below); D7 resolved dispatch-only. Deviations that landed
+differently than specced are noted in §17.
+
+## §17 addendum — implementation deviations (2026-10-02)
+
+- **Renderer**: `egui_kittest`'s `snapshot` feature only provides
+  compare/save helpers; rendering requires the **`wgpu` feature** (software
+  rasterizer via lavapipe — `mesa-vulkan-drivers`, the same setup rerun uses
+  in CI). The GUI `capture` feature therefore pulls `egui_kittest/eframe,wgpu`.
+- **Terminal engine**: VHS 0.12 turned out to have more sharp edges than
+  §5 assumed, all now handled by the xtask and documented in
+  `docs/media/tapes/README.md`:
+  - `Output <dir>/` is applied as a rename that **fails silently** when the
+    parent is missing or the target exists → the xtask pre-creates
+    `out/<scene>/` and verifies artifacts after every tape;
+  - **vhs exits 0 even on recording failure** → artifact verification is the
+    real signal;
+  - frames are recorded into a `MkdirTemp` dir and moved with an
+    **error-ignored `os.Rename`** → cross-device moves silently lose all
+    frames → the stage sets `TMPDIR` to a same-filesystem dir;
+  - the ttyd **cursor paint races `Screenshot`** → terminal stills are built
+    from the last `frame-text-*.png` (cursor-free, chrome-less) instead;
+  - `Wait+Screen`/`Wait+Line` are unusable for summaries (scrollback/cursor
+    line semantics) → tapes sync on a bare `Wait` (prompt returned).
+- **Determinism (§9)**: three wall-clock leaks were found and closed —
+  fixture **mtimes** (files *and* directories; the GUI "modified" column)
+  are normalized to a fixed epoch at stage time; tapes use **fast fixtures**
+  so `Time taken: 0 seconds` stays constant and clean their own outputs in
+  the hidden setup (stable pre-state, `demo/` stays pristine for GUI
+  scenes); and assets that genuinely embed wall-clock output (all demo
+  videos: progress redraws; run-state GUI stills: `in 0.4s` durations) are
+  classified **`unstable`** in the manifest — `--check` reports their drift
+  as advisory instead of failing. Two consecutive full `--check` runs
+  report zero stable drift.
+- **Scenes**: `gui-tour` runs webp (not avif — the AVIF inspector beat needs
+  `dec-heif` for re-decode) and was trimmed to ~113 frames to fit the size
+  budget (videos encode `fps=15`, `q50`); `gui-running` may fall back to the
+  fresh-report state on fast encoders (documented in the scene).
+- **Scenes are Rust** (`build_scenes()` registry), not `scenes.ron` — the
+  `Step` enum is serde-ready if data-driven scenes are ever needed.
+- **The gui crate became lib + bin** (§6.1) with `install_symbol_fonts`
+  honoring `BH_GUI_FONT_DIR`; `kittest_smoke.rs` guards the headless render
+  path in CI.
 
 ## 0. Problem
 

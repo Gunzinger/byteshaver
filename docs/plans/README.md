@@ -184,10 +184,10 @@ order, migration path specced in 13 §2B).
 
 # Media capture pipeline — Plan Suite 3
 
-> **STATUS: planned** (decisions D1–D4 resolved with the project owner: animated
-> WebP assets, headless `egui_kittest` GUI capture, VHS `.tape` terminal capture,
-> CI job + auto-PR). D5–D7 open with recommendations. See
-> [17-media-capture-pipeline.md](17-media-capture-pipeline.md).
+> **STATUS: implemented** on branch `plans/media-capture-pipeline` (P0–P5;
+> plan 17 §17 lists the deviations that landed differently: wgpu-based
+> renderer, VHS 0.12 quirk handling in the xtask, a `stable`/`unstable`
+> freshness classification in the manifest, Rust-scene registry).
 
 | Plan | Workstream | Size | Depends on | Parallelizable with |
 |------|-----------|------|------------|---------------------|
