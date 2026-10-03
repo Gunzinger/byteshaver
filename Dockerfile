@@ -41,6 +41,7 @@ COPY byteshaver /
 FROM alpine
 ARG SOURCE
 COPY --from=${SOURCE} /byteshaver /usr/local/bin/byteshaver
+COPY THIRD-PARTY-NOTICES.md docs/dependency-licenses.md /usr/share/doc/byteshaver/
 RUN chmod +x /usr/local/bin/byteshaver
 WORKDIR /targets
 CMD ["byteshaver"]

@@ -628,4 +628,4 @@ cargo uninstall byteshaver
 
 ## License
 
-This project under the [MIT License](LICENCE).
+This project under the [MIT License](LICENSE).

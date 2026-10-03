@@ -244,6 +244,8 @@ jobs:
           if [ "${{ matrix.cpu_target }}" == "${{ env.BASE_CPU }}" ]; then SUFFIX=""; else SUFFIX="-${{ matrix.cpu_target }}"; fi
           cp target-linux/x86_64-unknown-linux-musl/release/byteshaver "current_release/byteshaver-${{ env.VERSION }}${SUFFIX}"
           cp target-linux/x86_64-unknown-linux-musl/release/byteshaver-gui "current_release/byteshaver-gui-${{ env.VERSION }}${SUFFIX}"
+          # license/attribution materials ship with every release
+          cp THIRD-PARTY-NOTICES.md docs/dependency-licenses.md current_release/
           ( cd current_release && sha256sum "byteshaver-${{ env.VERSION }}${SUFFIX}" > "byteshaver-${{ env.VERSION }}${SUFFIX}.sha256" && \
             sha256sum "byteshaver-gui-${{ env.VERSION }}${SUFFIX}" > "byteshaver-gui-${{ env.VERSION }}${SUFFIX}.sha256" )
 
@@ -304,6 +306,8 @@ jobs:
           cp target/x86_64-pc-windows-gnullvm/release/byteshaver-gui.exe "current_release/byteshaver-gui-${{ env.VERSION }}${SUFFIX}.exe"
           ( cd current_release && sha256sum "byteshaver-${{ env.VERSION }}${SUFFIX}.exe" > "byteshaver-${{ env.VERSION }}${SUFFIX}.exe.sha256" && \
             sha256sum "byteshaver-gui-${{ env.VERSION }}${SUFFIX}.exe" > "byteshaver-gui-${{ env.VERSION }}${SUFFIX}.exe.sha256" )
+          # license/attribution materials ship with every release
+          cp THIRD-PARTY-NOTICES.md docs/dependency-licenses.md current_release/
 
       - name: Upload binaries to GitHub Release
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
@@ -458,8 +462,12 @@ jobs:
           BIN="$(find artifact -maxdepth 1 -name 'byteshaver-*' ! -name 'byteshaver-gui-*' ! -name '*.sha256' | head -1)"
           test -n "$BIN" || { echo "FATAL: no CLI binary in artifact"; exit 1; }
           cp "$BIN" byteshaver
+          cp THIRD-PARTY-NOTICES.md docs/dependency-licenses.md .
           file byteshaver | grep -q "static-pie" \
             || { echo "FATAL: binary is not static-pie"; exit 1; }
+          # license/attribution materials ride along into the image
+          cp THIRD-PARTY-NOTICES.md docs/dependency-licenses.md .
+
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
@@ -521,6 +529,7 @@ jobs:
           BIN="$(find artifact -maxdepth 1 -name 'byteshaver-*' ! -name 'byteshaver-gui-*' ! -name '*.sha256' | head -1)"
           test -n "$BIN" || { echo "FATAL: no CLI binary in artifact"; exit 1; }
           cp "$BIN" byteshaver
+          cp THIRD-PARTY-NOTICES.md docs/dependency-licenses.md .
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
