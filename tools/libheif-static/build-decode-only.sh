@@ -73,6 +73,18 @@ if [ ! -f "$DIST/lib/libdav1d.a" ]; then
     ninja -C "$WORK/dav1d-build" install >/dev/null
 fi
 
+# 2b. libde265 1.1.x references GCC's cpu-detection runtime (__cpu_model,
+#     __cpu_indicator_init_local) from libgcc.a — with -nodefaultlibs style
+#     static links (rust musl self-contained) nothing else provides them.
+#     Carry the archives in libde265.pc so every consumer (CLI, GUI,
+#     dependencies thereof) resolves them right after -lde265.
+if [ -f "$DIST/lib/pkgconfig/libde265.pc" ]; then
+    if ! grep -q -- "-lgcc_eh" "$DIST/lib/pkgconfig/libde265.pc"; then
+        sed -i.bak '/^Libs.private:/ s/$/ -lgcc -lgcc_eh/' "$DIST/lib/pkgconfig/libde265.pc"
+        rm -f "$DIST/lib/pkgconfig/libde265.pc.bak"
+    fi
+fi
+
 # 3. make pkg-config prefixes relocatable (bake-in-proof for CI staging)
 for pc in "$DIST"/lib/pkgconfig/*.pc; do
     [ -e "$pc" ] || continue

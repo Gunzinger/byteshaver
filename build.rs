@@ -75,39 +75,12 @@ fn main() {
     // by the driver sits too early in the link line to resolve references
     // from later archives, so append them here — this crate's flags come
     // after all dependency flags, giving the archives a resolvable position.
-    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_DEC_HEIF");
-    if std::env::var_os("CARGO_FEATURE_DEC_HEIF").is_some()
-        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("musl")
-    {
-        // libde265 1.1.x references GCC's cpu-detection runtime
-        // (__cpu_model, __cpu_indicator_init_local) which only lives in the
-        // *static* libgcc archive; the dynamic libgcc_s that rustc links by
-        // default does not export the `_local` variant.
-        //
-        // Emit as rustc-link-lib (NOT rustc-link-arg): link-lib directives
-        // propagate to every binary that links this crate — including
-        // dependent packages like byteshaver-gui — while link-args only
-        // affect this package's own binaries (that asymmetry is what broke
-        // the GUI link in CI).
-        let libgcc_dir = std::process::Command::new("gcc")
-            .args(["-print-file-name=libgcc.a"])
-            .output()
-            .ok()
-            .map(|o| o.stdout)
-            .and_then(|s| String::from_utf8(s).ok())
-            .map(|s| s.trim().to_string())
-            .filter(|s| s.starts_with('/'))
-            .and_then(|s| std::path::PathBuf::from(s).parent().map(|p| p.to_path_buf()));
-        if let Some(dir) = libgcc_dir {
-            println!("cargo:rustc-link-search=native={}", dir.display());
-            println!("cargo:rustc-link-lib=static=gcc");
-            println!("cargo:rustc-link-lib=static=gcc_eh");
-        } else {
-            println!(
-                "cargo:warning=dec-heif: could not locate libgcc.a for the musl static link"
-            );
-        }
-    }
+    // libde265 1.1.x references GCC's cpu-detection runtime (__cpu_model,
+    // __cpu_indicator_init_local) which only lives in the *static* libgcc
+    // archive. The archives are carried through libde265.pc's Libs.private
+    // (patched by tools/libheif-static/build-decode-only.sh), which
+    // pkg-config --static resolves right after -lde265 for every consumer
+    // of this crate — no per-binary emission needed here.
 
     // Run `cargo metadata` to gather project metadata
     let metadata = MetadataCommand::new()
