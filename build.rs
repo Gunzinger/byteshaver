@@ -79,34 +79,33 @@ fn main() {
     if std::env::var_os("CARGO_FEATURE_DEC_HEIF").is_some()
         && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("musl")
     {
-        // libde265 1.1.x uses GCC's cpu-detection runtime (__cpu_model,
-        // __cpu_indicator_init_local) which only lives in the *static* libgcc
-        // archive; the dynamic libgcc_s that rustc links by default does not
-        // export the `_local` variant. Append the exact archive at the end of
-        // the link line (link-args land after all dependency archives).
-        if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("musl") {
-            // native musl builds only (the CI alpine container); locate the
-            // target compiler's private library dir for libgcc.a/libgcc_eh.a
-            let libgcc_dir = std::process::Command::new("gcc")
-                .args(["-print-file-name=libgcc.a"])
-                .output()
-                .ok()
-                .map(|o| o.stdout)
-                .and_then(|s| String::from_utf8(s).ok())
-                .map(|s| s.trim().to_string())
-                .filter(|s| s.starts_with('/'))
-                .and_then(|s| std::path::PathBuf::from(s).parent().map(|p| p.to_path_buf()));
-            if let Some(dir) = libgcc_dir {
-                println!("cargo:rustc-link-search=native={}", dir.display());
-                println!("cargo:rustc-link-arg=-lgcc");
-                println!("cargo:rustc-link-arg=-lgcc_eh");
-            } else {
-                println!(
-                    "cargo:warning=dec-heif: could not locate libgcc.a for the musl static link"
-                );
-            }
+        // libde265 1.1.x references GCC's cpu-detection runtime
+        // (__cpu_model, __cpu_indicator_init_local) which only lives in the
+        // *static* libgcc archive; the dynamic libgcc_s that rustc links by
+        // default does not export the `_local` variant.
+        //
+        // Emit as rustc-link-lib (NOT rustc-link-arg): link-lib directives
+        // propagate to every binary that links this crate — including
+        // dependent packages like byteshaver-gui — while link-args only
+        // affect this package's own binaries (that asymmetry is what broke
+        // the GUI link in CI).
+        let libgcc_dir = std::process::Command::new("gcc")
+            .args(["-print-file-name=libgcc.a"])
+            .output()
+            .ok()
+            .map(|o| o.stdout)
+            .and_then(|s| String::from_utf8(s).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| s.starts_with('/'))
+            .and_then(|s| std::path::PathBuf::from(s).parent().map(|p| p.to_path_buf()));
+        if let Some(dir) = libgcc_dir {
+            println!("cargo:rustc-link-search=native={}", dir.display());
+            println!("cargo:rustc-link-lib=static=gcc");
+            println!("cargo:rustc-link-lib=static=gcc_eh");
         } else {
-            println!("cargo:rustc-link-arg=-l:libgcc.a");
+            println!(
+                "cargo:warning=dec-heif: could not locate libgcc.a for the musl static link"
+            );
         }
     }
 
