@@ -2,6 +2,12 @@
 members = [".", "gui"]
 resolver = "2"
 
+# Vendored, patched jpegxl-src (see tools/jpegxl-src/README.md): builds
+# libjxl's AVX3 / AVX3_ZEN4 highway kernels alongside the upstream default
+# targets; highway's runtime dispatch keeps older clients on their best path.
+[patch.crates-io]
+jpegxl-src = { path = "tools/jpegxl-src" }
+
 [package]
 name = "byteshaver"
 version = "0.0.0-git"

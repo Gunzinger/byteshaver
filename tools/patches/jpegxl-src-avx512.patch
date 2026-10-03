@@ -1,0 +1,20 @@
+diff --git a/jpegxl-src/src/lib.rs b/jpegxl-src/src/lib.rs
+index bafbfae..9a16e35 100644
+--- a/jpegxl-src/src/lib.rs
++++ b/jpegxl-src/src/lib.rs
+@@ -56,7 +56,14 @@ pub fn build() {
+         .define("JPEGXL_ENABLE_JNI", "OFF")
+         .define("JPEGXL_ENABLE_SJPEG", "OFF")
+         .define("JPEGXL_ENABLE_OPENEXR", "OFF")
+-        .define("JPEGXL_BUNDLE_LIBPNG", "OFF");
++        .define("JPEGXL_BUNDLE_LIBPNG", "OFF")
++        // byteshaver patch: enable AVX-512 highway targets (AVX3, AVX3_ZEN4).
++        // libjxl defaults these OFF for binary size; highway's runtime
++        // dispatch (cpuid + xgetbv OS-state checks) keeps AVX2-only machines
++        // on the AVX2 path, so enabling is safe for all clients. AVX3_DL is
++        // already ON by default; AVX3_SPR stays off (size vs narrow benefit).
++        .define("JPEGXL_ENABLE_HWY_AVX3", "ON")
++        .define("JPEGXL_ENABLE_HWY_AVX3_ZEN4", "ON");
+ 
+     if let Ok(p) = std::thread::available_parallelism() {
+         config.env("CMAKE_BUILD_PARALLEL_LEVEL", format!("{p}"));
