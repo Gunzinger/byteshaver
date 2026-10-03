@@ -12,3 +12,4 @@
 Makefile text
 Dockerfile text
 Dockerfile-* text
+*.patch text eol=lf
