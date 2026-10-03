@@ -322,7 +322,7 @@ impl WorkItem {
 ///
 /// A container that cannot be probed stays a single item so the actual
 /// error surfaces per-file in the conversion worker.
-#[cfg(feature = "dec-heif")]
+#[cfg(all(feature = "dec-heif", any(not(target_os = "windows"), target_abi = "llvm")))]
 fn expand_work_item(path: PathBuf, heif_policy: crate::config::HeifImagePolicy) -> Vec<WorkItem> {
     if heif_policy == crate::config::HeifImagePolicy::All
         && ImageFormat::from(path.as_path()) == ImageFormat::Heif
@@ -341,7 +341,7 @@ fn expand_work_item(path: PathBuf, heif_policy: crate::config::HeifImagePolicy) 
 
 /// Feature-less fallback of [`expand_work_item`]: every file stays a single
 /// work item (HEIF input fails per-file at load time).
-#[cfg(not(feature = "dec-heif"))]
+#[cfg(any(not(feature = "dec-heif"), all(target_os = "windows", not(target_abi = "llvm"))))]
 fn expand_work_item(path: PathBuf, _heif_policy: crate::config::HeifImagePolicy) -> Vec<WorkItem> {
     vec![WorkItem::Single(path)]
 }

@@ -10,11 +10,16 @@
 > static libde265 1.1.3 + dav1d 1.5.1 from `tools/libheif-static/`
 > (decode-only: x265/aom/libwebp excluded); musl static-pie binary
 > 16.2 → 22.7 MB, packed 7.19 MB (31.7 %), HEIC+AVIF decode verified,
-> x265 symbols absent. **B Windows** deferred: gcc-built deps *cross-compile
-> successfully* (libde265/dav1d/embedded libheif), but the final link pulls
-> `libstdc++-6.dll` via the dynamic `-lstdc++` in libheif.pc's Libs.private
-> (rustc places dependency flags where the import lib wins) — gnullvm/ucrt
-> toolchain trial is the documented follow-up (§B.6).
+> x265 symbols absent. **B Windows** done via the gnullvm/ucrt trial (§B.6):
+> the gcc-built deps cross-compile cleanly, but mingw's dynamic `-lstdc++`
+> (libheif.pc Libs.private) pulls `libstdc++-6.dll` and cannot be outranked
+> by static link flags — switching the Windows leg to the llvm-mingw
+> toolchain (clang + static libc++, UCRT) resolves the whole class of
+> problem. Windows binaries link libc++/libunwind statically (the dynamic
+> import libs are removed from the toolchain), self-contain the full
+> dec-heif stack, and pass wine HEIC+AVIF decode. CI builds Windows on
+> `x86_64-pc-windows-gnullvm` with a pinned, cached llvm-mingw 20260922.
+> UCRT baseline: Windows 10+.
 > **A** enables libjxl's AVX-512 kernels with highway runtime dispatch
 > (safe on AVX2 clients), **B** ships the `dec-heif` feature in all static
 > artifacts via [audivir/libheif-static](https://github.com/audivir/libheif-static).
@@ -227,7 +232,12 @@ compliance approach is the go/no-go decision.
      (cmake/meson recipes, moderate effort, known-good compilers), or
    - (b) switch the windows target to `x86_64-pc-windows-gnullvm`
      (llvm-mingw) — larger toolchain migration, aligns with (a)'s output.
-   Until then: windows artifacts stay dec-heif-less, documented.
+   **RESOLVED (gnullvm trial):** the windows leg now builds on
+   `x86_64-pc-windows-gnullvm` (llvm-mingw, UCRT — Windows 10+ baseline)
+   with dec-heif statically embedded; the older gcc-mingw/MSVCRT route is
+   what couldn't link statically. gcc-built deps also cross-compile, so
+   either toolchain produces the codec libraries — the gnullvm toolchain is
+   what makes the final binary self-contained.
 7. **CI smoke**: extend the pack/build verification with a real `.heic` +
    `.avif` decode on the suffixless linux binary (the `validate_docker`
    fixture logic, moved to the binary smoke step).

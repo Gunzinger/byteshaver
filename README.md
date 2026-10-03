@@ -73,15 +73,15 @@ when the `dec-heif` feature is compiled in:
 - 10/12-bit (HDR) sources are down-converted to 8-bit with a printed warning
 
 Without the feature, HEIC/HEIF/AVIF inputs fail per-file with a clear message while the
-rest of the batch keeps converting. `dec-heif` is **enabled by default**: the libheif
-version matching the bindings is compiled in statically (libheif-sys
-`embedded-libheif`), with HEVC decode via a statically linked libde265 and AV1/AVIF
-decode via dav1d (see `tools/libheif-static/` and
-[docs/plans/17-static-libheif-and-jxl-avx512.md](docs/plans/17-static-libheif-and-jxl-avx512.md)).
-This adds HEIC/HEIF/AVIF input to the static musl release binaries as well; the
-**Windows binaries currently remain without** `dec-heif` (toolchain note in plan 17 §B).
-Building it locally requires `pkg-config` plus static libde265 + dav1d
-(`tools/libheif-static/build-decode-only.sh`) on the library search path.
+rest of the batch keeps converting. `dec-heif` is **enabled by default in all release
+binaries** (Linux musl static-pie, Linux GUI, Windows): the libheif version matching the
+bindings is compiled in statically (libheif-sys `embedded-libheif`), with HEVC decode via
+a statically linked libde265 and AV1/AVIF decode via dav1d (see `tools/libheif-static/`
+and [docs/plans/17-static-libheif-and-jxl-avx512.md](docs/plans/17-static-libheif-and-jxl-avx512.md)).
+The Windows binaries use the gnullvm/ucrt toolchain (UCRT ships with Windows 10+).
+Building locally requires `pkg-config` plus static libde265 + dav1d
+(`tools/libheif-static/build-decode-only.sh`) on the library search path; on Windows,
+use the llvm-mingw variant (`build-decode-only-windows.sh`).
 
 `JPEG XL` (`.jxl`) inputs are decoded with [`jxl-oxide`](https://crates.io/crates/jxl-oxide)
  (still images and animations, 8/16-bit, EXIF/XMP boxes and ICC profiles).
@@ -329,18 +329,20 @@ setting. Every artifact ships with a `.sha256` checksum. Third-party code embedd
 (zstd, BSD-2-Clause) is attributed in
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
-Feature notes: the static **Linux** binaries include HEIC/HEIF/AVIF input
-(`dec-heif`, statically embedded libheif + libde265 + dav1d); the **Windows**
-binaries currently exclude it (see plan 17 §B for the toolchain follow-up).
-The Linux GUI build uses the X11 windowing backend.
+Feature notes: all release binaries include HEIC/HEIF/AVIF input
+(`dec-heif`, statically embedded libheif + libde265 + dav1d). The Windows
+binaries use the gnullvm/ucrt toolchain (UCRT ships with Windows 10 and
+newer). The Linux GUI build uses the X11 windowing backend.
 
 See the [GitHub releases](https://github.com/Gunzinger/byteshaver/releases) page for downloads.
 
 ### Using the docker image 🐳
 
-Docker containers are also built for every tag. The image ships the
-prebuilt static Linux binary, so it includes HEIC/HEIF/AVIF input support
-(`dec-heif`, statically linked) and starts instantly:
+Docker containers are also built for every tag. The image is the prebuilt
+static Linux binary on a minimal alpine base — it includes HEIC/HEIF/AVIF
+input support (`dec-heif`, statically linked) and starts instantly. To
+reproduce the entire build inside docker instead, the default
+`docker build .` compiles everything from source (see `Dockerfile`):
 images and validates the complete chain — including a real HEIC file decoded
 inside the container — before they are published.
 
@@ -605,7 +607,7 @@ cargo uninstall byteshaver
   - [x] `avif` (via libheif)
   - [x] `png`
   - [x] `jpeg` (incl. progressive/pjpeg fallback decoding)
-  - [x] `heic/heif` (input, via libheif / `dec-heif` feature; enabled in docker images, stubbed in musl/windows release binaries for now)
+  - [x] `heic/heif` (input, via libheif / `dec-heif` feature; statically embedded in all release binaries since plan 17)
   - [x] `jxl/jpeg-xl` (via jxl-oxide; stills + animation + metadata)
   - [ ] `heic` in static release binaries (needs a statically linkable libheif + codec stack in CI)
   - [ ] animated `avif` input

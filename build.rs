@@ -77,7 +77,7 @@ fn main() {
     // after all dependency flags, giving the archives a resolvable position.
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_DEC_HEIF");
     if std::env::var_os("CARGO_FEATURE_DEC_HEIF").is_some()
-        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("musl")
     {
         // libde265 1.1.x uses GCC's cpu-detection runtime (__cpu_model,
         // __cpu_indicator_init_local) which only lives in the *static* libgcc

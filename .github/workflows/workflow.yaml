@@ -102,11 +102,36 @@ jobs:
           grep -n '^version' Cargo.toml gui/Cargo.toml
           grep -n -A1 '^name = "byteshaver' Cargo.lock
 
-      - name: Install Windows cross compiler
-        run: sudo apt-get install --yes --no-install-recommends gcc-mingw-w64-x86-64-win32 g++-mingw-w64-x86-64-win32 nasm
+      # Windows cross toolchain: llvm-mingw (clang/lld/libc++, UCRT runtime)
+      # for the x86_64-pc-windows-gnullvm target. UCRT ships with Windows 10+.
+      # Cached on the pinned toolchain version; the cached tree already has
+      # the dynamic libc++/libunwind import libs removed (self-containment).
+      - name: Cache llvm-mingw toolchain
+        uses: actions/cache@v6
+        with:
+          path: ~/.tools/llvm-mingw-20260922
+          key: llvm-mingw-20260922-ucrt-ubuntu-22.04-x86_64
+
+      - name: Install Windows toolchain (llvm-mingw, UCRT)
+        run: |
+          set -euo pipefail
+          sudo apt-get install --yes --no-install-recommends nasm ninja-build meson pkg-config patch
+          LLVM_MINGW_VERSION=20260922
+          TC="$HOME/.tools/llvm-mingw-$LLVM_MINGW_VERSION"
+          if [ ! -x "$TC/bin/x86_64-w64-mingw32-clang" ]; then
+            mkdir -p "$HOME/.tools"
+            curl -sL "https://github.com/mstorsjo/llvm-mingw/releases/download/$LLVM_MINGW_VERSION/llvm-mingw-$LLVM_MINGW_VERSION-ucrt-ubuntu-22.04-x86_64.tar.xz" \
+              | tar -xJ -C "$HOME/.tools"
+            rm -rf "$TC"
+            mv "$HOME/.tools/llvm-mingw-$LLVM_MINGW_VERSION-ucrt-ubuntu-22.04-x86_64" "$TC"
+            # self-contained exes: drop the libc++/libunwind import libs so the
+            # linker picks the static archives (no libc++.dll/libunwind.dll)
+            rm "$TC/x86_64-w64-mingw32/lib/libc++.dll.a" "$TC/x86_64-w64-mingw32/lib/libunwind.dll.a"
+          fi
+          echo "$TC/bin" >> "$GITHUB_PATH"
 
       - name: Install rustup targets
-        run: rustup target add x86_64-pc-windows-gnu
+        run: rustup target add x86_64-pc-windows-gnullvm
 
       # rust package / target cache
       - uses: Swatinem/rust-cache@v2
@@ -223,43 +248,60 @@ jobs:
             sha256sum "byteshaver-gui-${{ env.VERSION }}${SUFFIX}" > "byteshaver-gui-${{ env.VERSION }}${SUFFIX}.sha256" )
 
       # ---------------------------------------------------------------
-      # Windows (gnu cross from ubuntu) — CLI and GUI
+      # Windows (gnullvm/ucrt cross from ubuntu) — CLI and GUI
       #
-      # Full default features including jxl: the vendored libjxl cmake
-      # build cross-compiles via the target-suffixed CC/CXX/AR vars
-      # (validated). The GUI is built with --no-default-features (no
-      # unix windowing backend features, see the linux step comment).
+      # Full default features including jxl AND dec-heif: the vendored
+      # libjxl cmake build and the statically embedded libheif cross-
+      # compile via the target-suffixed CC/CXX/AR vars (llvm-mingw
+      # clang), and the static libde265 + dav1d decode plugins come
+      # from tools/libheif-static (same recipe as the musl build).
+      # The GUI is built with --no-default-features (no unix windowing
+      # backend features, see the linux step comment).
+      # UCRT runtime: supported on Windows 10 and newer.
       # ---------------------------------------------------------------
+      - name: Build static heif codec deps (windows)
+        run: |
+          set -euo pipefail
+          HEIF_CC=x86_64-w64-mingw32-clang HEIF_CXX=x86_64-w64-mingw32-clang++ \
+            HEIF_AR=llvm-ar HEIF_SYSROOT="$LLVM_MINGW_DIR/x86_64-w64-mingw32" \
+            tools/libheif-static/build-decode-only-windows.sh "$PWD/heif-deps-win" 8
+
       - name: Build windows binaries (cross)
         shell: bash
         env:
-          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
-          CC_x86_64_pc_windows_gnu: x86_64-w64-mingw32-gcc
-          CXX_x86_64_pc_windows_gnu: x86_64-w64-mingw32-g++
-          AR_x86_64_pc_windows_gnu: x86_64-w64-mingw32-ar
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER: x86_64-w64-mingw32-clang
+          CC_x86_64_pc_windows_gnullvm: x86_64-w64-mingw32-clang
+          CXX_x86_64_pc_windows_gnullvm: x86_64-w64-mingw32-clang++
+          AR_x86_64_pc_windows_gnullvm: llvm-ar
+          # static libde265/dav1d (+ their libheif.pc Requires.private) for
+          # the embedded libheif; cross-compilation is intentional here
+          PKG_CONFIG_PATH: ${{ github.workspace }}/heif-deps-win/lib/pkgconfig
+          PKG_CONFIG_ALLOW_CROSS: "1"
+          # static-build macros: keep libheif's de265 imports off the
+          # dllimport path (plain symbols from the static archives)
+          CXXFLAGS: "-DLIBDE265_STATIC_BUILD -DLIBHEIF_STATIC_BUILD"
           # target-scoped tuning: this is a genuine cross compile, so host
           # units (build scripts, proc macros) use plain RUSTFLAGS (unset =>
-          # baseline codegen, safe on any runner CPU) and only windows-gnu
+          # baseline codegen, safe on any runner CPU) and only the windows
           # target units receive the target-cpu flag
-          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS: "-C target-cpu=${{ matrix.cpu_target }}"
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_RUSTFLAGS: "-C target-cpu=${{ matrix.cpu_target }}"
         run: |
-          echo "Building for CPU: ${{ matrix.cpu_target }} (windows-gnu)"
-          cargo build --release --target x86_64-pc-windows-gnu -p byteshaver
-          cargo build --release --target x86_64-pc-windows-gnu -p byteshaver-gui --no-default-features
-          # guard against regressions of the jpegxl-src host-cfg stdc++ link
-          # (v0.5.2 shipped exes needing libstdc++-6.dll, absent on stock
-          # windows); no mingw runtime DLL may appear in the import table
-          for exe in target/x86_64-pc-windows-gnu/release/byteshaver.exe target/x86_64-pc-windows-gnu/release/byteshaver-gui.exe; do
-            if objdump -p "$exe" | grep -qi 'DLL Name: lib\(stdc++\|gcc_s\|winpthread\)'; then
-              echo "FATAL: $exe depends on a mingw runtime DLL (libstdc++-6/libgcc_s/libwinpthread)"; objdump -p "$exe" | grep 'DLL Name'; exit 1
+          echo "Building for CPU: ${{ matrix.cpu_target }} (windows-gnullvm)"
+          cargo build --release --target x86_64-pc-windows-gnullvm -p byteshaver
+          cargo build --release --target x86_64-pc-windows-gnullvm -p byteshaver-gui --no-default-features
+          # guard against C++ runtime DLL regressions: gnullvm/ucrt exes link
+          # libc++/libunwind statically (llvm-mingw import libs removed above)
+          for exe in target/x86_64-pc-windows-gnullvm/release/byteshaver.exe target/x86_64-pc-windows-gnullvm/release/byteshaver-gui.exe; do
+            if objdump -p "$exe" | grep -qi 'DLL Name: lib\(stdc++\|c++\|unwind\|gcc_s\|winpthread\)'; then
+              echo "FATAL: $exe imports a C++/runtime DLL"; objdump -p "$exe" | grep 'DLL Name'; exit 1
             fi
           done
           # binaries are shipped UNPACKED (see the linux step note); the
           # dedicated pack_binaries job produces the optional packed variants
           mkdir -p current_release
           if [ "${{ matrix.cpu_target }}" == "${{ env.BASE_CPU }}" ]; then SUFFIX=""; else SUFFIX="-${{ matrix.cpu_target }}"; fi
-          cp target/x86_64-pc-windows-gnu/release/byteshaver.exe "current_release/byteshaver-${{ env.VERSION }}${SUFFIX}.exe"
-          cp target/x86_64-pc-windows-gnu/release/byteshaver-gui.exe "current_release/byteshaver-gui-${{ env.VERSION }}${SUFFIX}.exe"
+          cp target/x86_64-pc-windows-gnullvm/release/byteshaver.exe "current_release/byteshaver-${{ env.VERSION }}${SUFFIX}.exe"
+          cp target/x86_64-pc-windows-gnullvm/release/byteshaver-gui.exe "current_release/byteshaver-gui-${{ env.VERSION }}${SUFFIX}.exe"
           ( cd current_release && sha256sum "byteshaver-${{ env.VERSION }}${SUFFIX}.exe" > "byteshaver-${{ env.VERSION }}${SUFFIX}.exe.sha256" && \
             sha256sum "byteshaver-gui-${{ env.VERSION }}${SUFFIX}.exe" > "byteshaver-gui-${{ env.VERSION }}${SUFFIX}.exe.sha256" )
 

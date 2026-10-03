@@ -12,6 +12,13 @@ DIST="$(realpath "${1:?usage: build-decode-only-windows.sh <DIST> [JOBS]}")"
 JOBS="${2:-$(nproc)}"
 WORK="${LIBHEIF_STATIC_WORKDIR:-$(mktemp -d)}"
 TRIPLE="x86_64-w64-mingw32"
+# compiler overrides: point these at an llvm-mingw toolchain for the
+# gnullvm/ucrt target (defaults = gcc-mingw-w64 / MSVCRT)
+CC="${HEIF_CC:-${TRIPLE}-gcc}"
+CXX="${HEIF_CXX:-${TRIPLE}-g++}"
+AR="${HEIF_AR:-${TRIPLE}-ar}"
+RC="${HEIF_RC:-${TRIPLE}-windres}"
+SYSROOT="${HEIF_SYSROOT:-/usr/${TRIPLE}}"
 
 LIBDE265_VERSION="${LIBDE265_VERSION:-1.1.3}"
 LIBDE265_URL="https://github.com/strukturag/libde265/releases/download/v${LIBDE265_VERSION}/libde265-${LIBDE265_VERSION}.tar.gz"
@@ -30,10 +37,11 @@ fetch() { # <url> <dest>
 cat > "$WORK/toolchain.cmake" <<EOF
 set(CMAKE_SYSTEM_NAME Windows)
 set(CMAKE_SYSTEM_PROCESSOR AMD64)
-set(CMAKE_C_COMPILER ${TRIPLE}-gcc)
-set(CMAKE_CXX_COMPILER ${TRIPLE}-g++)
-set(CMAKE_RC_COMPILER ${TRIPLE}-windres)
-set(CMAKE_FIND_ROOT_PATH /usr/${TRIPLE} $DIST)
+set(CMAKE_C_COMPILER $CC)
+set(CMAKE_CXX_COMPILER $CXX)
+set(CMAKE_AR $AR)
+set(CMAKE_RC_COMPILER $RC)
+set(CMAKE_FIND_ROOT_PATH $SYSROOT $DIST)
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
@@ -41,9 +49,9 @@ EOF
 
 cat > "$WORK/cross.ini" <<EOF
 [binaries]
-c = '$TRIPLE-gcc'
-cpp = '$TRIPLE-g++'
-ar = '$TRIPLE-ar'
+c = '$CC'
+cpp = '$CXX'
+ar = '$AR'
 strip = '$TRIPLE-strip'
 pkg-config = 'pkg-config'
 

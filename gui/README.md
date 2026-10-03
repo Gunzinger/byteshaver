@@ -80,7 +80,7 @@ All artifacts are shipped unpacked (instant startup; an optional
 self-extracting `-packed` variant set is attached to each release by a
 dedicated CI job using the in-repo zstd packer — see
 `docs/zstd-packer-analysis.md` and `THIRD-PARTY-NOTICES.md` in the repository
-root) together with a `.sha256` checksum. All Linux binaries carry `dec-heif`
+root) together with a `.sha256` checksum. All release binaries carry `dec-heif`
 (the `libheif`/codec libraries have no static archives); a dedicated
 `validate_docker` CI job builds both images and proves the feature with an
 end-to-end decode of a generated real HEIC before publication.
