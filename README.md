@@ -338,9 +338,9 @@ See the [GitHub releases](https://github.com/Gunzinger/byteshaver/releases) page
 
 ### Using the docker image 🐳
 
-Docker containers are also built for every tag. Both the alpine and debian
-images include HEIC/HEIF/AVIF input support (`dec-heif`, statically linked):
-CI builds both
+Docker containers are also built for every tag. The image ships the
+prebuilt static Linux binary, so it includes HEIC/HEIF/AVIF input support
+(`dec-heif`, statically linked) and starts instantly:
 images and validates the complete chain — including a real HEIC file decoded
 inside the container — before they are published.
 

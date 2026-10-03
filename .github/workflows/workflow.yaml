@@ -460,16 +460,6 @@ jobs:
               && echo "real HEIC decode -> webp: ok" \
               || { echo "FATAL: real HEIC decode failed"; exit 1; }'
 
-      - name: Build debian image
-        run: docker build -f Dockerfile-debian -t byteshaver:validate-debian .
-
-      - name: Smoke test debian image
-        run: |
-          docker run --rm byteshaver:validate-debian sh -c '
-            byteshaver --help >/dev/null && echo "help: ok"
-            printf "garbage-not-a-heif" > /tmp/fake.heic
-            byteshaver /tmp/fake.heic webp -o /tmp/o 2>&1 | grep -qi libheif \
-              && echo "libheif decode path: active"'
 
   publish_docker:
     needs: [validate_docker]
