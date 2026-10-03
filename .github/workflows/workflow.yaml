@@ -142,7 +142,9 @@ jobs:
       # (dynamic system libs are fine here — this build only proves the
       # crate compiles; it is not an artifact we ship)
       - name: Install dec-heif verify deps (crates.io publish)
-        run: sudo apt-get install --yes --no-install-recommends pkg-config libde265-dev dav1d-dev
+        # note: the Debian/Ubuntu package is libdav1d-dev (NOT dav1d-dev —
+        # that's the alpine/apk name used in the Dockerfile)
+        run: sudo apt-get install --yes --no-install-recommends pkg-config libde265-dev libdav1d-dev
 
       # Cargo publish (once!)
       - name: Cargo publish crate
