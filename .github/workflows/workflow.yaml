@@ -205,7 +205,7 @@ jobs:
               /src/tools/libheif-static/build-decode-only.sh /src/heif-deps/dist > /dev/null
               export PKG_CONFIG_PATH=/src/heif-deps/dist/lib/pkgconfig
               # NOTE: the static-pie assertion must run before any packing.
-              apk add --no-cache nasm musl-dev gcc g++ make cmake file meson ninja pkgconf curl bash >/dev/null
+              apk add --no-cache nasm musl-dev gcc g++ make cmake file meson ninja pkgconf curl bash patch >/dev/null
               # CLI: full default features (opt-oxipng, exif, jxl, anim-webp, anim-apng, logs)
               cargo build --release --target x86_64-unknown-linux-musl -p byteshaver
               # GUI: static, x11-only windowing
@@ -422,8 +422,10 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
 
-      # The image is a 2-line Dockerfile around the prebuilt binary —
-      # no rust compilation, no layer cache needed.
+      # Short-circuit the unified Dockerfile's source-build stage: the
+      # prebuilt binary sits in the context, so only the tiny prebuilt
+      # stage runs. (The default SOURCE=build reproduces the full pipeline
+      # from source — see the Dockerfile header.)
       - name: Build alpine image
         uses: docker/build-push-action@v7
         with:
@@ -432,6 +434,8 @@ jobs:
           tags: byteshaver:validate-alpine
           load: true
           provenance: false
+          build-args: |
+            SOURCE=prebuilt
 
       - name: Smoke test alpine image
         run: |
@@ -511,6 +515,8 @@ jobs:
           push: ${{ startsWith(github.ref, 'refs/tags/v') }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            SOURCE=prebuilt
 
       - name: Push README.md to Dockerhub
         uses: peter-evans/dockerhub-description@v5
