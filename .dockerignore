@@ -1,3 +1,9 @@
 docs/
 examples/
 target/
+target-linux/
+target-win-test/
+heif-deps/
+current_release/
+to_pack/
+.git/

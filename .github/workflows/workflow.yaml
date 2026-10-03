@@ -34,13 +34,17 @@ jobs:
 
   # Compute the CPU-target matrix for build_binaries.
   #
-  # Always built: x86-64-v3 (base / docker image / suffixless artifacts)
-  # and x86-64-v4.
+  # Always built: x86-64-v3 only (base / docker image / suffixless artifacts).
+  # AVX-512-and-newer benefits come from RUNTIME DISPATCH inside the shipped
+  # libraries (libjxl/highway AVX3+AVX3_ZEN4 kernels enabled via the
+  # jpegxl-src patch, plus libde265/dav1d/libwebp dispatchers), and a separate
+  # x86-64-v4 artifact showed no measurable win on any tested encoder
+  # (docs/startup-and-cpu-variant-exploration.md §B) — so it is opt-in only.
   #
   # Opt-in: set the repository variable CPU_TARGETS_EXTRA (Settings →
   # Secrets and variables → Actions → Variables) to a comma-separated
-  # list of extra targets, e.g. `znver3,znver5`, and they join the
-  # matrix for the next release. Unset (default) = v3+v4 only.
+  # list of extra targets, e.g. `x86-64-v4,znver5`, and they join the
+  # matrix for the next release. Unset (default) = v3 only.
   matrix_prep:
     runs-on: ubuntu-latest
     outputs:
@@ -48,7 +52,7 @@ jobs:
     steps:
       - id: targets
         run: |
-          TARGETS='"x86-64-v3","x86-64-v4"'
+          TARGETS='"x86-64-v3"'
           EXTRA="${{ vars.CPU_TARGETS_EXTRA }}"
           if [ -n "$EXTRA" ]; then
             EXTRA_JSON=$(echo "$EXTRA" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | sed 's/^/"/;s/$/"/' | paste -sd, -)
@@ -385,32 +389,41 @@ jobs:
   # ---------------------------------------------------------------
   # Docker build validation (must pass before images are published)
   #
-  # Validates the complete dec-heif chain: alpine package names
-  # (libheif-dev, libde265-dev, aom-dev — note: aom, NOT libaom),
-  # the dec-heif + jxl feature build against real libheif, dynamic
-  # musl linking, and an end-to-end decode of a REAL HEIC file
-  # (generated in-container via heif-enc from a synthesized Y4M
-  # through the x265 plugin).
+  # Images ship the PREBUILT static-pie binary (no in-container
+  # compilation), so this job downloads the x86-64-v3 build artifact,
+  # drops it into the docker build context, and validates the exact
+  # bytes users get: --help, the dec-heif differential (a broken .heic
+  # must fail inside libheif, NOT with the feature-stub message), and
+  # an end-to-end decode of a REAL HEIC file (generated in-container
+  # via heif-enc from a synthesized Y4M through the x265 plugin).
   # ---------------------------------------------------------------
   validate_docker:
+    needs: [build_binaries]
     runs-on: ubuntu-latest
     name: Validate docker images (libheif)
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
-        with:
-          submodules: recursive
 
-      - name: Apply vendored-crate patches
-        run: tools/patches/apply.sh
+      - name: Download prebuilt binary
+        uses: actions/download-artifact@v7
+        with:
+          name: byteshaver-binaries-${{ env.BASE_CPU }}
+          path: artifact
+
+      - name: Stage binary into the docker build context
+        run: |
+          BIN="$(find artifact -maxdepth 1 -name 'byteshaver-*' ! -name 'byteshaver-gui-*' ! -name '*.sha256' | head -1)"
+          test -n "$BIN" || { echo "FATAL: no CLI binary in artifact"; exit 1; }
+          cp "$BIN" byteshaver
+          file byteshaver | grep -q "static-pie" \
+            || { echo "FATAL: binary is not static-pie"; exit 1; }
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
 
-      # Shared buildx cache (type=gha): publish_docker rebuilds this exact
-      # image and hits these layers instead of recompiling (~20 min saved).
-      # provenance=false keeps the result a single-platform manifest that
-      # `load: true` can load locally for the smoke tests.
+      # The image is a 2-line Dockerfile around the prebuilt binary —
+      # no rust compilation, no layer cache needed.
       - name: Build alpine image
         uses: docker/build-push-action@v7
         with:
@@ -419,8 +432,6 @@ jobs:
           tags: byteshaver:validate-alpine
           load: true
           provenance: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Smoke test alpine image
         run: |
@@ -463,6 +474,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
 
+      - name: Download prebuilt binary
+        uses: actions/download-artifact@v7
+        with:
+          name: byteshaver-binaries-${{ env.BASE_CPU }}
+          path: artifact
+
+      - name: Stage binary into the docker build context
+        run: |
+          BIN="$(find artifact -maxdepth 1 -name 'byteshaver-*' ! -name 'byteshaver-gui-*' ! -name '*.sha256' | head -1)"
+          test -n "$BIN" || { echo "FATAL: no CLI binary in artifact"; exit 1; }
+          cp "$BIN" byteshaver
+
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
@@ -488,9 +511,6 @@ jobs:
           push: ${{ startsWith(github.ref, 'refs/tags/v') }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # consume the layer cache exported by validate_docker (same ref =>
-          # same gha cache scope) instead of recompiling from scratch
-          cache-from: type=gha
 
       - name: Push README.md to Dockerhub
         uses: peter-evans/dockerhub-description@v5

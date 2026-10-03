@@ -321,9 +321,11 @@ variants are produced by the in-repo zstd packer
 ([tools/packer](tools/packer)) in a dedicated CI job for size-constrained
 setups; they are plain zstd frames and can be restored with `zstd -d`.
 
-`-cpu` suffixes (x86-64-v4, znver3, znver5) are tuned builds; the suffixless
-artifacts target x86-64-v3 (Intel Haswell / AMD Zen and newer). Every artifact
-ships with a `.sha256` checksum. Third-party code embedded by the packer
+The suffixless artifacts target x86-64-v3 (Intel Haswell / AMD Zen and newer).
+AVX-512-and-newer CPUs are served by runtime dispatch inside the shipped
+libraries, so no separate v4+ artifacts are built by default; tuned builds
+(x86-64-v4, znver3, znver5) are opt-in via the repository's `CPU_TARGETS_EXTRA`
+setting. Every artifact ships with a `.sha256` checksum. Third-party code embedded by the packer
 (zstd, BSD-2-Clause) is attributed in
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
