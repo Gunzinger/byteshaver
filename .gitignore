@@ -13,3 +13,4 @@ debug*/
 # libheif-static local build trees (use LIBHEIF_STATIC_WORKDIR to keep them)
 tools/libheif-static/build/
 tools/libheif-static/build-windows/
+zstd-1.5.7/
