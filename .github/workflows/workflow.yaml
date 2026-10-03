@@ -155,6 +155,20 @@ jobs:
           key: byteshaver-linux-target-${{ matrix.cpu_target }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: byteshaver-linux-target-${{ matrix.cpu_target }}-
 
+      # Static libde265 + dav1d for the (now default) dec-heif feature.
+      # Built decode-only from pinned upstream tarballs by
+      # tools/libheif-static/build-decode-only.sh; cached on the recipe hash
+      # so unchanged libheif dependency versions/configurations never rebuild.
+      # libheif itself is compiled by libheif-sys's `embedded-libheif` feature
+      # (vendored 1.23.1, plugins baked in, x265/aom absent => license-clean,
+      # see docs/plans/17-static-libheif-and-jxl-avx512.md).
+      - name: Cache static heif codec deps
+        uses: actions/cache@v6
+        with:
+          path: heif-deps
+          key: heif-deps-decodeonly-${{ hashFiles('tools/libheif-static/**') }}
+          restore-keys: heif-deps-decodeonly-
+
       - name: Build linux binaries (musl, in alpine container)
         shell: bash
         run: |
@@ -173,8 +187,14 @@ jobs:
               # binaries are shipped UNPACKED (instant startup, no AV
               # false-positive surface); an optional packed variant set
               # is produced later by the dedicated pack_binaries job.
+              # static libde265 + dav1d for dec-heif (decode-only; no x265/aom).
+              # The actions/cache above stores heif-deps across runs; inside
+              # this container the recipe skips anything already present.
+              mkdir -p /src/heif-deps
+              /src/tools/libheif-static/build-decode-only.sh /src/heif-deps/dist > /dev/null
+              export PKG_CONFIG_PATH=/src/heif-deps/dist/lib/pkgconfig
               # NOTE: the static-pie assertion must run before any packing.
-              apk add --no-cache nasm musl-dev gcc g++ make cmake file >/dev/null
+              apk add --no-cache nasm musl-dev gcc g++ make cmake file meson ninja pkgconf curl bash >/dev/null
               # CLI: full default features (opt-oxipng, exif, jxl, anim-webp, anim-apng, logs)
               cargo build --release --target x86_64-unknown-linux-musl -p byteshaver
               # GUI: static, x11-only windowing

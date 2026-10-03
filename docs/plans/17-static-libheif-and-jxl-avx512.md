@@ -1,6 +1,20 @@
 # Plan 17 — AVX-512 runtime dispatch for vendored libjxl & fully static libheif in all artifacts
 
-> **STATUS: plan** (not implemented). Two independent workstreams:
+> **STATUS: implemented** (this branch), with one scoped deferral:
+> **A** done — vendored `jpegxl-src` patch enables `AVX3` + `AVX3_ZEN4`
+> (AVX3_SPR intentionally off); verified 59,796 zmm instructions in
+> `libjxl.a`, AVX2-machine encode/decode unchanged and 342/342 tests green.
+> **B Linux** done — `dec-heif` is now a default feature with libheif 1.23.1
+> statically embedded (`libheif-sys` `embedded-libheif`, an even cleaner
+> mechanism than the planned external libheif build — no fork needed) plus
+> static libde265 1.1.3 + dav1d 1.5.1 from `tools/libheif-static/`
+> (decode-only: x265/aom/libwebp excluded); musl static-pie binary
+> 16.2 → 22.7 MB, packed 7.19 MB (31.7 %), HEIC+AVIF decode verified,
+> x265 symbols absent. **B Windows** deferred: gcc-built deps *cross-compile
+> successfully* (libde265/dav1d/embedded libheif), but the final link pulls
+> `libstdc++-6.dll` via the dynamic `-lstdc++` in libheif.pc's Libs.private
+> (rustc places dependency flags where the import lib wins) — gnullvm/ucrt
+> toolchain trial is the documented follow-up (§B.6).
 > **A** enables libjxl's AVX-512 kernels with highway runtime dispatch
 > (safe on AVX2 clients), **B** ships the `dec-heif` feature in all static
 > artifacts via [audivir/libheif-static](https://github.com/audivir/libheif-static).

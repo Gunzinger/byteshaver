@@ -73,9 +73,15 @@ when the `dec-heif` feature is compiled in:
 - 10/12-bit (HDR) sources are down-converted to 8-bit with a printed warning
 
 Without the feature, HEIC/HEIF/AVIF inputs fail per-file with a clear message while the
-rest of the batch keeps converting. Please note that the **static release binaries are
-built without** `dec-heif` (the native libheif + codec libraries have no static archives),
-while the **docker images include it** and are validated end-to-end by CI.
+rest of the batch keeps converting. `dec-heif` is **enabled by default**: the libheif
+version matching the bindings is compiled in statically (libheif-sys
+`embedded-libheif`), with HEVC decode via a statically linked libde265 and AV1/AVIF
+decode via dav1d (see `tools/libheif-static/` and
+[docs/plans/17-static-libheif-and-jxl-avx512.md](docs/plans/17-static-libheif-and-jxl-avx512.md)).
+This adds HEIC/HEIF/AVIF input to the static musl release binaries as well; the
+**Windows binaries currently remain without** `dec-heif` (toolchain note in plan 17 §B).
+Building it locally requires `pkg-config` plus static libde265 + dav1d
+(`tools/libheif-static/build-decode-only.sh`) on the library search path.
 
 `JPEG XL` (`.jxl`) inputs are decoded with [`jxl-oxide`](https://crates.io/crates/jxl-oxide)
  (still images and animations, 8/16-bit, EXIF/XMP boxes and ICC profiles).
@@ -321,17 +327,18 @@ ships with a `.sha256` checksum. Third-party code embedded by the packer
 (zstd, BSD-2-Clause) is attributed in
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
-Feature notes: the static Linux/Windows binaries include everything except
-`dec-heif` — HEIC/HEIF/AVIF input requires the native libheif libraries and is
-therefore only shipped in the **docker images** (validated by CI end-to-end,
-see below). The Linux GUI build uses the X11 windowing backend.
+Feature notes: the static **Linux** binaries include HEIC/HEIF/AVIF input
+(`dec-heif`, statically embedded libheif + libde265 + dav1d); the **Windows**
+binaries currently exclude it (see plan 17 §B for the toolchain follow-up).
+The Linux GUI build uses the X11 windowing backend.
 
 See the [GitHub releases](https://github.com/Gunzinger/byteshaver/releases) page for downloads.
 
 ### Using the docker image 🐳
 
 Docker containers are also built for every tag. Both the alpine and debian
-images include HEIC/HEIF/AVIF input support (`dec-heif`): CI builds both
+images include HEIC/HEIF/AVIF input support (`dec-heif`, statically linked):
+CI builds both
 images and validates the complete chain — including a real HEIC file decoded
 inside the container — before they are published.
 
@@ -481,7 +488,7 @@ For detailed command usage, see all arguments with `--help` or `-h`:
     -V, --version
             Print version
 
-> Note: HEIC/HEIF-enabled builds (`dec-heif` feature, docker images) additionally
+> Note: HEIC/HEIF-enabled builds (`dec-heif`, default on Linux) additionally
 > expose the global `--heif-image-policy <primary|all>` flag.
 ```
 
@@ -544,9 +551,11 @@ Example of clean command:
 - `cmake`, a C++ compiler and `nasm` are needed for building the vendored `libjxl`
   (jpeg-xl support; enabled by default via the `jxl` feature).
   Install via `apt install cmake g++ nasm` / `apk add cmake g++ nasm`.
-- The opt-in `dec-heif` feature (HEIC/HEIF/AVIF input) needs the native
-  `libheif` + codec development libraries at build time
-  (`apt install libheif-dev libde265-dev libaom-dev pkg-config` / `apk add libheif-dev libde265-dev aom-dev`).
+- `dec-heif` (HEIC/HEIF/AVIF input, default) needs `pkg-config` and static
+  libde265 + dav1d at build time; libheif itself is compiled in by
+  `libheif-sys`'s `embedded-libheif` feature. Generate the static codec
+  libraries with `tools/libheif-static/build-decode-only.sh <dist>` and point
+  `PKG_CONFIG_PATH` at `<dist>/lib/pkgconfig`.
 
 ### Installation Guide
 

@@ -35,7 +35,7 @@ include = [
 default-run = "byteshaver"
 
 [features]
-default = ["opt-oxipng", "exif", "jxl", "anim-webp", "anim-apng", "logs"]
+default = ["opt-oxipng", "exif", "jxl", "anim-webp", "anim-apng", "logs", "dec-heif"]
 # Optional oxipng-based PNG re-optimization target (kept optional so
 # `--no-default-features` builds stay slim); intentionally excludes the
 # `parallel` and `binary` features of oxipng to avoid thread-pool
@@ -43,11 +43,12 @@ default = ["opt-oxipng", "exif", "jxl", "anim-webp", "anim-apng", "logs"]
 opt-oxipng = ["dep:oxipng"]
 # EXIF/metadata handling (kamadak-exif); without it, all EXIF is stripped
 exif = ["dep:kamadak-exif"]
-# Optional HEIC/HEIF/AVIF input decoding via libheif (opt-in because it needs
-# the native libheif + codec libraries, e.g. libde265/libaom, at build time);
-# without it, HEIC/HEIF/AVIF inputs report a per-file error and the batch
-# continues. Kept out of `default` so musl/windows release binaries stay
-# self-contained (see README + docs/plans/01-heic-heif-decoding.md).
+# HEIC/HEIF/AVIF input decoding (default on, Linux; Windows binaries keep the
+# feature stub — see docs/plans/17-static-libheif-and-jxl-avx512.md §B for the
+# gnullvm/ucrt follow-up). libheif-sys builds its vendored libheif 1.23.1
+# statically (`embedded-libheif`); the codec plugins come from
+# pkg-config-visible static libde265 + dav1d (see tools/libheif-static/).
+# Keep an escape hatch: `--no-default-features` builds stay lean.
 dec-heif = ["dep:libheif-rs"]
 # JPEG XL source decoding (jxl-oxide) and target encoding (in-tree FFI
 # bindings to libjxl, built by jpegxl-src). Requires cmake + a C++
@@ -79,12 +80,16 @@ humansize = "2.1.3"
 oxipng = { version = "10.2", optional = true, default-features = false, features = ["zopfli"] }
 png = "0.18.1"
 kamadak-exif = { version = "0.6", optional = true }
-# native HEIC/HEIF/AVIF input decoder (libheif bindings); `v1_19` is the
-# minimum-version gate (not a pin — newer libs like alpine's 1.23 work) so
-# debian trixie's libheif 1.19.8 satisfies it; all APIs used for decoding are
-# older than 1.19. `default-features = false` avoids the crate's `image`
-# integration feature (decoding is wired manually)
-libheif-rs = { version = "3", optional = true, default-features = false, features = ["v1_19"] }
+# native HEIC/HEIF/AVIF input decoder: `embedded-libheif` builds the vendored
+# libheif 1.23.1 statically (plugins off; version exactly matches the
+# bindings); codec decode plugins (libde265, dav1d) are resolved via
+# pkg-config from tools/libheif-static/build-decode-only.sh output.
+# `v1_19` is the minimum-version gate (not a pin).
+# Windows stays dec-heif-less for now: the mingw C++ runtime link fights the
+# dynamic -lstdc++ emitted by libheif.pc (pulls libstdc++-6.dll). Follow-up:
+# gnullvm/ucrt toolchain trial — see docs/plans/17 §B.6.
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+libheif-rs = { version = "3", optional = true, default-features = false, features = ["v1_19", "embedded-libheif"] }
 jxl-oxide = { version = "0.12", default-features = false, features = ["rayon", "moxcms", "image"], optional = true }
 moxcms = { version = "0.9", optional = true }
 jpegxl-src = { version = "0.12", optional = true }

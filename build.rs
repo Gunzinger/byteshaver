@@ -67,6 +67,49 @@ fn main() {
         jpegxl_src::build();
     }
 
+    // WS1/plan-17: static libheif (dec-heif) on musl. The embedded libheif.a
+    // references libde265 + dav1d + the static C++ runtime, whose link flags
+    // arrive via libheif.pc's Libs.private (pkg-config --static). libde265
+    // 1.1.x additionally needs GCC's cpu-detection runtime (__cpu_model,
+    // __cpu_indicator_init_local) from libgcc.a; the implicit -lgcc emitted
+    // by the driver sits too early in the link line to resolve references
+    // from later archives, so append them here — this crate's flags come
+    // after all dependency flags, giving the archives a resolvable position.
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_DEC_HEIF");
+    if std::env::var_os("CARGO_FEATURE_DEC_HEIF").is_some()
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("windows")
+    {
+        // libde265 1.1.x uses GCC's cpu-detection runtime (__cpu_model,
+        // __cpu_indicator_init_local) which only lives in the *static* libgcc
+        // archive; the dynamic libgcc_s that rustc links by default does not
+        // export the `_local` variant. Append the exact archive at the end of
+        // the link line (link-args land after all dependency archives).
+        if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("musl") {
+            // native musl builds only (the CI alpine container); locate the
+            // target compiler's private library dir for libgcc.a/libgcc_eh.a
+            let libgcc_dir = std::process::Command::new("gcc")
+                .args(["-print-file-name=libgcc.a"])
+                .output()
+                .ok()
+                .map(|o| o.stdout)
+                .and_then(|s| String::from_utf8(s).ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| s.starts_with('/'))
+                .and_then(|s| std::path::PathBuf::from(s).parent().map(|p| p.to_path_buf()));
+            if let Some(dir) = libgcc_dir {
+                println!("cargo:rustc-link-search=native={}", dir.display());
+                println!("cargo:rustc-link-arg=-lgcc");
+                println!("cargo:rustc-link-arg=-lgcc_eh");
+            } else {
+                println!(
+                    "cargo:warning=dec-heif: could not locate libgcc.a for the musl static link"
+                );
+            }
+        } else {
+            println!("cargo:rustc-link-arg=-l:libgcc.a");
+        }
+    }
+
     // Run `cargo metadata` to gather project metadata
     let metadata = MetadataCommand::new()
         .exec()
