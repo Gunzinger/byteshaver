@@ -93,9 +93,11 @@ enabled, plain AVX-512 machines get AVX3 and richer machines get AVX3_DL.)
 
 Options, in preference order:
 
-- **A (recommended): vendored patch of `jpegxl-src` via
-  `[patch.crates-io]`.** Copy the crate into the repo (e.g.
-  `tools/jpegxl-src-patched/`), add three lines to `src/lib.rs`:
+- **A (implemented): submodule + patch.** `tools/jpegxl-src` is a git
+  submodule pinned to the `jpegxl-src` 0.12.0 release commit
+  (inflation/jpegxl-rs @ `884f36f`; libjxl rides along as its nested
+  submodule), plus `tools/patches/jpegxl-src-avx512.patch` applied by
+  `tools/patches/apply.sh` after checkout — three lines in `src/lib.rs`:
 
   ```rust
   .define("JPEGXL_ENABLE_HWY_AVX3", "ON")

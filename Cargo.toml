@@ -1,12 +1,18 @@
 [workspace]
 members = [".", "gui"]
+# the jpegxl-src submodule carries its own cargo workspace
+exclude = ["tools/jpegxl-src"]
 resolver = "2"
 
-# Vendored, patched jpegxl-src (see tools/jpegxl-src/README.md): builds
-# libjxl's AVX3 / AVX3_ZEN4 highway kernels alongside the upstream default
-# targets; highway's runtime dispatch keeps older clients on their best path.
+# satisfies the `rust-version.workspace` inheritance of the [patch.crates-io]
+# path dependency below (cargo resolves in-tree patch paths against this root)
+[workspace.package]
+rust-version = "1.92.0"
+
+# Vendored, patched jpegxl-src (see tools/patches/ and tools/jpegxl-src):
+# a git submodule pinned to the 0.12.0 release commit + tools/patches/.
 [patch.crates-io]
-jpegxl-src = { path = "tools/jpegxl-src" }
+jpegxl-src = { path = "tools/jpegxl-src/jpegxl-src" }
 
 [package]
 name = "byteshaver"

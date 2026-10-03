@@ -551,6 +551,10 @@ Example of clean command:
 - `cmake`, a C++ compiler and `nasm` are needed for building the vendored `libjxl`
   (jpeg-xl support; enabled by default via the `jxl` feature).
   Install via `apt install cmake g++ nasm` / `apk add cmake g++ nasm`.
+- The patched `jpegxl-src` is a git submodule (with libjxl nested inside):
+  after cloning, initialize it and apply the patch:
+  `git submodule update --init --recursive && tools/patches/apply.sh`
+  (adds libjxl's AVX-512 highway targets; see `tools/patches/`).
 - `dec-heif` (HEIC/HEIF/AVIF input, default) needs `pkg-config` and static
   libde265 + dav1d at build time; libheif itself is compiled in by
   `libheif-sys`'s `embedded-libheif` feature. Generate the static codec

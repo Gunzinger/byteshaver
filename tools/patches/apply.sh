@@ -6,13 +6,13 @@
 #   git submodule update --init --recursive
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 APPLIED=0
 
 apply() { # <submodule-dir> <patch-file>
     local dir="$ROOT/$1" patch="$ROOT/$2"
-    [ -d "$dir/.git" ] || { echo "ERROR: $1 is not initialized (git submodule update --init --recursive)" >&2; exit 1; }
-    if grep -rq "byteshaver patch" "$dir/src" 2>/dev/null; then
+    [ -e "$dir/.git" ] || { echo "ERROR: $1 is not initialized (git submodule update --init --recursive)" >&2; exit 1; }
+    if grep -rq "byteshaver patch" "$dir/jpegxl-src/src" 2>/dev/null; then
         echo "already applied: $2"
         return
     fi

@@ -64,11 +64,18 @@ jobs:
         cpu_target: ${{ fromJSON(needs.matrix_prep.outputs.cpu_targets) }}
     name: Build binaries for ${{ matrix.cpu_target }}
     steps:
+      # recursive: the patched jpegxl-src (tools/jpegxl-src) is a submodule
+      # whose libjxl is its own nested submodule
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       # Extract version from the Git tag (strip leading 'v'); manual
       # workflow_dispatch runs fall back to a valid placeholder semver
+      - name: Apply vendored-crate patches
+        run: tools/patches/apply.sh
+
       - name: Set version from tag
         id: version
         run: |
@@ -391,6 +398,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Apply vendored-crate patches
+        run: tools/patches/apply.sh
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
