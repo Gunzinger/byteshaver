@@ -19,7 +19,7 @@ apply() { # <submodule-dir> <crate-subdir> <patch-file>
         echo "already applied: $3"
         return
     fi
-    patch -d "$dir" -p1 --forward < "$patch"
+    patch -d "$dir" -p1 -l --forward < "$patch"
     echo "applied: $3 -> $1"
 }
 
