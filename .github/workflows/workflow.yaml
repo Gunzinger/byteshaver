@@ -136,6 +136,14 @@ jobs:
       # rust package / target cache
       - uses: Swatinem/rust-cache@v2
 
+      # crates.io publish verify build: `dec-heif` is a default feature, so
+      # the verification build of the packaged crate needs pkg-config plus
+      # the libde265/dav1d decode libraries discoverable via pkg-config
+      # (dynamic system libs are fine here — this build only proves the
+      # crate compiles; it is not an artifact we ship)
+      - name: Install dec-heif verify deps (crates.io publish)
+        run: sudo apt-get install --yes --no-install-recommends pkg-config libde265-dev dav1d-dev
+
       # Cargo publish (once!)
       - name: Cargo publish crate
         if: ${{ matrix.cpu_target == env.BASE_CPU && startsWith(github.ref, 'refs/tags/v') }}
