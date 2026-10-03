@@ -76,38 +76,20 @@ python3 zpack.py zpack-stub byteshaver byteshaver-zpk --frames 4
 - Payloads are plain zstd frames — recoverable via `dd` + `zstd -d`, and the
   AV-heuristic caveats of self-extracting executables apply.
 
-## Windows (`zpe_stub.c`) — in-memory PE loader
+## Windows (zpe_stub.c) - extract-to-temp + CreateProcess
 
-The Windows stub uses an **image-layout container** (`zpack.py --pe`, magic
-`ZPK3pe64`): frame 0 = PE headers, remaining frames = sections split at
-`--pe-chunk` MiB (default 4) with per-frame destination RVAs. This kills the
-naive triple buffering (packed file + unpacked buffer + image copy): the
-packed file is memory-mapped, section frames decompress **directly into the
-final image allocation**, and the loader's section memcpy disappears. The
-packer also copies the payload's `Subsystem` into the stub, so a GUI payload
-does not pop a console window.
+The Windows stub uses the extract-to-temp model: it decompresses the payload
+to %TEMP%, then CreateProcess's it with the original command line and
+environment. The payload runs as a normal PE loaded by the standard Windows
+loader - TLS, SEH, COM, module-list registration, DEP/CFG all work because
+the OS does the loading. The temp file is deleted after the process exits.
 
-The stub then performs base relocation (`.reloc`), imports
-(`LoadLibraryA`/`GetProcAddress`, name + ordinal), `RtlAddFunctionTable`
-(`.pdata`), per-section `VirtualProtect`, and starts `AddressOfEntryPoint` on
-a fresh thread with argv/exit-code passthrough.
+This is deliberately simpler than in-memory PE mapping (which requires
+reimplementing TLS directory processing, SEH interplay, and module-list
+registration - see plan 17 section B for why that approach was abandoned).
+The trade-off is a visible temp file during execution.
 
-Measured with the real `byteshaver.exe` (16.96 MB) under wine 10, before/after
-the image-layout redesign (flat-frame v1 vs `--pe --pe-chunk 4`):
-
-| | naive v1 | **v2 image-layout** |
-|---|---:|---:|
-| packed size | 32.8 % | **32.0 %** |
-| startup (`wine x --version`, median) | 31.4–32.3 ms | **23.8 ms** |
-| peak working set | 50.1 MB | **35.4 MB** |
-| peak commit | 42.5 MB | **20.0 MB** |
-| in-stub load phase | 8.2 ms | 1.9 ms |
-
-vs the unpacked exe (18.4 ms under wine) the packed overhead is ~5 ms; vs
-`upx --best`-style sizing it is smaller *and* faster. `ZPE_DEBUG=1` prints
-per-phase memory checkpoints (WS/commit peaks via `GetProcessMemoryInfo`).
-
-Build:
+### Build
 
 ```sh
 # in an alpine container with the mingw-w64 cross toolchain
@@ -116,15 +98,11 @@ curl -sL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.ta
 make -C zstd-1.5.7/lib libzstd.a -j4 CC=x86_64-w64-mingw32-gcc AR=x86_64-w64-mingw32-ar \
   CFLAGS="-Os -ffunction-sections -fdata-sections -DDYNAMIC_BMI2=0" ZSTD_LEGACY_SUPPORT=0
 x86_64-w64-mingw32-gcc -Os -static -s -ffunction-sections -fdata-sections \
-  -Wl,--gc-sections zpe_stub.c zstd-1.5.7/lib/libzstd.a -Izstd-1.5.7/lib \
-  -lpthread -o zpe-stub.exe
+  -Wl,--gc-sections tools/packer/zpe_stub.c zstd-1.5.7/lib/libzstd.a \
+  -Izstd-1.5.7/lib -o zpe-stub.exe
 python3 zpack.py zpe-stub.exe byteshaver.exe byteshaver-packed.exe --pe
 ```
 
-Scope notes: TLS-callback-heavy or plugin-style payloads, .NET and side-by-side
-(WinSxS) assemblies are not wired up; the payload is not registered as a
-loaded module (its own `GetModuleFileName` reports the stub's path); PE debug
-directory file offsets go stale (debugger PDB lookup only); any overlay (e.g.
-Authenticode certs) must be re-appended *after* packing. For the
-byteshaver CLI and GUI this is all irrelevant; anything fancier should stay
-unpacked (see the analysis doc's Windows roadmap).
+### Diagnostic env
+
+- ZPE_DEBUG=1 - write phase-by-phase status to %TEMP%\zpe-debug.log
