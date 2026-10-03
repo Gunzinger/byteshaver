@@ -34,13 +34,17 @@ jobs:
 
   # Compute the CPU-target matrix for build_binaries.
   #
-  # Always built: x86-64-v3 (base / docker image / suffixless artifacts)
-  # and x86-64-v4.
+  # Always built: x86-64-v3 only (base / docker image / suffixless artifacts).
+  # AVX-512-and-newer benefits come from RUNTIME DISPATCH inside the shipped
+  # libraries (libjxl/highway AVX3+AVX3_ZEN4 kernels enabled via the
+  # jpegxl-src patch, plus libde265/dav1d/libwebp dispatchers), and a separate
+  # x86-64-v4 artifact showed no measurable win on any tested encoder
+  # (docs/startup-and-cpu-variant-exploration.md §B) — so it is opt-in only.
   #
   # Opt-in: set the repository variable CPU_TARGETS_EXTRA (Settings →
   # Secrets and variables → Actions → Variables) to a comma-separated
-  # list of extra targets, e.g. `znver3,znver5`, and they join the
-  # matrix for the next release. Unset (default) = v3+v4 only.
+  # list of extra targets, e.g. `x86-64-v4,znver5`, and they join the
+  # matrix for the next release. Unset (default) = v3 only.
   matrix_prep:
     runs-on: ubuntu-latest
     outputs:
@@ -48,7 +52,7 @@ jobs:
     steps:
       - id: targets
         run: |
-          TARGETS='"x86-64-v3","x86-64-v4"'
+          TARGETS='"x86-64-v3"'
           EXTRA="${{ vars.CPU_TARGETS_EXTRA }}"
           if [ -n "$EXTRA" ]; then
             EXTRA_JSON=$(echo "$EXTRA" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | sed 's/^/"/;s/$/"/' | paste -sd, -)
@@ -64,11 +68,18 @@ jobs:
         cpu_target: ${{ fromJSON(needs.matrix_prep.outputs.cpu_targets) }}
     name: Build binaries for ${{ matrix.cpu_target }}
     steps:
+      # recursive: the patched jpegxl-src (tools/jpegxl-src) is a submodule
+      # whose libjxl is its own nested submodule
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       # Extract version from the Git tag (strip leading 'v'); manual
       # workflow_dispatch runs fall back to a valid placeholder semver
+      - name: Apply vendored-crate patches
+        run: tools/patches/apply.sh
+
       - name: Set version from tag
         id: version
         run: |
@@ -91,14 +102,47 @@ jobs:
           grep -n '^version' Cargo.toml gui/Cargo.toml
           grep -n -A1 '^name = "byteshaver' Cargo.lock
 
-      - name: Install Windows cross compiler
-        run: sudo apt-get install --yes --no-install-recommends gcc-mingw-w64-x86-64-win32 g++-mingw-w64-x86-64-win32 nasm upx-ucl
+      # Windows cross toolchain: llvm-mingw (clang/lld/libc++, UCRT runtime)
+      # for the x86_64-pc-windows-gnullvm target. UCRT ships with Windows 10+.
+      # Cached on the pinned toolchain version; the cached tree already has
+      # the dynamic libc++/libunwind import libs removed (self-containment).
+      - name: Cache llvm-mingw toolchain
+        uses: actions/cache@v6
+        with:
+          path: ~/.tools/llvm-mingw-20260922
+          key: llvm-mingw-20260922-ucrt-ubuntu-22.04-x86_64
+
+      - name: Install Windows toolchain (llvm-mingw, UCRT)
+        run: |
+          set -euo pipefail
+          sudo apt-get install --yes --no-install-recommends nasm ninja-build meson pkg-config patch
+          LLVM_MINGW_VERSION=20260922
+          TC="$HOME/.tools/llvm-mingw-$LLVM_MINGW_VERSION"
+          if [ ! -x "$TC/bin/x86_64-w64-mingw32-clang" ]; then
+            mkdir -p "$HOME/.tools"
+            curl -sL "https://github.com/mstorsjo/llvm-mingw/releases/download/$LLVM_MINGW_VERSION/llvm-mingw-$LLVM_MINGW_VERSION-ucrt-ubuntu-22.04-x86_64.tar.xz" \
+              | tar -xJ -C "$HOME/.tools"
+            rm -rf "$TC"
+            mv "$HOME/.tools/llvm-mingw-$LLVM_MINGW_VERSION-ucrt-ubuntu-22.04-x86_64" "$TC"
+            # self-contained exes: drop the libc++/libunwind import libs so the
+            # linker picks the static archives (no libc++.dll/libunwind.dll)
+            rm "$TC/x86_64-w64-mingw32/lib/libc++.dll.a" "$TC/x86_64-w64-mingw32/lib/libunwind.dll.a"
+          fi
+          echo "$TC/bin" >> "$GITHUB_PATH"
 
       - name: Install rustup targets
-        run: rustup target add x86_64-pc-windows-gnu
+        run: rustup target add x86_64-pc-windows-gnullvm
 
       # rust package / target cache
       - uses: Swatinem/rust-cache@v2
+
+      # crates.io publish verify build: `dec-heif` is a default feature, so
+      # the verification build of the packaged crate needs pkg-config plus
+      # the libde265/dav1d decode libraries discoverable via pkg-config
+      # (dynamic system libs are fine here — this build only proves the
+      # crate compiles; it is not an artifact we ship)
+      - name: Install dec-heif verify deps (crates.io publish)
+        run: sudo apt-get install --yes --no-install-recommends pkg-config libde265-dev dav1d-dev
 
       # Cargo publish (once!)
       - name: Cargo publish crate
@@ -155,6 +199,20 @@ jobs:
           key: byteshaver-linux-target-${{ matrix.cpu_target }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: byteshaver-linux-target-${{ matrix.cpu_target }}-
 
+      # Static libde265 + dav1d for the (now default) dec-heif feature.
+      # Built decode-only from pinned upstream tarballs by
+      # tools/libheif-static/build-decode-only.sh; cached on the recipe hash
+      # so unchanged libheif dependency versions/configurations never rebuild.
+      # libheif itself is compiled by libheif-sys's `embedded-libheif` feature
+      # (vendored 1.23.1, plugins baked in, x265/aom absent => license-clean,
+      # see docs/plans/17-static-libheif-and-jxl-avx512.md).
+      - name: Cache static heif codec deps
+        uses: actions/cache@v6
+        with:
+          path: heif-deps
+          key: heif-deps-decodeonly-${{ hashFiles('tools/libheif-static/**') }}
+          restore-keys: heif-deps-decodeonly-
+
       - name: Build linux binaries (musl, in alpine container)
         shell: bash
         run: |
@@ -170,10 +228,17 @@ jobs:
             rust:1-alpine sh -c '
               set -e
               unset RUSTFLAGS
-              # NOTE: the static-pie assertion must run BEFORE packing — after
-              # upx, `file` reports "pie executable ... statically linked" and
-              # no longer matches "static-pie".
-              apk add --no-cache nasm musl-dev gcc g++ make cmake file upx >/dev/null
+              # binaries are shipped UNPACKED (instant startup, no AV
+              # false-positive surface); an optional packed variant set
+              # is produced later by the dedicated pack_binaries job.
+              # static libde265 + dav1d for dec-heif (decode-only; no x265/aom).
+              # The actions/cache above stores heif-deps across runs; inside
+              # this container the recipe skips anything already present.
+              mkdir -p /src/heif-deps
+              /src/tools/libheif-static/build-decode-only.sh /src/heif-deps/dist > /dev/null
+              export PKG_CONFIG_PATH=/src/heif-deps/dist/lib/pkgconfig
+              # NOTE: the static-pie assertion must run before any packing.
+              apk add --no-cache nasm musl-dev gcc g++ make cmake file meson ninja pkgconf curl bash patch >/dev/null
               # CLI: full default features (opt-oxipng, exif, jxl, anim-webp, anim-apng, logs)
               cargo build --release --target x86_64-unknown-linux-musl -p byteshaver
               # GUI: static, x11-only windowing
@@ -182,54 +247,75 @@ jobs:
                 || (echo "ERROR: byteshaver is not static-pie" && exit 1)
               file target-linux/x86_64-unknown-linux-musl/release/byteshaver-gui | grep -q "static-pie" \
                 || (echo "ERROR: byteshaver-gui is not static-pie" && exit 1)
-              upx --best target-linux/x86_64-unknown-linux-musl/release/byteshaver target-linux/x86_64-unknown-linux-musl/release/byteshaver-gui
             '
           mkdir -p current_release
           if [ "${{ matrix.cpu_target }}" == "${{ env.BASE_CPU }}" ]; then SUFFIX=""; else SUFFIX="-${{ matrix.cpu_target }}"; fi
           cp target-linux/x86_64-unknown-linux-musl/release/byteshaver "current_release/byteshaver-${{ env.VERSION }}${SUFFIX}"
           cp target-linux/x86_64-unknown-linux-musl/release/byteshaver-gui "current_release/byteshaver-gui-${{ env.VERSION }}${SUFFIX}"
+          # license/attribution materials ship with every release
+          cp THIRD-PARTY-NOTICES.md docs/dependency-licenses.md current_release/
           ( cd current_release && sha256sum "byteshaver-${{ env.VERSION }}${SUFFIX}" > "byteshaver-${{ env.VERSION }}${SUFFIX}.sha256" && \
             sha256sum "byteshaver-gui-${{ env.VERSION }}${SUFFIX}" > "byteshaver-gui-${{ env.VERSION }}${SUFFIX}.sha256" )
 
       # ---------------------------------------------------------------
-      # Windows (gnu cross from ubuntu) — CLI and GUI
+      # Windows (gnullvm/ucrt cross from ubuntu) — CLI and GUI
       #
-      # Full default features including jxl: the vendored libjxl cmake
-      # build cross-compiles via the target-suffixed CC/CXX/AR vars
-      # (validated). The GUI is built with --no-default-features (no
-      # unix windowing backend features, see the linux step comment).
+      # Full default features including jxl AND dec-heif: the vendored
+      # libjxl cmake build and the statically embedded libheif cross-
+      # compile via the target-suffixed CC/CXX/AR vars (llvm-mingw
+      # clang), and the static libde265 + dav1d decode plugins come
+      # from tools/libheif-static (same recipe as the musl build).
+      # The GUI is built with --no-default-features (no unix windowing
+      # backend features, see the linux step comment).
+      # UCRT runtime: supported on Windows 10 and newer.
       # ---------------------------------------------------------------
+      - name: Build static heif codec deps (windows)
+        run: |
+          set -euo pipefail
+          HEIF_CC=x86_64-w64-mingw32-clang HEIF_CXX=x86_64-w64-mingw32-clang++ \
+            HEIF_AR=llvm-ar HEIF_SYSROOT="$LLVM_MINGW_DIR/x86_64-w64-mingw32" \
+            tools/libheif-static/build-decode-only-windows.sh "$PWD/heif-deps-win" 8
+
       - name: Build windows binaries (cross)
         shell: bash
         env:
-          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
-          CC_x86_64_pc_windows_gnu: x86_64-w64-mingw32-gcc
-          CXX_x86_64_pc_windows_gnu: x86_64-w64-mingw32-g++
-          AR_x86_64_pc_windows_gnu: x86_64-w64-mingw32-ar
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER: x86_64-w64-mingw32-clang
+          CC_x86_64_pc_windows_gnullvm: x86_64-w64-mingw32-clang
+          CXX_x86_64_pc_windows_gnullvm: x86_64-w64-mingw32-clang++
+          AR_x86_64_pc_windows_gnullvm: llvm-ar
+          # static libde265/dav1d (+ their libheif.pc Requires.private) for
+          # the embedded libheif; cross-compilation is intentional here
+          PKG_CONFIG_PATH: ${{ github.workspace }}/heif-deps-win/lib/pkgconfig
+          PKG_CONFIG_ALLOW_CROSS: "1"
+          # static-build macros: keep libheif's de265 imports off the
+          # dllimport path (plain symbols from the static archives)
+          CXXFLAGS: "-DLIBDE265_STATIC_BUILD -DLIBHEIF_STATIC_BUILD"
           # target-scoped tuning: this is a genuine cross compile, so host
           # units (build scripts, proc macros) use plain RUSTFLAGS (unset =>
-          # baseline codegen, safe on any runner CPU) and only windows-gnu
+          # baseline codegen, safe on any runner CPU) and only the windows
           # target units receive the target-cpu flag
-          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS: "-C target-cpu=${{ matrix.cpu_target }}"
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_RUSTFLAGS: "-C target-cpu=${{ matrix.cpu_target }}"
         run: |
-          echo "Building for CPU: ${{ matrix.cpu_target }} (windows-gnu)"
-          cargo build --release --target x86_64-pc-windows-gnu -p byteshaver
-          cargo build --release --target x86_64-pc-windows-gnu -p byteshaver-gui --no-default-features
-          # guard against regressions of the jpegxl-src host-cfg stdc++ link
-          # (v0.5.2 shipped exes needing libstdc++-6.dll, absent on stock
-          # windows); no mingw runtime DLL may appear in the import table
-          for exe in target/x86_64-pc-windows-gnu/release/byteshaver.exe target/x86_64-pc-windows-gnu/release/byteshaver-gui.exe; do
-            if objdump -p "$exe" | grep -qi 'DLL Name: lib\(stdc++\|gcc_s\|winpthread\)'; then
-              echo "FATAL: $exe depends on a mingw runtime DLL (libstdc++-6/libgcc_s/libwinpthread)"; objdump -p "$exe" | grep 'DLL Name'; exit 1
+          echo "Building for CPU: ${{ matrix.cpu_target }} (windows-gnullvm)"
+          cargo build --release --target x86_64-pc-windows-gnullvm -p byteshaver
+          cargo build --release --target x86_64-pc-windows-gnullvm -p byteshaver-gui --no-default-features
+          # guard against C++ runtime DLL regressions: gnullvm/ucrt exes link
+          # libc++/libunwind statically (llvm-mingw import libs removed above)
+          for exe in target/x86_64-pc-windows-gnullvm/release/byteshaver.exe target/x86_64-pc-windows-gnullvm/release/byteshaver-gui.exe; do
+            if objdump -p "$exe" | grep -qi 'DLL Name: lib\(stdc++\|c++\|unwind\|gcc_s\|winpthread\)'; then
+              echo "FATAL: $exe imports a C++/runtime DLL"; objdump -p "$exe" | grep 'DLL Name'; exit 1
             fi
           done
-          upx --best target/x86_64-pc-windows-gnu/release/byteshaver.exe target/x86_64-pc-windows-gnu/release/byteshaver-gui.exe
+          # binaries are shipped UNPACKED (see the linux step note); the
+          # dedicated pack_binaries job produces the optional packed variants
           mkdir -p current_release
           if [ "${{ matrix.cpu_target }}" == "${{ env.BASE_CPU }}" ]; then SUFFIX=""; else SUFFIX="-${{ matrix.cpu_target }}"; fi
-          cp target/x86_64-pc-windows-gnu/release/byteshaver.exe "current_release/byteshaver-${{ env.VERSION }}${SUFFIX}.exe"
-          cp target/x86_64-pc-windows-gnu/release/byteshaver-gui.exe "current_release/byteshaver-gui-${{ env.VERSION }}${SUFFIX}.exe"
+          cp target/x86_64-pc-windows-gnullvm/release/byteshaver.exe "current_release/byteshaver-${{ env.VERSION }}${SUFFIX}.exe"
+          cp target/x86_64-pc-windows-gnullvm/release/byteshaver-gui.exe "current_release/byteshaver-gui-${{ env.VERSION }}${SUFFIX}.exe"
           ( cd current_release && sha256sum "byteshaver-${{ env.VERSION }}${SUFFIX}.exe" > "byteshaver-${{ env.VERSION }}${SUFFIX}.exe.sha256" && \
             sha256sum "byteshaver-gui-${{ env.VERSION }}${SUFFIX}.exe" > "byteshaver-gui-${{ env.VERSION }}${SUFFIX}.exe.sha256" )
+          # license/attribution materials ship with every release
+          cp THIRD-PARTY-NOTICES.md docs/dependency-licenses.md current_release/
 
       - name: Upload binaries to GitHub Release
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
@@ -239,38 +325,165 @@ jobs:
           tag_name: ${{ github.ref_name }}
           files: current_release/*
 
-      # manual workflow_dispatch runs: attach as workflow artifacts instead
+      # Always upload the (unpacked) binaries as workflow artifacts: on tag
+      # runs the pack_binaries job consumes them to build the packed variants;
+      # on manual workflow_dispatch runs they ARE the deliverable.
       - name: Upload binaries as workflow artifacts
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         uses: actions/upload-artifact@v7
         with:
           name: byteshaver-binaries-${{ matrix.cpu_target }}
           path: current_release/*
 
   # ---------------------------------------------------------------
+  # Optional packed variants (single job, after ALL matrix builds).
+  #
+  # The release ships the unpacked binaries by default: packing saves
+  # ~65-70% size but decompression adds a per-invocation startup toll,
+  # and packed exes are a classic AV false-positive trigger. This job
+  # produces packed copies *in addition* (suffix `-packed`) using the
+  # in-repo zstd packer (tools/packer/, BSD-2 zstd, see
+  # THIRD-PARTY-NOTICES.md and docs/zstd-packer-analysis.md).
+  # ---------------------------------------------------------------
+  pack_binaries:
+    needs: build_binaries
+    runs-on: ubuntu-latest
+    name: Pack binaries (zpack)
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Download all built binaries
+        uses: actions/download-artifact@v7
+        with:
+          pattern: byteshaver-binaries-*
+          merge-multiple: true
+          path: to_pack
+
+      - name: Set version from tag
+        run: |
+          if [[ "$GITHUB_REF_NAME" == v* ]]; then
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
+          else
+            echo "VERSION=0.0.0-dispatch" >> $GITHUB_ENV
+          fi
+
+      # Build both self-extracting stubs in one alpine run: the ELF stub
+      # against musl, the PE stub against the mingw-w64 cross toolchain.
+      # libzstd is built decompression-only without legacy decoders and
+      # without the duplicated BMI2 paths (92 KB stubs instead of 194 KB);
+      # see tools/packer/README.md for the flags' rationale.
+      - name: Build zpack stubs
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD":/w -w /w alpine:3.22 sh -c '
+            set -e
+            apk add --no-cache gcc musl-dev make curl mingw-w64-gcc >/dev/null
+            curl -sL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz | tar xz
+            ZFLAGS="-Os -ffunction-sections -fdata-sections -DDYNAMIC_BMI2=0"
+            make -C zstd-1.5.7/lib libzstd.a -j4 CFLAGS="$ZFLAGS" ZSTD_LEGACY_SUPPORT=0 >/dev/null
+            gcc -Os -static -s -ffunction-sections -fdata-sections -Wl,--gc-sections \
+              tools/packer/zpack_stub.c zstd-1.5.7/lib/libzstd.a -Izstd-1.5.7/lib \
+              -lpthread -o zpack-stub
+            cp -a zstd-1.5.7 zstd-win
+            make -C zstd-win/lib clean >/dev/null 2>&1 || true
+            make -C zstd-win/lib libzstd.a -j4 CC=x86_64-w64-mingw32-gcc AR=x86_64-w64-mingw32-ar \
+              CFLAGS="$ZFLAGS" ZSTD_LEGACY_SUPPORT=0 >/dev/null
+            x86_64-w64-mingw32-gcc -Os -static -s -ffunction-sections -fdata-sections \
+              -Wl,--gc-sections tools/packer/zpe_stub.c zstd-win/lib/libzstd.a \
+              -Izstd-win/lib -lpthread -o zpe-stub.exe
+            ls -l zpack-stub zpe-stub.exe
+          '
+
+      - name: Pack, verify and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p current_release
+          for f in to_pack/byteshaver*; do
+            case "$f" in *.sha256) continue ;; esac
+            base="$(basename "$f")"
+            # byteshaver-<version>[-cpu][.exe] -> byteshaver-<version>[-cpu]-packed[.exe]
+            if [[ "$base" == *.exe ]]; then
+              out="${base%.exe}-packed.exe"
+              # PE flow: image-layout frames (headers + 4 MiB section chunks)
+              python3 tools/packer/zpack.py zpe-stub.exe "$f" "current_release/$out" --pe
+            else
+              out="${base}-packed"
+              # ELF flow: 6 balanced frames (fastest unpack, ~33.5% ratio)
+              python3 tools/packer/zpack.py zpack-stub "$f" "current_release/$out" --frames 6
+            fi
+          done
+          # smoke test: only the suffixless linux CLI (x86-64-v3) is
+          # guaranteed to run on any runner CPU; cpu-tuned variants may
+          # legitimately SIGILL here (e.g. AVX-512 on non-v4 runners)
+          if [ -x "current_release/byteshaver-${VERSION}-packed" ]; then
+            "current_release/byteshaver-${VERSION}-packed" --version
+          fi
+          ls -la current_release/
+          ( cd current_release && for f in byteshaver*; do
+              case "$f" in *.sha256) continue ;; esac
+              sha256sum "$f" > "$f.sha256"
+            done )
+
+      - name: Upload packed binaries to GitHub Release
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        uses: softprops/action-gh-release@v3
+        with:
+          name: Release ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          files: current_release/*
+
+      - name: Upload packed binaries as workflow artifact
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: byteshaver-binaries-packed
+          path: current_release/*
+
+  # ---------------------------------------------------------------
   # Docker build validation (must pass before images are published)
   #
-  # Validates the complete dec-heif chain: alpine package names
-  # (libheif-dev, libde265-dev, aom-dev — note: aom, NOT libaom),
-  # the dec-heif + jxl feature build against real libheif, dynamic
-  # musl linking, and an end-to-end decode of a REAL HEIC file
-  # (generated in-container via heif-enc from a synthesized Y4M
-  # through the x265 plugin).
+  # Images ship the PREBUILT static-pie binary (no in-container
+  # compilation), so this job downloads the x86-64-v3 build artifact,
+  # drops it into the docker build context, and validates the exact
+  # bytes users get: --help, the dec-heif differential (a broken .heic
+  # must fail inside libheif, NOT with the feature-stub message), and
+  # an end-to-end decode of a REAL HEIC file (generated in-container
+  # via heif-enc from a synthesized Y4M through the x265 plugin).
   # ---------------------------------------------------------------
   validate_docker:
+    needs: [build_binaries]
     runs-on: ubuntu-latest
     name: Validate docker images (libheif)
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
 
+      - name: Download prebuilt binary
+        uses: actions/download-artifact@v7
+        with:
+          name: byteshaver-binaries-${{ env.BASE_CPU }}
+          path: artifact
+
+      - name: Stage binary into the docker build context
+        run: |
+          BIN="$(find artifact -maxdepth 1 -name 'byteshaver-*' ! -name 'byteshaver-gui-*' ! -name '*.sha256' | head -1)"
+          test -n "$BIN" || { echo "FATAL: no CLI binary in artifact"; exit 1; }
+          cp "$BIN" byteshaver
+          cp THIRD-PARTY-NOTICES.md docs/dependency-licenses.md .
+          file byteshaver | grep -q "static-pie" \
+            || { echo "FATAL: binary is not static-pie"; exit 1; }
+          # license/attribution materials ride along into the image
+          cp THIRD-PARTY-NOTICES.md docs/dependency-licenses.md .
+
+
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
 
-      # Shared buildx cache (type=gha): publish_docker rebuilds this exact
-      # image and hits these layers instead of recompiling (~20 min saved).
-      # provenance=false keeps the result a single-platform manifest that
-      # `load: true` can load locally for the smoke tests.
+      # Short-circuit the unified Dockerfile's source-build stage: the
+      # prebuilt binary sits in the context, so only the tiny prebuilt
+      # stage runs. (The default SOURCE=build reproduces the full pipeline
+      # from source — see the Dockerfile header.)
       - name: Build alpine image
         uses: docker/build-push-action@v7
         with:
@@ -279,8 +492,8 @@ jobs:
           tags: byteshaver:validate-alpine
           load: true
           provenance: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          build-args: |
+            SOURCE=prebuilt
 
       - name: Smoke test alpine image
         run: |
@@ -305,16 +518,6 @@ jobs:
               && echo "real HEIC decode -> webp: ok" \
               || { echo "FATAL: real HEIC decode failed"; exit 1; }'
 
-      - name: Build debian image
-        run: docker build -f Dockerfile-debian -t byteshaver:validate-debian .
-
-      - name: Smoke test debian image
-        run: |
-          docker run --rm byteshaver:validate-debian sh -c '
-            byteshaver --help >/dev/null && echo "help: ok"
-            printf "garbage-not-a-heif" > /tmp/fake.heic
-            byteshaver /tmp/fake.heic webp -o /tmp/o 2>&1 | grep -qi libheif \
-              && echo "libheif decode path: active"'
 
   publish_docker:
     needs: [validate_docker]
@@ -322,6 +525,19 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+
+      - name: Download prebuilt binary
+        uses: actions/download-artifact@v7
+        with:
+          name: byteshaver-binaries-${{ env.BASE_CPU }}
+          path: artifact
+
+      - name: Stage binary into the docker build context
+        run: |
+          BIN="$(find artifact -maxdepth 1 -name 'byteshaver-*' ! -name 'byteshaver-gui-*' ! -name '*.sha256' | head -1)"
+          test -n "$BIN" || { echo "FATAL: no CLI binary in artifact"; exit 1; }
+          cp "$BIN" byteshaver
+          cp THIRD-PARTY-NOTICES.md docs/dependency-licenses.md .
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
@@ -348,9 +564,8 @@ jobs:
           push: ${{ startsWith(github.ref, 'refs/tags/v') }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # consume the layer cache exported by validate_docker (same ref =>
-          # same gha cache scope) instead of recompiling from scratch
-          cache-from: type=gha
+          build-args: |
+            SOURCE=prebuilt
 
       - name: Push README.md to Dockerhub
         uses: peter-evans/dockerhub-description@v5

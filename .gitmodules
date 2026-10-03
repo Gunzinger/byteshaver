@@ -1,0 +1,3 @@
+[submodule "tools/jpegxl-src"]
+	path = tools/jpegxl-src
+	url = https://github.com/inflation/jpegxl-rs

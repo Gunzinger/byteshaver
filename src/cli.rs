@@ -109,7 +109,7 @@ pub struct CliArgs {
     /// (requires a build with the `dec-heif` feature):
     /// primary: decode only the primary image (default).
     /// all: decode every image; outputs are named stem.ext, stem_1.ext, ...
-    #[cfg(feature = "dec-heif")]
+    #[cfg(all(feature = "dec-heif", any(not(target_os = "windows"), target_abi = "llvm")))]
     #[clap(long, value_enum, value_name = "primary|all", global = true)]
     pub heif_image_policy: Option<crate::config::HeifImagePolicy>,
 

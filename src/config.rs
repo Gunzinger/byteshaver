@@ -157,13 +157,13 @@ impl ConversionConfig {
 ///
 /// The flag only exists in builds with the `dec-heif` feature; other builds
 /// always use the default (primary image only).
-#[cfg(feature = "dec-heif")]
+#[cfg(all(feature = "dec-heif", any(not(target_os = "windows"), target_abi = "llvm")))]
 fn heif_image_policy_from_args(args: &crate::cli::CliArgs) -> HeifImagePolicy {
     args.heif_image_policy.unwrap_or_default()
 }
 
 /// Feature-less fallback of [`heif_image_policy_from_args`].
-#[cfg(not(feature = "dec-heif"))]
+#[cfg(any(not(feature = "dec-heif"), all(target_os = "windows", not(target_abi = "llvm"))))]
 fn heif_image_policy_from_args(_args: &crate::cli::CliArgs) -> HeifImagePolicy {
     HeifImagePolicy::default()
 }

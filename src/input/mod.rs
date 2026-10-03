@@ -5,7 +5,7 @@
 //! animated GIF inputs are decoded into [`AnimationData`].
 
 pub mod animation;
-#[cfg(feature = "dec-heif")]
+#[cfg(all(feature = "dec-heif", any(not(target_os = "windows"), target_abi = "llvm")))]
 mod heif;
 /// JPEG XL source decoding via jxl-oxide (WS2).
 #[cfg(feature = "jxl")]
@@ -133,6 +133,7 @@ pub fn load_source_with_index(
     // HEIC/HEIF/HIF/AVIF containers are decoded by libheif, not the image
     // crate; without the `dec-heif` feature they report a per-file error and
     // the batch continues
+    #[cfg(all(feature = "dec-heif", any(not(target_os = "windows"), target_abi = "llvm")))]
     if ImageFormat::from(path) == ImageFormat::Heif {
         return load_heif_source(path, image_index);
     }
@@ -190,7 +191,7 @@ pub fn load_source_with_index(
 }
 
 /// Decodes a HEIC/HEIF/AVIF container via libheif (feature `dec-heif`).
-#[cfg(feature = "dec-heif")]
+#[cfg(all(feature = "dec-heif", any(not(target_os = "windows"), target_abi = "llvm")))]
 fn load_heif_source(path: &Path, image_index: Option<usize>) -> Result<SourceImage, Error> {
     heif::load_source(path, image_index)
 }
@@ -198,7 +199,7 @@ fn load_heif_source(path: &Path, image_index: Option<usize>) -> Result<SourceIma
 /// Counts the decodable master images of a HEIC/HEIF container without
 /// decoding pixels (feature `dec-heif`); used by the pipeline's
 /// `--heif-image-policy all` expansion.
-#[cfg(feature = "dec-heif")]
+#[cfg(all(feature = "dec-heif", any(not(target_os = "windows"), target_abi = "llvm")))]
 pub(crate) fn heif_probe(path: &Path) -> Result<usize, Error> {
     heif::probe(path)
 }
@@ -206,7 +207,7 @@ pub(crate) fn heif_probe(path: &Path) -> Result<usize, Error> {
 /// Feature-off stub: HEIC/HEIF/AVIF input needs the native libheif, so these
 /// files fail per-file (surfacing as `Outcome::Error` in the pipeline) while
 /// the rest of the batch keeps converting.
-#[cfg(not(feature = "dec-heif"))]
+#[cfg(any(not(feature = "dec-heif"), all(target_os = "windows", not(target_abi = "llvm"))))]
 fn load_heif_source(_path: &Path, _image_index: Option<usize>) -> Result<SourceImage, Error> {
     // io::Error::other keeps the displayed message clean (no error-type prefix)
     Err(Error::new(std::io::Error::other(
