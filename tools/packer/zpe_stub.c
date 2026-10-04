@@ -1,4 +1,4 @@
-/* zpe v3 — Windows self-extracting stub (extract-to-temp + CreateProcess).
+/* zpe v3 — Windows self-extracting stub (extract-to-cache + CreateProcess).
  *
  * Container (magic "ZPK3pe64", produced by `zpack.py --pe`):
  *   [stub PE][zstd frame 0][frame 1]...[frame n-1][trailer]
@@ -8,11 +8,22 @@
  *   payload file (frames tile the original PE 1:1, including headers,
  *   section alignment padding and any trailing overlay).
  *
- * The stub reads its own file, decompresses the frames at their dest
- * offsets into one flat buffer (the original payload exe bytes) — one
- * thread per frame, dest regions are disjoint — writes it to %TEMP%,
- * CreateProcessA's it with the original command line and environment,
- * waits, propagates the exit code, then deletes the temp file. The child
+ * First run:  read self, decompress the frames at their dest offsets into
+ *             one flat buffer (the original payload exe bytes) — one thread
+ *             per frame, dest regions are disjoint — and move it into the
+ *             cache as %LOCALAPPDATA%\byteshaver\zpe-cache\<key>.exe
+ *             (written via <key>.tmp + MoveFileEx so a crash never leaves a
+ *             half-written cache entry). Older cache generations are
+ *             deleted on miss, so the cache holds one payload.
+ * Later runs: the cached exe exists — launch it directly. This skips
+ *             decompression, the 16 MB write and the Defender fresh-file
+ *             scan, putting steady-state startup close to the unpacked
+ *             binary.
+ * <key> is an FNV-1a over self size, payload offset, frame-table bytes and
+ * the first payload bytes — a repacked payload always remaps to a new key.
+ *
+ * The cached exe is then CreateProcessA'd with the original command line
+ * and environment; the stub waits and propagates the exit code. The child
  * inherits our std handles so its output reaches pipes and redirects
  * (CLI usage, WSL interop).
  *
@@ -23,9 +34,10 @@
  * docs/zstd-packer-analysis.md §10.3). The extracted exe is a plain PE that
  * the standard Windows loader handles completely.
  *
- * Env: ZPE_DEBUG=1      -> append phases to %TEMP%\zpe-debug.log
+ * Env: ZPE_DEBUG=1      -> append phases (QPC-timed) to %TEMP%\zpe-debug.log
  *                           (also suppresses the error MessageBox)
- *      ZPE_KEEP_TEMP=1  -> keep the extracted exe for inspection
+ *      ZPE_NO_CACHE=1   -> extract to %TEMP% and delete after exit
+ *      ZPE_KEEP_TEMP=1  -> with ZPE_NO_CACHE: keep the temp exe
  *      ZPE_THREADS=1    -> decompress serially (benchmarking)
  *
  * Build: see tools/packer/README.md (mingw-gcc or llvm-mingw, static zstd).
@@ -80,14 +92,35 @@ static void die(const char *msg) {
     ExitProcess(127);
 }
 
+/* ---------- small unbounded appends (cmd building) ---------- */
+static void append_bounded(char *dst, size_t cap, size_t *len, const char *src) {
+    while (*src && *len + 1 < cap) dst[(*len)++] = *src++;
+    dst[*len] = 0;
+}
+
 /* ---------- self file ---------- */
+static char g_self_path[MAX_PATH];
 static unsigned char *g_self; static size_t g_self_len;
 
-static void read_self(void) {
-    char path[MAX_PATH];
-    UINT n = GetModuleFileNameA(NULL, path, MAX_PATH);
+static UINT self_path(void) {
+    UINT n = GetModuleFileNameA(NULL, g_self_path, MAX_PATH);
     if (n == 0 || n >= MAX_PATH) die("zpe: GetModuleFileName failed\n");
-    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    return n;
+}
+/* read [off, off+len) of our own file; returns bytes read (0 = fail) */
+static DWORD pread_range(uint64_t off, void *buf, DWORD len) {
+    HANDLE h = CreateFileA(g_self_path, GENERIC_READ, FILE_SHARE_READ, NULL,
+                           OPEN_EXISTING, 0, NULL);
+    DWORD got = 0;
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    LARGE_INTEGER li; li.QuadPart = (LONGLONG)off;
+    if (SetFilePointerEx(h, li, NULL, FILE_BEGIN) && ReadFile(h, buf, len, &got, NULL))
+        ; else got = 0;
+    CloseHandle(h);
+    return got;
+}
+static void read_self(void) {
+    HANDLE h = CreateFileA(g_self_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
     if (h == INVALID_HANDLE_VALUE) die("zpe: CreateFile(self) failed\n");
     LARGE_INTEGER sz;
     if (!GetFileSizeEx(h, &sz) || sz.QuadPart < 64) die("zpe: file too small\n");
@@ -102,7 +135,16 @@ static void read_self(void) {
     phase("self read\n");
 }
 
-/* ---------- decompression (frames -> dest offsets, parallel) ---------- */
+/* ---------- cache ---------- */
+static char g_cache_dir[MAX_PATH], g_child[MAX_PATH], g_fallback_tmp[MAX_PATH];
+
+static uint64_t fnv1a(uint64_t h, const void *p, size_t n) {
+    const unsigned char *b = (const unsigned char *)p;
+    while (n--) { h ^= *b++; h *= 0x100000001b3ULL; }
+    return h;
+}
+
+/* decompression (frames -> dest offsets, parallel) */
 static unsigned char *g_payload; static size_t g_payload_len;
 
 typedef struct {
@@ -157,59 +199,50 @@ static void decompress_payload(uint64_t nframes, const uint64_t *tbl, uint64_t p
     phase("decompressed\n");
 }
 
-/* ---------- temp exe ---------- */
-static char g_temp[MAX_PATH];
-
-static void write_temp_exe(void) {
-    char dir[MAX_PATH]; UINT n = GetTempPathA(MAX_PATH, dir);
-    if (n == 0 || n >= MAX_PATH - 48) die("zpe: GetTempPath failed\n");
-    wsprintfA(g_temp, "%szpe-%lu.exe", dir, (unsigned long)GetCurrentProcessId());
-    HANDLE h = CreateFileA(g_temp, GENERIC_WRITE, 0, NULL,
+/* write the flat buffer into the cache: <key>.tmp + MoveFileEx, so a crash
+ * mid-write never leaves a runnable-looking half payload */
+static void write_cache_exe(const char *keyname) {
+    wsprintfA(g_child, "%s\\%s.exe", g_cache_dir, keyname);
+    wsprintfA(g_fallback_tmp, "%s\\%s.tmp", g_cache_dir, keyname);
+    HANDLE h = CreateFileA(g_fallback_tmp, GENERIC_WRITE, 0, NULL,
                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE) die("zpe: CreateFile(temp) failed\n");
+    if (h == INVALID_HANDLE_VALUE) die("zpe: CreateFile(cache) failed\n");
     DWORD written, total = 0;
     while (total < g_payload_len && WriteFile(h, g_payload + total, (DWORD)(g_payload_len - total), &written, NULL) && written)
         total += written;
     CloseHandle(h);
     if (total != g_payload_len) die("zpe: short write\n");
+    if (!MoveFileExA(g_fallback_tmp, g_child, MOVEFILE_REPLACE_EXISTING))
+        lstrcpyA(g_child, g_fallback_tmp); /* volatile: launched, never cached */
     if (g_log) {
         char msg[MAX_PATH + 16];
-        wsprintfA(msg, "payload written %s\n", g_temp);
+        wsprintfA(msg, "payload written %s\n", g_child);
         phase(msg);
     }
 }
 
-int main(void) {
-    debug_init();
-    logline("zpe v3 start\n");
-    read_self();
+/* keep the cache at one generation: drop entries other than keyname */
+static void cache_evict_others(const char *keyname) {
+    char srch[MAX_PATH], path[MAX_PATH];
+    wsprintfA(srch, "%s\\*.exe", g_cache_dir);
+    WIN32_FIND_DATAA fd;
+    HANDLE f = FindFirstFileA(srch, &fd);
+    if (f == INVALID_HANDLE_VALUE) return;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        if (lstrcmpiA(fd.cFileName, keyname) == 0) continue;
+        wsprintfA(path, "%s\\%s", g_cache_dir, fd.cFileName);
+        DeleteFileA(path);
+    } while (FindNextFileA(f, &fd));
+    FindClose(f);
+}
 
-    /* trailer: [nframes u64][payload_off u64][magic 8B] at EOF */
-    if (g_self_len < 64 || memcmp(g_self + g_self_len - 8, MAGIC, 8) != 0)
-        die("zpe: bad trailer\n");
-    uint64_t tail[2];
-    memcpy(tail, g_self + g_self_len - 24, 16);
-    uint64_t nframes = tail[0], payload_off = tail[1];
-    if (nframes == 0 || nframes > 4096 || payload_off + 24 + nframes * 24 > g_self_len)
-        die("zpe: bad frame count\n");
-    uint64_t *tbl = (uint64_t *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)(nframes * 24));
-    if (!tbl) die("zpe: OOM (table)\n");
-    memcpy(tbl, g_self + g_self_len - 24 - nframes * 24, (SIZE_T)(nframes * 24));
-
-    decompress_payload(nframes, tbl, payload_off);
-    HeapFree(GetProcessHeap(), 0, tbl);
-    HeapFree(GetProcessHeap(), 0, g_self);
-    g_self = NULL; g_self_len = 0;
-
-    write_temp_exe();
-
-    /* run the extracted exe; argv[0] stays the packed exe path, args and
-     * environment pass through untouched */
+/* run the extracted exe; argv[0] stays the packed exe path, args and
+ * environment pass through untouched; std handles are forwarded */
+static DWORD launch_child(const char *exe) {
     STARTUPINFOA si; PROCESS_INFORMATION pi;
     ZeroMemory(&si, sizeof si); si.cb = sizeof si;
     ZeroMemory(&pi, sizeof pi);
-    /* forward our std handles: the child's stdout/stderr must reach our
-     * console, pipes and redirects (WSL interop, `packed.exe | tee`) */
     HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
     if (out && out != INVALID_HANDLE_VALUE) {
         si.dwFlags = STARTF_USESTDHANDLES;
@@ -217,25 +250,123 @@ int main(void) {
         si.hStdOutput = out;
         si.hStdError  = GetStdHandle(STD_ERROR_HANDLE);
     }
-    /* quote the temp exe so spaces in %TEMP% are safe */
-    char cmd[MAX_PATH + 4];
-    lstrcpyA(cmd, "\""); lstrcatA(cmd, g_temp); lstrcatA(cmd, "\" ");
-    /* append the caller's command line minus argv[0] */
+    char cmd[32768];
+    size_t n = 0;
+    append_bounded(cmd, sizeof cmd, &n, "\"");
+    append_bounded(cmd, sizeof cmd, &n, exe);
+    append_bounded(cmd, sizeof cmd, &n, "\" ");
     {
         char *cl = GetCommandLineA();
-        /* skip argv[0]: quoted or bare */
         if (*cl == '"') { ++cl; while (*cl && *cl != '"') ++cl; if (*cl) ++cl; }
         else { while (*cl && *cl != ' ' && *cl != '\t') ++cl; while (*cl == ' ' || *cl == '\t') ++cl; }
-        lstrcatA(cmd, cl);
+        append_bounded(cmd, sizeof cmd, &n, cl);
     }
-    if (!CreateProcessA(g_temp, cmd, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi))
+    if (!CreateProcessA(exe, cmd, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi))
         die("zpe: CreateProcess failed\n");
     WaitForSingleObject(pi.hProcess, INFINITE);
     DWORD code = 1;
     GetExitCodeProcess(pi.hProcess, &code);
     CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+    return code;
+}
 
-    if (!getenv("ZPE_KEEP_TEMP")) DeleteFileA(g_temp);
+int main(void) {
+    debug_init();
+    logline("zpe v3 start\n");
+    self_path();
+
+    /* trailer + frame table live at EOF; 128 KB covers the 4096-frame max
+     * (4096*24 + 24). Small reads only — the full file is loaded on miss. */
+    static unsigned char tail[128 * 1024];
+    HANDLE h = CreateFileA(g_self_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE) die("zpe: CreateFile(self) failed\n");
+    LARGE_INTEGER sz;
+    if (!GetFileSizeEx(h, &sz) || sz.QuadPart < 64) die("zpe: file too small\n");
+    CloseHandle(h);
+    uint64_t self_size = (uint64_t)sz.QuadPart;
+    uint64_t tail_off = self_size > sizeof tail ? self_size - sizeof tail : 0;
+    DWORD tail_len = pread_range(tail_off, tail, (DWORD)(self_size - tail_off));
+    if (tail_len < 64 || tail_len > sizeof tail) die("zpe: tail read failed\n");
+    if (memcmp(tail + tail_len - 8, MAGIC, 8) != 0) die("zpe: bad trailer\n");
+    uint64_t nframes, payload_off;
+    memcpy(&nframes, tail + tail_len - 24, 8);
+    memcpy(&payload_off, tail + tail_len - 16, 8);
+    if (nframes == 0 || nframes > 4096 || payload_off + 24 + nframes * 24 > self_size)
+        die("zpe: bad frame count\n");
+
+    /* cache key: FNV-1a over sizes, frame table and the first payload bytes */
+    uint64_t key = 0xcbf29ce484222325ULL;
+    key = fnv1a(key, &self_size, sizeof self_size);
+    key = fnv1a(key, &payload_off, sizeof payload_off);
+    key = fnv1a(key, &nframes, sizeof nframes);
+    key = fnv1a(key, tail, tail_len);
+    unsigned char head[256];
+    DWORD head_got = pread_range(payload_off, head, sizeof head);
+    if (head_got) key = fnv1a(key, head, head_got);
+    static const char hex[] = "0123456789abcdef";
+    char keyname[17];
+    for (int i = 0; i < 16; i++) keyname[i] = hex[(key >> (60 - 4 * i)) & 0xF];
+    keyname[16] = 0;
+
+    /* cache dir: %LOCALAPPDATA%\byteshaver\zpe-cache (fallback %TEMP%) */
+    size_t cd = 0;
+    if (!GetEnvironmentVariableA("LOCALAPPDATA", g_cache_dir, MAX_PATH - 40))
+        GetTempPathA(MAX_PATH - 40, g_cache_dir);
+    cd = lstrlenA(g_cache_dir);
+    while (cd && (g_cache_dir[cd - 1] == '\\' || g_cache_dir[cd - 1] == '/'))
+        g_cache_dir[--cd] = 0;
+    g_cache_dir[cd] = 0;
+    append_bounded(g_cache_dir, MAX_PATH, &cd, "\\byteshaver");
+    CreateDirectoryA(g_cache_dir, NULL);           /* may already exist */
+    append_bounded(g_cache_dir, MAX_PATH, &cd, "\\zpe-cache");
+    CreateDirectoryA(g_cache_dir, NULL);
+
+    int use_cache = getenv("ZPE_NO_CACHE") == NULL;
+    char entry[MAX_PATH];
+    wsprintfA(entry, "%s\\%s.exe", g_cache_dir, keyname);
+
+    if (use_cache && GetFileAttributesA(entry) != INVALID_FILE_ATTRIBUTES) {
+        lstrcpyA(g_child, entry);
+        phase("cache hit\n");
+    } else {
+        read_self(); /* full read; trailer/table already validated above */
+        uint64_t *tbl = (uint64_t *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)(nframes * 24));
+        if (!tbl) die("zpe: OOM (table)\n");
+        memcpy(tbl, g_self + g_self_len - 24 - nframes * 24, (SIZE_T)(nframes * 24));
+        decompress_payload(nframes, tbl, payload_off);
+        HeapFree(GetProcessHeap(), 0, tbl);
+        HeapFree(GetProcessHeap(), 0, g_self);
+        g_self = NULL; g_self_len = 0;
+
+        if (use_cache) {
+            char keepname[MAX_PATH];
+            wsprintfA(keepname, "%s.exe", keyname);
+            write_cache_exe(keyname);
+            cache_evict_others(keepname);
+        } else {
+            /* legacy temp path */
+            char dir[MAX_PATH]; UINT n = GetTempPathA(MAX_PATH, dir);
+            if (n == 0 || n >= MAX_PATH - 48) die("zpe: GetTempPath failed\n");
+            wsprintfA(g_child, "%szpe-%lu.exe", dir, (unsigned long)GetCurrentProcessId());
+            HANDLE f2 = CreateFileA(g_child, GENERIC_WRITE, 0, NULL,
+                                    CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (f2 == INVALID_HANDLE_VALUE) die("zpe: CreateFile(temp) failed\n");
+            DWORD written, total = 0;
+            while (total < g_payload_len && WriteFile(f2, g_payload + total, (DWORD)(g_payload_len - total), &written, NULL) && written)
+                total += written;
+            CloseHandle(f2);
+            if (total != g_payload_len) die("zpe: short write\n");
+            if (g_log) {
+                char msg[MAX_PATH + 16];
+                wsprintfA(msg, "payload written %s\n", g_child);
+                phase(msg);
+            }
+        }
+    }
+
+    DWORD code = launch_child(g_child);
+
+    if (!use_cache && !getenv("ZPE_KEEP_TEMP")) DeleteFileA(g_child);
     phase("done\n");
     if (g_log) CloseHandle(g_log);
     ExitProcess(code);

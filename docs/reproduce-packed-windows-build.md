@@ -142,13 +142,24 @@ Get-Content $env:TEMP\zpe-debug.log -Tail 5
 #                               #   loader + Defender scan of the fresh exe
 ```
 
-The `done − payload written` span is expected to dominate on real Windows:
-it contains the loader for the freshly written exe **and** the Defender
-scan it triggers. Follow-up experiment: exclude the bench folder *and*
-`%TEMP%` from Defender, re-run the matrix, and compare — the delta isolates
-the AV cost from the packer cost. If the packer cost alone must compete
-with UPX's single in-memory unpack, the next lever is an extract-cache
-(decompress+write once to `%LOCALAPPDATA%`, reuse while size/mtime match).
+The `done − payload written` span contains the loader for the freshly
+written exe **and** the Defender scan it triggers. Measured split (Defender
+excluded for the bench folder, `%TEMP%` still scanned):
+
+```
+zpe: +1 ms self read          <- stub-side total: 15 ms
+zpe: +7 ms decompressed          (read 1 + parallel decompress 6 + write 8)
+zpe: +15 ms payload written
+zpe: +61 ms done              <- CreateProcess + loader + AV on the fresh exe
+```
+
+**Extract-cache** (implemented since): the stub caches the extracted exe at
+`%LOCALAPPDATA%\byteshaver\zpe-cache\<key>.exe` and launches it directly on
+subsequent runs (`ZPE_NO_CACHE=1` restores the temp behavior). Warm runs
+log `+0 ms cache hit` and skip decompress/write/AV-scan; re-run the
+bench-start matrix to measure steady state, which should approach the
+unpacked floor. A repacked binary gets a new key (FNV-1a over the frame
+table + payload head) and evicts the previous generation.
 
 ## CI parity
 

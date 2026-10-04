@@ -81,18 +81,24 @@ python3 zpack.py zpack-stub byteshaver byteshaver-zpk --frames 4
 - Payloads are plain zstd frames — recoverable via `dd` + `zstd -d`, and the
   AV-heuristic caveats of self-extracting executables apply.
 
-## Windows (zpe_stub.c) - extract-to-temp + CreateProcess
+## Windows (zpe_stub.c) - extract-to-cache + CreateProcess
 
-The Windows stub uses the extract-to-temp model: it decompresses the payload
-to %TEMP%, then CreateProcess's it with the original command line and
-environment. The payload runs as a normal PE loaded by the standard Windows
-loader - TLS, SEH, COM, module-list registration, DEP/CFG all work because
-the OS does the loading. The temp file is deleted after the process exits.
+The Windows stub decompresses the payload into
+`%LOCALAPPDATA%\byteshaver\zpe-cache\<key>.exe` (written via `<key>.tmp` +
+`MoveFileEx`, so a crash never leaves a half-written entry; older
+generations are evicted, the cache holds one payload) and CreateProcess's
+it with the original command line and environment. The payload runs as a
+normal PE loaded by the standard Windows loader - TLS, SEH, COM,
+module-list registration, DEP/CFG all work because the OS does the loading.
+`<key>` is an FNV-1a over the frame table and payload head, so a repacked
+binary remaps to a fresh entry; every run after the first launches the
+cached exe directly, skipping decompression, the 16 MB write and the
+Defender fresh-file scan (steady-state startup approaches the unpacked
+binary).
 
 This is deliberately simpler than in-memory PE mapping (which requires
 reimplementing TLS directory processing, SEH interplay, and module-list
 registration - see plan 17 section B for why that approach was abandoned).
-The trade-off is a visible temp file during execution.
 
 ### Build
 
@@ -110,10 +116,13 @@ python3 zpack.py zpe-stub.exe byteshaver.exe byteshaver-packed.exe --pe
 
 ### Diagnostic env
 
-- ZPE_DEBUG=1 - write phase-by-phase status to %TEMP%\zpe-debug.log (also
-  suppresses the error MessageBox, so automation stays headless)
-- ZPE_KEEP_TEMP=1 - keep the extracted exe in %TEMP% for inspection
-  (compare its sha256 against the original payload to verify extraction)
+- ZPE_DEBUG=1 - write QPC-timed phases (self read / decompressed / payload
+  written|cache hit / done) to %TEMP%\zpe-debug.log (also suppresses the
+  error MessageBox, so automation stays headless)
+- ZPE_NO_CACHE=1 - extract to %TEMP% and delete after exit (legacy behavior)
+- ZPE_KEEP_TEMP=1 - with ZPE_NO_CACHE: keep the temp exe for inspection
+  (with the cache, inspect %LOCALAPPDATA%\byteshaver\zpe-cache\*.exe
+  directly; it is sha256-identical to the payload)
 - ZPE_THREADS=1 - decompress serially (benchmarking; default is one thread
   per frame, dest regions are disjoint so no synchronization is needed)
 
