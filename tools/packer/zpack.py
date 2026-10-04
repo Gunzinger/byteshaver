@@ -129,8 +129,9 @@ def main():
         f.write(magic)
     os.chmod(args.output, 0o755)
     sz = os.path.getsize(args.output)
+    mode = (f"PE32+ chunk<={args.pe_chunk:g}MiB" if args.pe else "ELF")
     print(f"zpack: {len(plain):,} -> {sz:,} B ({sz / len(plain) * 100:.1f}%) "
-          f"[{len(comp_frames)} frames, payload "
+          f"[zstd -{args.level}, {len(comp_frames)} frames, {mode}, payload "
           f"{sum(len(c) for c, _, _ in comp_frames) / 1e6:.2f}MB, stub {payload_off / 1e3:.0f}kB]")
 
 
