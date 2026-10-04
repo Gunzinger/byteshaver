@@ -9,11 +9,12 @@
  *   section alignment padding and any trailing overlay).
  *
  * The stub reads its own file, decompresses the frames at their dest
- * offsets into one flat buffer (the original payload exe bytes), writes
- * it to %TEMP%, CreateProcessA's it with the original command line and
- * environment, waits, propagates the exit code, then deletes the temp
- * file. The child inherits our std handles so its output reaches pipes
- * and redirects (CLI usage, WSL interop).
+ * offsets into one flat buffer (the original payload exe bytes) — one
+ * thread per frame, dest regions are disjoint — writes it to %TEMP%,
+ * CreateProcessA's it with the original command line and environment,
+ * waits, propagates the exit code, then deletes the temp file. The child
+ * inherits our std handles so its output reaches pipes and redirects
+ * (CLI usage, WSL interop).
  *
  * Why extract+CreateProcess instead of in-memory mapping: a manually mapped
  * PE image does not receive OS loader services (native-TLS setup, loader
@@ -25,6 +26,7 @@
  * Env: ZPE_DEBUG=1      -> append phases to %TEMP%\zpe-debug.log
  *                           (also suppresses the error MessageBox)
  *      ZPE_KEEP_TEMP=1  -> keep the extracted exe for inspection
+ *      ZPE_THREADS=1    -> decompress serially (benchmarking)
  *
  * Build: see tools/packer/README.md (mingw-gcc or llvm-mingw, static zstd).
  */
@@ -86,8 +88,19 @@ static void read_self(void) {
     logline("zpe: self read\n");
 }
 
-/* ---------- decompression (frames -> dest offsets in a flat buffer) ---------- */
+/* ---------- decompression (frames -> dest offsets, parallel) ---------- */
 static unsigned char *g_payload; static size_t g_payload_len;
+
+typedef struct {
+    const unsigned char *src; size_t comp, uncomp; unsigned char *dst;
+} frame_job;
+
+static DWORD WINAPI frame_worker(LPVOID param) {
+    frame_job *j = (frame_job *)param;
+    size_t r = ZSTD_decompress(j->dst, j->uncomp, j->src, j->comp);
+    if (ZSTD_isError(r) || r != j->uncomp) die("zpe: decompress failed\n");
+    return 0;
+}
 
 static void decompress_payload(uint64_t nframes, const uint64_t *tbl, uint64_t payload_off) {
     size_t total = 0;
@@ -98,16 +111,35 @@ static void decompress_payload(uint64_t nframes, const uint64_t *tbl, uint64_t p
     g_payload_len = total;
     g_payload = (unsigned char *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, total);
     if (!g_payload) die("zpe: OOM (payload)\n");
-    uint64_t src = payload_off;
+
+    int serial = getenv("ZPE_THREADS") != NULL && atoi(getenv("ZPE_THREADS")) == 1;
+    frame_job *jobs = (frame_job *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)(nframes * sizeof(frame_job)));
+    HANDLE *th = (HANDLE *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)(nframes * sizeof(HANDLE)));
+    if (!jobs || !th) die("zpe: OOM (jobs)\n");
+
+    uint64_t src = payload_off; DWORD nthread = 0;
     for (uint64_t i = 0; i < nframes; i++) {
-        size_t comp = (size_t)tbl[3*i], uncomp = (size_t)tbl[3*i + 1];
-        size_t dest = (size_t)tbl[3*i + 2];
+        size_t dest = (size_t)tbl[3*i + 2], uncomp = (size_t)tbl[3*i + 1];
         if (dest > g_payload_len || uncomp > g_payload_len - dest)
             die("zpe: bad frame dest\n");
-        size_t r = ZSTD_decompress(g_payload + dest, uncomp, g_self + src, comp);
-        if (ZSTD_isError(r) || r != uncomp) die("zpe: decompress failed\n");
-        src += comp;
+        jobs[i].src = g_self + src;
+        jobs[i].comp = (size_t)tbl[3*i];
+        jobs[i].uncomp = uncomp;
+        jobs[i].dst = g_payload + dest;
+        src += jobs[i].comp;
+        if (serial || (th[nthread] = CreateThread(NULL, 0, frame_worker, &jobs[i], 0, NULL)) == NULL)
+            frame_worker(&jobs[i]);     /* ZPE_THREADS=1 or CreateThread failed */
+        else
+            nthread++;
     }
+    for (DWORD base = 0; base < nthread; base += MAXIMUM_WAIT_OBJECTS) {
+        DWORD n = nthread - base;
+        if (n > MAXIMUM_WAIT_OBJECTS) n = MAXIMUM_WAIT_OBJECTS;
+        WaitForMultipleObjects(n, th + base, TRUE, INFINITE);
+    }
+    for (DWORD i = 0; i < nthread; i++) CloseHandle(th[i]);
+    HeapFree(GetProcessHeap(), 0, th);
+    HeapFree(GetProcessHeap(), 0, jobs);
     logline("zpe: decompressed\n");
 }
 
@@ -126,9 +158,11 @@ static void write_temp_exe(void) {
         total += written;
     CloseHandle(h);
     if (total != g_payload_len) die("zpe: short write\n");
-    char msg[MAX_PATH + 16];
-    wsprintfA(msg, "zpe: payload written %s\n", g_temp);
-    logline(msg);
+    if (g_log) {
+        char msg[MAX_PATH + 16];
+        wsprintfA(msg, "zpe: payload written %s\n", g_temp);
+        logline(msg);
+    }
 }
 
 int main(void) {
@@ -169,9 +203,6 @@ int main(void) {
         si.hStdOutput = out;
         si.hStdError  = GetStdHandle(STD_ERROR_HANDLE);
     }
-    char exe[MAX_PATH];
-    UINT en = GetModuleFileNameA(NULL, exe, MAX_PATH);
-    if (en == 0 || en >= MAX_PATH) die("zpe: GetModuleFileName failed\n");
     /* quote the temp exe so spaces in %TEMP% are safe */
     char cmd[MAX_PATH + 4];
     lstrcpyA(cmd, "\""); lstrcatA(cmd, g_temp); lstrcatA(cmd, "\" ");

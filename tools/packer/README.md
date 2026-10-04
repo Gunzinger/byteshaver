@@ -114,6 +114,8 @@ python3 zpack.py zpe-stub.exe byteshaver.exe byteshaver-packed.exe --pe
   suppresses the error MessageBox, so automation stays headless)
 - ZPE_KEEP_TEMP=1 - keep the extracted exe in %TEMP% for inspection
   (compare its sha256 against the original payload to verify extraction)
+- ZPE_THREADS=1 - decompress serially (benchmarking; default is one thread
+  per frame, dest regions are disjoint so no synchronization is needed)
 
 The child process inherits the stub's std handles, so stdout/stderr reach
 pipes and redirects (`byteshaver-packed.exe in.heic out.jpg | tee log`).
