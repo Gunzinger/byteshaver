@@ -100,6 +100,11 @@ This is deliberately simpler than in-memory PE mapping (which requires
 reimplementing TLS directory processing, SEH interplay, and module-list
 registration - see plan 17 section B for why that approach was abandoned).
 
+GUI payloads fire-and-forget: the stub reads its own (patched) Subsystem
+field and, for GUI payloads, exits immediately after launching the cached
+exe - no lingering parent process, no exit-code propagation (meaningless
+for GUI). Console payloads wait and propagate.
+
 ### Build
 
 ```sh

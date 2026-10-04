@@ -237,6 +237,19 @@ static void cache_evict_others(const char *keyname) {
     FindClose(f);
 }
 
+/* our own optional-header Subsystem — zpack.py patches it to the payload's,
+ * so the stub knows whether it is wrapping a GUI or console payload */
+static USHORT self_subsystem(void) {
+    static unsigned char hdr[0x400];
+    if (pread_range(0, hdr, sizeof hdr) != sizeof hdr) return 0;
+    if (memcmp(hdr + *(DWORD *)(hdr + 0x3C), "PE\0\0", 4) != 0) return 0;
+    DWORD opt = *(DWORD *)(hdr + 0x3C) + 24;
+    if (opt + 70 > sizeof hdr || *(USHORT *)(hdr + opt) != 0x20B) return 0;
+    return *(USHORT *)(hdr + opt + 68);
+}
+
+static int g_gui_detach;
+
 /* run the extracted exe; argv[0] stays the packed exe path, args and
  * environment pass through untouched; std handles are forwarded */
 static DWORD launch_child(const char *exe) {
@@ -263,6 +276,13 @@ static DWORD launch_child(const char *exe) {
     }
     if (!CreateProcessA(exe, cmd, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi))
         die("zpe: CreateProcess failed\n");
+    if (g_gui_detach) {
+        /* fire-and-forget: GUI payloads need no exit code and no console —
+         * the stub vanishes so only the app process stays visible */
+        CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+        phase("launched (gui detach)\n");
+        return 0;
+    }
     WaitForSingleObject(pi.hProcess, INFINITE);
     DWORD code = 1;
     GetExitCodeProcess(pi.hProcess, &code);
@@ -274,6 +294,7 @@ int main(void) {
     debug_init();
     logline("zpe v3 start\n");
     self_path();
+    g_gui_detach = self_subsystem() == IMAGE_SUBSYSTEM_WINDOWS_GUI;
 
     /* trailer + frame table live at EOF; 128 KB covers the 4096-frame max
      * (4096*24 + 24). Small reads only — the full file is loaded on miss. */
@@ -366,7 +387,9 @@ int main(void) {
 
     DWORD code = launch_child(g_child);
 
-    if (!use_cache && !getenv("ZPE_KEEP_TEMP")) DeleteFileA(g_child);
+    /* a detached GUI child still runs from the file — deleting (no-cache
+     * mode) would fail anyway */
+    if (!g_gui_detach && !use_cache && !getenv("ZPE_KEEP_TEMP")) DeleteFileA(g_child);
     phase("done\n");
     if (g_log) CloseHandle(g_log);
     ExitProcess(code);

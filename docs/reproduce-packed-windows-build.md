@@ -155,11 +155,23 @@ zpe: +61 ms done              <- CreateProcess + loader + AV on the fresh exe
 
 **Extract-cache** (implemented since): the stub caches the extracted exe at
 `%LOCALAPPDATA%\byteshaver\zpe-cache\<key>.exe` and launches it directly on
-subsequent runs (`ZPE_NO_CACHE=1` restores the temp behavior). Warm runs
-log `+0 ms cache hit` and skip decompress/write/AV-scan; re-run the
-bench-start matrix to measure steady state, which should approach the
-unpacked floor. A repacked binary gets a new key (FNV-1a over the frame
+subsequent runs (`ZPE_NO_CACHE=1` restores the temp behavior). Measured on
+real Windows (`ZPE_DEBUG=1`):
+
+```
+first run (miss):  +2 ms self read / +7 ms decompressed / +30 ms payload
+                   written / +72 ms done
+warm run (hit):    +0 ms cache hit / +7 ms done   <- total, incl. the app
+```
+
+Warm startup is therefore at parity with the unpacked binary and ~10x
+faster than UPX. A repacked binary gets a new key (FNV-1a over the frame
 table + payload head) and evicts the previous generation.
+
+**GUI payloads detach**: the stub reads its own (patched) Subsystem field —
+for GUI payloads it launches the cached exe and exits immediately
+(fire-and-forget), so only the app process remains visible; there is no
+lingering parent. Console payloads still wait and propagate the exit code.
 
 ## CI parity
 
