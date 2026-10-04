@@ -59,4 +59,7 @@ else
         tools/packer/zpe_stub.c "$OUT/zstd-pe/libzstd.a" \
         -I"$OUT/zstd-pe" -o "$OUT/zpe-stub.exe"
     echo "  $OUT/zpe-stub.exe ($(stat -c%s "$OUT/zpe-stub.exe") B)"
+    # startup-latency benchmark harness (no zstd, tiny)
+    "$PE_CC" -O2 -s -o "$OUT/bench-start.exe" tools/packer/bench-start.c
+    echo "  $OUT/bench-start.exe ($(stat -c%s "$OUT/bench-start.exe") B)"
 fi

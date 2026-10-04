@@ -79,6 +79,47 @@ ZPE_DEBUG=1 ./byteshaver-gui-packed.exe              # GUI window must appear
   byte-exact.
 - `ZPE_THREADS=1` — decompress serially (benchmarking).
 
+## 6. Startup latency vs unpacked and UPX
+
+`packer-out/bench-start.exe` times CreateProcess→exit with QueryPerformanceCounter
+(child stdio goes to NUL, so console output costs nothing) and reports
+min/p50/p90/mean/max. Run it against the unpacked, zpe-packed and UPX-packed
+CLI using `--version` as the minimal workload.
+
+```sh
+# one-time: get upx.exe (windows build) from https://github.com/upx/upx/releases
+mkdir -p /mnt/c/Users/<you>/bench
+cd ~/development/byteshaver
+cp packer-out/bench-start.exe byteshaver-packed.exe /mnt/c/Users/<you>/bench/
+cp target/x86_64-pc-windows-gnullvm/release/byteshaver.exe /mnt/c/Users/<you>/bench/byteshaver-unpacked.exe
+/mnt/c/Users/<you>/Downloads/upx-<ver>-win64/upx.exe --best -o \
+    /mnt/c/Users/<you>/bench/byteshaver-upx.exe \
+    /mnt/c/Users/<you>/bench/byteshaver-unpacked.exe
+
+cmd.exe /c 'cd /d %USERPROFILE%\bench && bench-start.exe -n 30 -w 5 byteshaver-unpacked.exe --version'
+cmd.exe /c 'cd /d %USERPROFILE%\bench && bench-start.exe -n 30 -w 5 byteshaver-packed.exe --version'
+cmd.exe /c 'cd /d %USERPROFILE%\bench && bench-start.exe -n 30 -w 5 byteshaver-upx.exe --version'
+```
+
+Methodology notes:
+
+- **Run from a native Windows folder** (`C:\Users\...`), never from `\\wsl$` —
+  9p file access inflates the image-load time of every variant equally but
+  adds jitter. The harness itself may be launched through interop; the timed
+  child processes run natively.
+- **Warm numbers are the comparable metric** (the harness warms up first);
+  cold start is dominated by disk cache and is not packer-specific.
+- **Defender**: real-time protection scans every exe launch, and the zpe
+  stub additionally writes+launches a fresh temp exe each run (extra scan).
+  For microbenchmarks, exclude the bench folder — then re-run once without
+  the exclusion for real-world numbers. UPX/packed exes may also get
+  flagged heuristically; that is part of the honest comparison.
+- The unpacked variant is the floor; the delta over it is the packer cost.
+  bench-start prints a WARNING when the child exits non-zero (a packed stub
+  failing via die() exits 127 and would silently produce fast garbage).
+- GUI startup-to-window is not automatically measurable this way; compare
+  CLI `--version` and judge the GUI by feel.
+
 ## CI parity
 
 `.github/workflows/workflow.yaml` ("Build windows binaries (cross)") runs the
