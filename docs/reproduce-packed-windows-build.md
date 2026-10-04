@@ -120,6 +120,36 @@ Methodology notes:
 - GUI startup-to-window is not automatically measurable this way; compare
   CLI `--version` and judge the GUI by feel.
 
+## 7. Measured baseline (real Windows, warm cache)
+
+First measured matrix (NVMe, warm, Defender real-time protection ON):
+
+| variant          | min    | p50    | p90    | mean   | delta vs floor |
+|------------------|--------:|-------:|-------:|-------:|---------------:|
+| unpacked         | 12.83  | 13.42  | 14.09  | 13.43  | —              |
+| UPX `--best`     | 68.42  | 69.36  | 70.81  | 69.56  | +56 ms         |
+| zpe v3           | 93.85  | 96.98  | 99.71  | 97.36  | +84 ms         |
+
+Phase breakdown — the stub logs QPC-timed milestones with `ZPE_DEBUG=1`:
+
+```powershell
+$env:ZPE_DEBUG = "1"; .\byteshaver-packed.exe --version; Remove-Item Env:ZPE_DEBUG
+Get-Content $env:TEMP\zpe-debug.log -Tail 5
+# zpe: +N ms self read          <- read packed exe (grows with size)
+# zpe: +N ms decompressed       <- parallel zstd decompress
+# zpe: +N ms payload written    <- 16 MB temp-file write
+# zpe: +N ms done               # done minus written = CreateProcess + PE
+#                               #   loader + Defender scan of the fresh exe
+```
+
+The `done − payload written` span is expected to dominate on real Windows:
+it contains the loader for the freshly written exe **and** the Defender
+scan it triggers. Follow-up experiment: exclude the bench folder *and*
+`%TEMP%` from Defender, re-run the matrix, and compare — the delta isolates
+the AV cost from the packer cost. If the packer cost alone must compete
+with UPX's single in-memory unpack, the next lever is an extract-cache
+(decompress+write once to `%LOCALAPPDATA%`, reuse while size/mtime match).
+
 ## CI parity
 
 `.github/workflows/workflow.yaml` ("Build windows binaries (cross)") runs the

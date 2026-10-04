@@ -42,12 +42,26 @@ static const char MAGIC[8] = {'Z','P','K','3','p','e','6','4'};
 /* ---------- debug log (ZPE_DEBUG=1) ---------- */
 static HANDLE g_log = NULL;
 static int g_debug = 0;
+static LARGE_INTEGER g_qpcfreq, g_qpcstart;
 static void logline(const char *msg) {
     if (!g_log) return;
     DWORD n; WriteFile(g_log, msg, (DWORD)strlen(msg), &n, NULL);
 }
+/* milestone with ms offset from process start */
+static void phase(const char *msg) {
+    char buf[MAX_PATH + 32];
+    LARGE_INTEGER now;
+    if (!g_log) return;
+    QueryPerformanceCounter(&now);
+    wsprintfA(buf, "zpe: +%lu ms %s",
+              (unsigned long)((now.QuadPart - g_qpcstart.QuadPart) * 1000 / g_qpcfreq.QuadPart),
+              msg);
+    logline(buf);
+}
 static void debug_init(void) {
     g_debug = getenv("ZPE_DEBUG") != NULL;
+    QueryPerformanceFrequency(&g_qpcfreq);
+    QueryPerformanceCounter(&g_qpcstart);
     if (!g_debug) return;
     char dir[MAX_PATH]; UINT n = GetTempPathA(MAX_PATH, dir);
     if (n == 0 || n >= MAX_PATH - 32) return;
@@ -85,7 +99,7 @@ static void read_self(void) {
         total += got;
     CloseHandle(h);
     if (total != g_self_len) die("zpe: short read\n");
-    logline("zpe: self read\n");
+    phase("self read\n");
 }
 
 /* ---------- decompression (frames -> dest offsets, parallel) ---------- */
@@ -140,7 +154,7 @@ static void decompress_payload(uint64_t nframes, const uint64_t *tbl, uint64_t p
     for (DWORD i = 0; i < nthread; i++) CloseHandle(th[i]);
     HeapFree(GetProcessHeap(), 0, th);
     HeapFree(GetProcessHeap(), 0, jobs);
-    logline("zpe: decompressed\n");
+    phase("decompressed\n");
 }
 
 /* ---------- temp exe ---------- */
@@ -160,8 +174,8 @@ static void write_temp_exe(void) {
     if (total != g_payload_len) die("zpe: short write\n");
     if (g_log) {
         char msg[MAX_PATH + 16];
-        wsprintfA(msg, "zpe: payload written %s\n", g_temp);
-        logline(msg);
+        wsprintfA(msg, "payload written %s\n", g_temp);
+        phase(msg);
     }
 }
 
@@ -222,7 +236,7 @@ int main(void) {
     CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
 
     if (!getenv("ZPE_KEEP_TEMP")) DeleteFileA(g_temp);
-    logline("zpe: done\n");
+    phase("done\n");
     if (g_log) CloseHandle(g_log);
     ExitProcess(code);
 }
