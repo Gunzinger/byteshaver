@@ -148,7 +148,7 @@ int main(void) {
     if (!tbl) die("zpe: OOM (table)\n");
     memcpy(tbl, g_self + g_self_len - 24 - nframes * 24, (SIZE_T)(nframes * 24));
 
-    decompress_payload(payload_off, tbl, nframes);
+    decompress_payload(nframes, tbl, payload_off);
     HeapFree(GetProcessHeap(), 0, tbl);
     HeapFree(GetProcessHeap(), 0, g_self);
     g_self = NULL; g_self_len = 0;
