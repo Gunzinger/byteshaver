@@ -4,9 +4,10 @@
 Two container flavors:
   ELF (default)  magic "ZPK2zstd" — frames tile the flat file 1:1;
                  table stride 16 B {comp u64, uncomp u64}.
-  PE (--pe)      magic "ZPK3pes"  — frame 0 = PE headers, one frame per
-                 section, destinations are RVAs of the target image;
-                 table stride 24 B {comp u64, uncomp u64, dest_rva u64}.
+  PE (--pe)      magic "ZPK3pe64" — frames tile the flat payload file 1:1
+                 (headers, sections, alignment padding, trailing overlay);
+                 table stride 24 B {comp u64, uncomp u64, dest u64} where
+                 dest is the frame's offset in the reconstructed file.
                  Also copies the payload's Subsystem into the stub so GUI
                  payloads don't get a console window.
 
@@ -60,37 +61,47 @@ def main():
     with open(args.input, "rb") as f:
         plain = f.read()
 
-    frames = []  # (plain_bytes, dest_rva, copy_len)
+    frames = []  # (plain_bytes, dest_off)
     if args.pe:
         size_of_headers, subsystem, secs = parse_pe64(plain)
-        frames.append((plain[:size_of_headers], 0, size_of_headers))
-        for va, vsize, rawsz, ptrraw in sorted(secs, key=lambda s: s[3]):
-            if not (rawsz and ptrraw):
-                continue
-            raw = plain[ptrraw:ptrraw + rawsz]
-            # balance: split big sections so no worker gets stuck on .text;
-            # dest rva = section va + sub-offset (loader maps raw contiguously)
-            piece = int(args.pe_chunk * 1024 * 1024)
-            if len(raw) <= piece:
-                frames.append((raw, va, rawsz))
-            else:
-                n = (len(raw) + piece - 1) // piece
-                sub = (len(raw) + n - 1) // n
-                for o in range(0, len(raw), sub):
-                    frames.append((raw[o:o + sub], va + o, rawsz))
+        # segments that carry raw file data
+        segs = [(0, size_of_headers)]
+        for _va, _vsize, rawsz, ptrraw in secs:
+            if rawsz and ptrraw:
+                segs.append((ptrraw, rawsz))
+        segs.sort()
+        # tile the file 1:1: cover alignment padding between segments and
+        # any trailing overlay (e.g. signature tables) so extract-to-temp
+        # reconstructs the original bytes exactly
+        tiled = []
+        cur = 0
+        for off, ln in segs:
+            if off > cur:
+                tiled.append((cur, off - cur))
+            tiled.append((off, ln))
+            cur = max(cur, off + ln)
+        if cur < len(plain):
+            tiled.append((cur, len(plain) - cur))
+        # balance: split segments so no worker gets stuck on a big .text
+        piece = int(args.pe_chunk * 1024 * 1024)
+        for off, ln in tiled:
+            n = (ln + piece - 1) // piece if ln > piece else 1
+            sub = (ln + n - 1) // n
+            for o in range(0, ln, sub):
+                frames.append((plain[off + o:off + o + min(sub, ln - o)], off + o))
     else:
         total = len(plain)
         n = max(1, args.frames)
         chunk = (total + n - 1) // n
         for i in range(0, total, chunk):
             c = plain[i:i + chunk]
-            frames.append((c, 0, len(c)))
+            frames.append((c, i))
 
-    comp_frames = []  # (comp, uncomp, dest_rva, copy_len)
-    for c, rva, copy_len in frames:
+    comp_frames = []  # (comp, uncomp, dest)
+    for c, dest in frames:
         comp = subprocess.run(["zstd", f"-{args.level}", "-T1", "-q"],
                               input=c, capture_output=True, check=True).stdout
-        comp_frames.append((comp, len(c), rva, copy_len))
+        comp_frames.append((comp, len(c), dest))
 
     with open(args.stub, "rb") as f:
         stub = bytearray(f.read())
@@ -106,11 +117,11 @@ def main():
     magic = b"ZPK3pe64" if args.pe else b"ZPK2zstd"
     with open(args.output, "wb") as f:
         f.write(stub)
-        for comp, unc, rva, cl in comp_frames:
+        for comp, _unc, _dest in comp_frames:
             f.write(comp)
-        for comp, unc, rva, cl in comp_frames:
+        for comp, unc, dest in comp_frames:
             if args.pe:
-                f.write(struct.pack("<QQQ", len(comp), unc, rva))
+                f.write(struct.pack("<QQQ", len(comp), unc, dest))
             else:
                 f.write(struct.pack("<QQ", len(comp), unc))
         f.write(struct.pack("<Q", len(comp_frames)))
@@ -120,7 +131,7 @@ def main():
     sz = os.path.getsize(args.output)
     print(f"zpack: {len(plain):,} -> {sz:,} B ({sz / len(plain) * 100:.1f}%) "
           f"[{len(comp_frames)} frames, payload "
-          f"{sum(len(c) for c, _, _, _ in comp_frames) / 1e6:.2f}MB, stub {payload_off / 1e3:.0f}kB]")
+          f"{sum(len(c) for c, _, _ in comp_frames) / 1e6:.2f}MB, stub {payload_off / 1e3:.0f}kB]")
 
 
 if __name__ == "__main__":

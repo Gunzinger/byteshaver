@@ -105,4 +105,13 @@ python3 zpack.py zpe-stub.exe byteshaver.exe byteshaver-packed.exe --pe
 
 ### Diagnostic env
 
-- ZPE_DEBUG=1 - write phase-by-phase status to %TEMP%\zpe-debug.log
+- ZPE_DEBUG=1 - write phase-by-phase status to %TEMP%\zpe-debug.log (also
+  suppresses the error MessageBox, so automation stays headless)
+- ZPE_KEEP_TEMP=1 - keep the extracted exe in %TEMP% for inspection
+  (compare its sha256 against the original payload to verify extraction)
+
+The child process inherits the stub's std handles, so stdout/stderr reach
+pipes and redirects (`byteshaver-packed.exe in.heic out.jpg | tee log`).
+Container trailer: `n x {comp u64, uncomp u64, dest u64}` - frames tile the
+payload file 1:1 (headers, sections, alignment padding, overlay) and `dest`
+is each frame's offset in the reconstructed file.

@@ -2,12 +2,18 @@
  *
  * Container (magic "ZPK3pe64", produced by `zpack.py --pe`):
  *   [stub PE][zstd frame 0][frame 1]...[frame n-1][trailer]
- *   trailer: n x {comp u64, uncomp u64} | nframes u64 | payload_off u64 | magic 8B
+ *   trailer: n x {comp u64, uncomp u64, dest u64}
+ *            | nframes u64 | payload_off u64 | magic 8B
+ *   dest = offset of the decompressed frame inside the reconstructed
+ *   payload file (frames tile the original PE 1:1, including headers,
+ *   section alignment padding and any trailing overlay).
  *
- * The stub reads its own file, decompresses the frames into one flat buffer
- * (the original payload exe bytes), writes it to %TEMP%, CreateProcessA's it
- * with the original command line and environment, waits, propagates the exit
- * code, then deletes the temp file.
+ * The stub reads its own file, decompresses the frames at their dest
+ * offsets into one flat buffer (the original payload exe bytes), writes
+ * it to %TEMP%, CreateProcessA's it with the original command line and
+ * environment, waits, propagates the exit code, then deletes the temp
+ * file. The child inherits our std handles so its output reaches pipes
+ * and redirects (CLI usage, WSL interop).
  *
  * Why extract+CreateProcess instead of in-memory mapping: a manually mapped
  * PE image does not receive OS loader services (native-TLS setup, loader
@@ -16,39 +22,46 @@
  * docs/zstd-packer-analysis.md §10.3). The extracted exe is a plain PE that
  * the standard Windows loader handles completely.
  *
- * Env: ZPE_DEBUG=1 -> append phases to %TEMP%\zpe-debug.log
+ * Env: ZPE_DEBUG=1      -> append phases to %TEMP%\zpe-debug.log
+ *                           (also suppresses the error MessageBox)
+ *      ZPE_KEEP_TEMP=1  -> keep the extracted exe for inspection
  *
  * Build: see tools/packer/README.md (mingw-gcc or llvm-mingw, static zstd).
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <zstd.h>
 
 static const char MAGIC[8] = {'Z','P','K','3','p','e','6','4'};
 
+/* ---------- debug log (ZPE_DEBUG=1) ---------- */
 static HANDLE g_log = NULL;
+static int g_debug = 0;
 static void logline(const char *msg) {
     if (!g_log) return;
     DWORD n; WriteFile(g_log, msg, (DWORD)strlen(msg), &n, NULL);
 }
-static void die(const char *msg) {
-    logline(msg);
-    /* GUI-subsystem processes have no stderr — surface fatal errors */
-    MessageBoxA(NULL, msg, "byteshaver (packed)", MB_ICONERROR | MB_SETFOREGROUND);
-    ExitProcess(127);
-}
-
-/* ---------- debug log (ZPE_DEBUG=1) ---------- */
 static void debug_init(void) {
-    if (!getenv("ZPE_DEBUG")) return;
+    g_debug = getenv("ZPE_DEBUG") != NULL;
+    if (!g_debug) return;
     char dir[MAX_PATH]; UINT n = GetTempPathA(MAX_PATH, dir);
     if (n == 0 || n >= MAX_PATH - 32) return;
     char path[MAX_PATH];
     lstrcpyA(path, dir); lstrcatA(path, "zpe-debug.log");
     g_log = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
                         NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+}
+
+static void die(const char *msg) {
+    logline(msg);
+    /* GUI-subsystem processes have no stderr — surface fatal errors.
+     * Suppressed under ZPE_DEBUG so automation stays headless. */
+    if (!g_debug)
+        MessageBoxA(NULL, msg, "byteshaver (packed)", MB_ICONERROR | MB_SETFOREGROUND);
+    ExitProcess(127);
 }
 
 /* ---------- self file ---------- */
@@ -73,21 +86,27 @@ static void read_self(void) {
     logline("zpe: self read\n");
 }
 
-/* ---------- decompression (sequential frames -> one flat buffer) ---------- */
+/* ---------- decompression (frames -> dest offsets in a flat buffer) ---------- */
 static unsigned char *g_payload; static size_t g_payload_len;
 
 static void decompress_payload(uint64_t nframes, const uint64_t *tbl, uint64_t payload_off) {
     size_t total = 0;
-    for (uint64_t i = 0; i < nframes; i++) total += tbl[2*i + 1];
-    g_payload_len = total;
-    g_payload = (unsigned char *)HeapAlloc(GetProcessHeap(), 0, total);
-    if (!g_payload) die("zpe: OOM (payload)\n");
-    uint64_t src = payload_off; size_t doff = 0;
     for (uint64_t i = 0; i < nframes; i++) {
-        size_t comp = (size_t)tbl[2*i], uncomp = (size_t)tbl[2*i + 1];
-        size_t r = ZSTD_decompress(g_payload + doff, uncomp, g_self + src, comp);
+        uint64_t end = tbl[3*i + 2] + tbl[3*i + 1];
+        if (end > total) total = (size_t)end;
+    }
+    g_payload_len = total;
+    g_payload = (unsigned char *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, total);
+    if (!g_payload) die("zpe: OOM (payload)\n");
+    uint64_t src = payload_off;
+    for (uint64_t i = 0; i < nframes; i++) {
+        size_t comp = (size_t)tbl[3*i], uncomp = (size_t)tbl[3*i + 1];
+        size_t dest = (size_t)tbl[3*i + 2];
+        if (dest > g_payload_len || uncomp > g_payload_len - dest)
+            die("zpe: bad frame dest\n");
+        size_t r = ZSTD_decompress(g_payload + dest, uncomp, g_self + src, comp);
         if (ZSTD_isError(r) || r != uncomp) die("zpe: decompress failed\n");
-        src += comp; doff += uncomp;
+        src += comp;
     }
     logline("zpe: decompressed\n");
 }
@@ -107,7 +126,9 @@ static void write_temp_exe(void) {
         total += written;
     CloseHandle(h);
     if (total != g_payload_len) die("zpe: short write\n");
-    logline("zpe: payload written\n");
+    char msg[MAX_PATH + 16];
+    wsprintfA(msg, "zpe: payload written %s\n", g_temp);
+    logline(msg);
 }
 
 int main(void) {
@@ -121,11 +142,11 @@ int main(void) {
     uint64_t tail[2];
     memcpy(tail, g_self + g_self_len - 24, 16);
     uint64_t nframes = tail[0], payload_off = tail[1];
-    if (nframes == 0 || nframes > 4096 || payload_off + 24 + nframes * 16 > g_self_len)
+    if (nframes == 0 || nframes > 4096 || payload_off + 24 + nframes * 24 > g_self_len)
         die("zpe: bad frame count\n");
-    uint64_t *tbl = (uint64_t *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)(nframes * 16));
+    uint64_t *tbl = (uint64_t *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)(nframes * 24));
     if (!tbl) die("zpe: OOM (table)\n");
-    memcpy(tbl, g_self + g_self_len - 24 - nframes * 16, (SIZE_T)(nframes * 16));
+    memcpy(tbl, g_self + g_self_len - 24 - nframes * 24, (SIZE_T)(nframes * 24));
 
     decompress_payload(payload_off, tbl, nframes);
     HeapFree(GetProcessHeap(), 0, tbl);
@@ -139,6 +160,15 @@ int main(void) {
     STARTUPINFOA si; PROCESS_INFORMATION pi;
     ZeroMemory(&si, sizeof si); si.cb = sizeof si;
     ZeroMemory(&pi, sizeof pi);
+    /* forward our std handles: the child's stdout/stderr must reach our
+     * console, pipes and redirects (WSL interop, `packed.exe | tee`) */
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (out && out != INVALID_HANDLE_VALUE) {
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
+        si.hStdOutput = out;
+        si.hStdError  = GetStdHandle(STD_ERROR_HANDLE);
+    }
     char exe[MAX_PATH];
     UINT en = GetModuleFileNameA(NULL, exe, MAX_PATH);
     if (en == 0 || en >= MAX_PATH) die("zpe: GetModuleFileName failed\n");
@@ -153,14 +183,14 @@ int main(void) {
         else { while (*cl && *cl != ' ' && *cl != '\t') ++cl; while (*cl == ' ' || *cl == '\t') ++cl; }
         lstrcatA(cmd, cl);
     }
-    if (!CreateProcessA(g_temp, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi))
+    if (!CreateProcessA(g_temp, cmd, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi))
         die("zpe: CreateProcess failed\n");
     WaitForSingleObject(pi.hProcess, INFINITE);
     DWORD code = 1;
     GetExitCodeProcess(pi.hProcess, &code);
     CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
 
-    DeleteFileA(g_temp);
+    if (!getenv("ZPE_KEEP_TEMP")) DeleteFileA(g_temp);
     logline("zpe: done\n");
     if (g_log) CloseHandle(g_log);
     ExitProcess(code);
