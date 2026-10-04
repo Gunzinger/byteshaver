@@ -154,7 +154,9 @@ zpe: +61 ms done              <- CreateProcess + loader + AV on the fresh exe
 ```
 
 **Extract-cache** (implemented since): the stub caches the extracted exe at
-`%LOCALAPPDATA%\byteshaver\zpe-cache\<key>.exe` and launches it directly on
+`%LOCALAPPDATA%\byteshaver\zpe-cache\<key>\<packed-name>.exe` (hash in the
+directory, real binary name preserved for Task Manager) and launches it
+directly on
 subsequent runs (`ZPE_NO_CACHE=1` restores the temp behavior). Measured on
 real Windows (`ZPE_DEBUG=1`):
 

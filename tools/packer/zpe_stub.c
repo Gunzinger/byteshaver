@@ -144,6 +144,21 @@ static uint64_t fnv1a(uint64_t h, const void *p, size_t n) {
     return h;
 }
 
+/* <cache_dir>\<key>\<basename of the packed exe>[.tmp] — the hash goes into
+ * the directory so Task Manager shows the real binary name */
+static void cache_paths(const char *keyname, int tmp, char *out) {
+    size_t n = 0;
+    append_bounded(out, MAX_PATH, &n, g_cache_dir);
+    append_bounded(out, MAX_PATH, &n, "\\");
+    append_bounded(out, MAX_PATH, &n, keyname);
+    CreateDirectoryA(out, NULL);           /* idempotent */
+    append_bounded(out, MAX_PATH, &n, "\\");
+    const char *base = g_self_path + lstrlenA(g_self_path);
+    while (base > g_self_path && base[-1] != '\\' && base[-1] != '/') --base;
+    append_bounded(out, MAX_PATH, &n, base);
+    if (tmp) append_bounded(out, MAX_PATH, &n, ".tmp");
+}
+
 /* decompression (frames -> dest offsets, parallel) */
 static unsigned char *g_payload; static size_t g_payload_len;
 
@@ -202,8 +217,8 @@ static void decompress_payload(uint64_t nframes, const uint64_t *tbl, uint64_t p
 /* write the flat buffer into the cache: <key>.tmp + MoveFileEx, so a crash
  * mid-write never leaves a runnable-looking half payload */
 static void write_cache_exe(const char *keyname) {
-    wsprintfA(g_child, "%s\\%s.exe", g_cache_dir, keyname);
-    wsprintfA(g_fallback_tmp, "%s\\%s.tmp", g_cache_dir, keyname);
+    cache_paths(keyname, 1, g_fallback_tmp);
+    cache_paths(keyname, 0, g_child);
     HANDLE h = CreateFileA(g_fallback_tmp, GENERIC_WRITE, 0, NULL,
                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) die("zpe: CreateFile(cache) failed\n");
@@ -223,16 +238,33 @@ static void write_cache_exe(const char *keyname) {
 
 /* keep the cache at one generation: drop entries other than keyname */
 static void cache_evict_others(const char *keyname) {
-    char srch[MAX_PATH], path[MAX_PATH];
-    wsprintfA(srch, "%s\\*.exe", g_cache_dir);
+    char srch[MAX_PATH], path[MAX_PATH], inner[MAX_PATH];
+    wsprintfA(srch, "%s\\*", g_cache_dir);
     WIN32_FIND_DATAA fd;
     HANDLE f = FindFirstFileA(srch, &fd);
     if (f == INVALID_HANDLE_VALUE) return;
     do {
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        if (lstrcmpiA(fd.cFileName, keyname) == 0) continue;
+        if (!lstrcmpiA(fd.cFileName, ".") || !lstrcmpiA(fd.cFileName, "..")) continue;
         wsprintfA(path, "%s\\%s", g_cache_dir, fd.cFileName);
-        DeleteFileA(path);
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            if (lstrcmpiA(fd.cFileName, keyname) == 0) continue;
+            /* wipe the generation's files, then remove the directory
+             * (RemoveDirectory may fail while an old gen still runs) */
+            wsprintfA(srch, "%s\\*", path);
+            WIN32_FIND_DATAA fd2;
+            HANDLE f2 = FindFirstFileA(srch, &fd2);
+            if (f2 != INVALID_HANDLE_VALUE) {
+                do {
+                    if (fd2.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+                    wsprintfA(inner, "%s\\%s", path, fd2.cFileName);
+                    DeleteFileA(inner);
+                } while (FindNextFileA(f2, &fd2));
+                FindClose(f2);
+            }
+            RemoveDirectoryA(path);
+        } else {
+            DeleteFileA(path);      /* legacy flat <hash>.exe layout */
+        }
     } while (FindNextFileA(f, &fd));
     FindClose(f);
 }
@@ -344,7 +376,7 @@ int main(void) {
 
     int use_cache = getenv("ZPE_NO_CACHE") == NULL;
     char entry[MAX_PATH];
-    wsprintfA(entry, "%s\\%s.exe", g_cache_dir, keyname);
+    cache_paths(keyname, 0, entry);
 
     if (use_cache && GetFileAttributesA(entry) != INVALID_FILE_ATTRIBUTES) {
         lstrcpyA(g_child, entry);
@@ -360,10 +392,8 @@ int main(void) {
         g_self = NULL; g_self_len = 0;
 
         if (use_cache) {
-            char keepname[MAX_PATH];
-            wsprintfA(keepname, "%s.exe", keyname);
             write_cache_exe(keyname);
-            cache_evict_others(keepname);
+            cache_evict_others(keyname);
         } else {
             /* legacy temp path */
             char dir[MAX_PATH]; UINT n = GetTempPathA(MAX_PATH, dir);

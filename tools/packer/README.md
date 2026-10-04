@@ -84,7 +84,8 @@ python3 zpack.py zpack-stub byteshaver byteshaver-zpk --frames 4
 ## Windows (zpe_stub.c) - extract-to-cache + CreateProcess
 
 The Windows stub decompresses the payload into
-`%LOCALAPPDATA%\byteshaver\zpe-cache\<key>.exe` (written via `<key>.tmp` +
+`%LOCALAPPDATA%\byteshaver\zpe-cache\<key>\<packed-name>.exe` (hash in the
+directory so Task Manager shows the real binary name) (written via `<key>.tmp` +
 `MoveFileEx`, so a crash never leaves a half-written entry; older
 generations are evicted, the cache holds one payload) and CreateProcess's
 it with the original command line and environment. The payload runs as a
