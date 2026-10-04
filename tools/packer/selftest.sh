@@ -6,13 +6,13 @@
 # ELF legs need a host C compiler. PE legs additionally need a windows cross
 # compiler (`. ./env-win.sh` after setup-wsl.sh, or install gcc-mingw-w64)
 # and, for automated runs, wine. If wine is missing, the packed PE artifact
-# is left in ./selftest-out/ — run it directly from WSL (Windows interop:
+# is left in ./packer-out/ — run it directly from WSL (Windows interop:
 # executes on the real Windows host) or copy it to a Windows box.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 WORK="$(mktemp -d)"
-OUT="$PWD/selftest-out"
+OUT="$PWD/packer-out"
 trap 'rm -rf "$WORK"' EXIT
 PASS=0; SKIP=0; FAIL=0
 ok()   { echo "  PASS: $1"; PASS=$((PASS+1)); }
@@ -111,13 +111,13 @@ else
         -I"$WORK/zstd-pe" -o "$WORK/zpe-stub.exe"
     python3 tools/packer/zpack.py "$WORK/zpe-stub.exe" "$WORK/payload.exe" \
         "$OUT/selftest-packed.exe" --pe
-    ok "packed PE written to selftest-out/selftest-packed.exe"
+    ok "packed PE written to packer-out/selftest-packed.exe"
 
     echo "==> [4/4] PE: run under wine"
     if ! command -v wine >/dev/null; then
         skip "no wine — run on real windows instead:"
-        echo "    WSL interop (executes on the windows host): ./selftest-out/selftest-packed.exe alpha \"two words\""
-        echo "    then: ./selftest-out/selftest-packed.exe 42 ; echo \$?   # expect 42"
+        echo "    WSL interop (executes on the windows host): ./packer-out/selftest-packed.exe alpha \"two words\""
+        echo "    then: ./packer-out/selftest-packed.exe 42 ; echo \$?   # expect 42"
     else
         export WINEDEBUG=-all
         out="$(wine "$OUT/selftest-packed.exe" alpha "two words" 2>/dev/null | tr -d '\r')"

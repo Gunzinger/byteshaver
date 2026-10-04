@@ -5,6 +5,11 @@ C stub plus the zstd codec: **smaller artifacts than `upx --best` and ~4-5×
 faster unpacking**. Design rationale and full measurements:
 [`docs/zstd-packer-analysis.md`](../../docs/zstd-packer-analysis.md).
 
+Quick start: `tools/packer/build-stubs.sh` builds both stubs into
+`packer-out/` (ELF stub needs a host gcc, PE stub a windows cross toolchain
+such as `. ./env-win.sh`); `tools/packer/selftest.sh` round-trip-tests the
+whole pipeline.
+
 ```
 packed layout:  [stub ELF, padded to page size][zstd frame 0]...[frame n-1][trailer]
 trailer:        n×{comp_len,uncomp_len} | nframes u64 | payload_off u64 | magic "ZPK2zstd"
