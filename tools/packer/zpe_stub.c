@@ -177,11 +177,25 @@ typedef struct {
     const unsigned char *src; size_t comp, uncomp; unsigned char *dst;
 } frame_job;
 
-static DWORD WINAPI frame_worker(LPVOID param) {
-    frame_job *j = (frame_job *)param;
-    size_t r = ZSTD_decompress(j->dst, j->uncomp, j->src, j->comp);
-    if (ZSTD_isError(r) || r != j->uncomp) die("zpe: decompress failed\n");
-    return 0;
+static frame_job *g_jobs;
+static uint64_t g_nframes;
+static volatile LONG64 g_next;         /* work-queue cursor (Interlocked) */
+static volatile LONG g_failed;         /* sticky failure flag */
+
+/* claim frames from the shared queue until done or a frame failed */
+static DWORD WINAPI worker(LPVOID param) {
+    (void)param;
+    for (;;) {
+        if (g_failed) return 0;
+        LONG64 i = InterlockedIncrement64(&g_next) - 1;
+        if (i >= (LONG64)g_nframes) return 0;
+        frame_job *j = &g_jobs[i];
+        size_t r = ZSTD_decompress(j->dst, j->uncomp, j->src, j->comp);
+        if (ZSTD_isError(r) || r != j->uncomp) {
+            InterlockedExchange(&g_failed, 1);
+            die("zpe: decompress failed\n");
+        }
+    }
 }
 
 static void decompress_payload(uint64_t nframes, const uint64_t *tbl, uint64_t payload_off) {
@@ -194,16 +208,14 @@ static void decompress_payload(uint64_t nframes, const uint64_t *tbl, uint64_t p
     g_payload = (unsigned char *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, total);
     if (!g_payload) die("zpe: OOM (payload)\n");
 
-    int serial = getenv("ZPE_THREADS") != NULL && atoi(getenv("ZPE_THREADS")) == 1;
     frame_job *jobs = (frame_job *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)(nframes * sizeof(frame_job)));
-    HANDLE *th = (HANDLE *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)(nframes * sizeof(HANDLE)));
-    if (!jobs || !th) die("zpe: OOM (jobs)\n");
+    if (!jobs) die("zpe: OOM (jobs)\n");
 
     /* frames must tile [payload_off, trailer) — unvalidated comp lens used to
      * hand the decoder pointers past the self buffer (wild read; crash or
      * garbage depending on what happened to be mapped there) */
     uint64_t frames_end = g_self_len - 24 - nframes * 24;
-    uint64_t src = payload_off; DWORD nthread = 0;
+    uint64_t src = payload_off;
     for (uint64_t i = 0; i < nframes; i++) {
         size_t dest = (size_t)tbl[3*i + 2], uncomp = (size_t)tbl[3*i + 1];
         size_t comp = (size_t)tbl[3*i];
@@ -214,12 +226,33 @@ static void decompress_payload(uint64_t nframes, const uint64_t *tbl, uint64_t p
         jobs[i].comp = comp;
         jobs[i].uncomp = uncomp;
         jobs[i].dst = g_payload + dest;
-        src += jobs[i].comp;
-        if (serial || (th[nthread] = CreateThread(NULL, 0, frame_worker, &jobs[i], 0, NULL)) == NULL)
-            frame_worker(&jobs[i]);     /* ZPE_THREADS=1 or CreateThread failed */
-        else
-            nthread++;
+        src += comp;
     }
+
+    /* min(ncpu, nframes) workers pull from a shared queue (ZPE_THREADS caps
+     * further, 1 = serial on the main thread) — the old one-thread-per-frame
+     * model degenerated for many small frames */
+    DWORD maxth = (DWORD)nframes;
+    SYSTEM_INFO si; GetSystemInfo(&si);
+    if (si.dwNumberOfProcessors && si.dwNumberOfProcessors < maxth)
+        maxth = si.dwNumberOfProcessors;
+    const char *te = getenv("ZPE_THREADS");
+    if (te) {
+        long v = atol(te);
+        if (v >= 1 && (DWORD)v < maxth) maxth = (DWORD)v;
+    }
+    HANDLE *th = (HANDLE *)HeapAlloc(GetProcessHeap(), 0,
+                                     (SIZE_T)((maxth > 1 ? maxth - 1 : 1) * sizeof(HANDLE)));
+    if (!th) die("zpe: OOM (threads)\n");
+
+    g_jobs = jobs; g_nframes = nframes; g_next = 0; g_failed = 0;
+    DWORD nthread = 0;
+    for (DWORD t = 0; t + 1 < maxth; t++) {
+        if ((th[nthread] = CreateThread(NULL, 0, worker, NULL, 0, NULL)) == NULL)
+            break;                      /* main thread covers the shortfall */
+        nthread++;
+    }
+    worker(NULL);                       /* main thread pulls from the queue too */
     for (DWORD base = 0; base < nthread; base += MAXIMUM_WAIT_OBJECTS) {
         DWORD n = nthread - base;
         if (n > MAXIMUM_WAIT_OBJECTS) n = MAXIMUM_WAIT_OBJECTS;
