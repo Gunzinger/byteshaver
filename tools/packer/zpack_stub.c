@@ -119,9 +119,19 @@ int main(int argc, char **argv, char **envp) {
     uint64_t *tbl = malloc(tbl_sz);
     if (!tbl || pread(fd, tbl, tbl_sz, fsz - 24 - (off_t)tbl_sz) != (ssize_t)tbl_sz) die("read frame table");
 
-    /* map payload (contiguous frames, page-aligned offset) */
+    /* map payload (contiguous frames, page-aligned offset). Validate the
+     * table-derived extents first: a corrupted comp_len used to reach mmap
+     * with a bogus length and die by SIGBUS while decompressing; now every
+     * frame provably lies inside [payload_off, trailer) and uncomp sums
+     * cannot wrap (per-frame cap 1 TiB, nframes <= 4096). */
+    uint64_t frames_end = (uint64_t)fsz - 24 - (uint64_t)tbl_sz;
+    if (payload_off > frames_end) die("bad payload offset");
     size_t payload_len = 0, unpacked_len = 0;
-    for (uint64_t i = 0; i < nframes; i++) { payload_len += tbl[2*i]; unpacked_len += tbl[2*i+1]; }
+    for (uint64_t i = 0; i < nframes; i++) {
+        if (tbl[2*i] > frames_end - payload_off - (uint64_t)payload_len) die("bad frame table");
+        if (tbl[2*i+1] > (1ULL << 40)) die("bad frame table");
+        payload_len += tbl[2*i]; unpacked_len += tbl[2*i+1];
+    }
     const unsigned char *src = mmap(NULL, payload_len, PROT_READ, MAP_PRIVATE, fd, (off_t)payload_off);
     if (src == MAP_FAILED) die("mmap payload");
 
