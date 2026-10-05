@@ -31,16 +31,33 @@ int main(int argc, char **argv) {
 }
 EOF
 
-# corrupt byte inside frame 0 (offset from the packer trailer, so this works
-# regardless of stub/payload sizes) -> stub must die with 127, not hang/crash
-corrupt_payload_byte() { # <file>
-    python3 - "$1" <<'EOF'
+# corrupt a packed file (offsets derived from the trailer, so this works
+# regardless of stub/payload sizes). Modes:
+#   data   — flip a byte inside frame 0        -> codec/checksum must catch it
+#   comp   — frame 0 comp_len = 2^40           -> stub must bounds-reject
+#   uncomp — frame 0 uncomp_len = garbage      -> stub/codec must reject
+#   off    — payload_off past EOF              -> stub must reject
+# Every mode must die with exit 127, not hang, crash or exec garbage.
+corrupt_payload() { # <file> <mode>
+    python3 - "$1" "$2" <<'EOF'
 import struct, sys
-p = sys.argv[1]
+p, mode = sys.argv[1], sys.argv[2]
 d = bytearray(open(p, "rb").read())
+magic = d[len(d)-8:]
+assert magic in (b"ZPK2zstd", b"ZPK3pe64"), "bad trailer magic"
+stride = 16 if magic == b"ZPK2zstd" else 24
 nframes, off = struct.unpack_from("<QQ", d, len(d) - 24)
-assert d[len(d)-8:] in (b"ZPK2zstd", b"ZPK3pe64"), "bad trailer magic"
-d[off + 16] ^= 0xFF
+tbl = len(d) - 24 - nframes * stride
+if mode == "data":
+    d[off + 16] ^= 0xFF
+elif mode == "comp":
+    struct.pack_into("<Q", d, tbl, 1 << 40)
+elif mode == "uncomp":
+    struct.pack_into("<Q", d, tbl + 8, 123456789)
+elif mode == "off":
+    struct.pack_into("<Q", d, len(d) - 16, len(d) + 100000)
+else:
+    raise SystemExit(f"bad mode {mode}")
 open(p, "wb").write(d)
 EOF
 }
@@ -78,11 +95,13 @@ else
     rc=0; "$WORK/packed13" 7 >/dev/null || rc=$?
     [ "$rc" -eq 7 ] && ok "13-frame work-queue layout" || fail "13 frames: got $rc"
 
-    cp "$WORK/packed" "$WORK/corrupt"
-    corrupt_payload_byte "$WORK/corrupt"
-    rc=0; "$WORK/corrupt" >/dev/null 2>&1 || rc=$?
-    [ "$rc" -eq 127 ] && ok "corrupt payload detected, exit 127" \
-                      || fail "corrupt payload: got rc=$rc (want 127)"
+    for mode in data comp uncomp off; do
+        cp "$WORK/packed" "$WORK/corrupt-$mode"
+        corrupt_payload "$WORK/corrupt-$mode" "$mode"
+        rc=0; "$WORK/corrupt-$mode" >/dev/null 2>&1 || rc=$?
+        [ "$rc" -eq 127 ] && ok "corrupt trailer ($mode) detected, exit 127" \
+                          || fail "corrupt ($mode): got rc=$rc (want 127)"
+    done
 fi
 
 echo "==> [3/4] PE (zpe v3): build stub + payload, pack"
@@ -126,14 +145,23 @@ else
         rc=0; wine "$OUT/selftest-packed.exe" 42 >/dev/null 2>&1 || rc=$?
         [ "$rc" -eq 42 ] && ok "wine: exit code propagation" || fail "wine exit: got $rc"
 
-        cp "$OUT/selftest-packed.exe" "$WORK/corrupt.exe"
-        corrupt_payload_byte "$WORK/corrupt.exe"
-        rc=0; timeout 15 wine "$WORK/corrupt.exe" >/dev/null 2>&1 || rc=$?
+        cp "$OUT/selftest-packed.exe" "$WORK/corrupt-data.exe"
+        corrupt_payload "$WORK/corrupt-data.exe" data
+        rc=0; timeout 15 wine "$WORK/corrupt-data.exe" >/dev/null 2>&1 || rc=$?
         # die() shows a MessageBox which can block headless wine -> 124 is
         # acceptable proof the stub's error path was reached
         { [ "$rc" -eq 127 ] || [ "$rc" -eq 124 ]; } \
-            && ok "wine: corrupt payload hits stub error path (rc=$rc)" \
-            || fail "wine corrupt: got rc=$rc"
+            && ok "wine: corrupt frame data hits stub error path (rc=$rc)" \
+            || fail "wine corrupt data: got rc=$rc"
+
+        for mode in comp uncomp off; do
+            cp "$OUT/selftest-packed.exe" "$WORK/corrupt-$mode.exe"
+            corrupt_payload "$WORK/corrupt-$mode.exe" "$mode"
+            rc=0; timeout 15 wine "$WORK/corrupt-$mode.exe" >/dev/null 2>&1 || rc=$?
+            { [ "$rc" -eq 127 ] || [ "$rc" -eq 124 ]; } \
+                && ok "wine: corrupt trailer ($mode) hits stub error path (rc=$rc)" \
+                || fail "wine corrupt ($mode): got rc=$rc"
+        done
     fi
 fi
 
