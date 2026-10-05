@@ -60,7 +60,11 @@ typedef struct {
 static job_t *g_jobs;
 static uint64_t g_nframes;
 static volatile long g_next;          /* atomic work-queue cursor */
-static volatile int g_rc;             /* sticky failure flag */
+static int g_rc;                      /* sticky failure flag (atomic accessors) */
+static long g_pagesize;               /* hoisted: one sysconf, not one per frame */
+
+static void fail_set(void) { __atomic_store_n(&g_rc, 1, __ATOMIC_RELAXED); }
+static int fail_get(void) { return __atomic_load_n(&g_rc, __ATOMIC_RELAXED); }
 
 /* process one frame; returns 0 on success */
 static int do_frame(job_t *j) {
@@ -69,9 +73,9 @@ static int do_frame(job_t *j) {
     /* release this frame's clean file-backed input pages immediately so the
      * RSS peak is output + in-flight inputs, not output + whole payload */
     if (j->rc == 0) {
-        long ps = sysconf(_SC_PAGESIZE);
-        uintptr_t a = (uintptr_t)j->src & ~((uintptr_t)ps - 1);
-        uintptr_t e = ((uintptr_t)j->src + j->comp + ps - 1) & ~((uintptr_t)ps - 1);
+        uintptr_t ps = (uintptr_t)g_pagesize;
+        uintptr_t a = (uintptr_t)j->src & ~(ps - 1);
+        uintptr_t e = ((uintptr_t)j->src + j->comp + ps - 1) & ~(ps - 1);
         madvise((void *)a, e - a, MADV_DONTNEED);
     }
     return j->rc;
@@ -81,49 +85,51 @@ static void *worker(void *arg) {
     (void)arg;
     for (;;) {
         long i = __atomic_fetch_add(&g_next, 1, __ATOMIC_RELAXED);
-        if (i >= (long)g_nframes || g_rc) return NULL;
-        if (do_frame(&g_jobs[i]) != 0) g_rc = 1;
+        if (i >= (long)g_nframes || fail_get()) return NULL;
+        if (do_frame(&g_jobs[i]) != 0) fail_set();
     }
     return NULL;
 }
 
-static void werr(const char *msg, size_t n) { (void)write(2, msg, n); }
 static void die(const char *msg) {
     size_t n = 0; while (msg[n]) n++;
     (void)write(2, "zpk: ", 5); (void)write(2, msg, n); (void)write(2, "\n", 1);
     exit(127);
 }
-#include <string.h>
 
 int main(int argc, char **argv, char **envp) {
+    (void)argc;
+    g_pagesize = sysconf(_SC_PAGESIZE);
+    if (g_pagesize <= 0) g_pagesize = 4096;
+
     int fd = open("/proc/self/exe", O_RDONLY | O_CLOEXEC);
-    if (fd < 0) die("zpk: open /proc/self/exe");
+    if (fd < 0) die("open /proc/self/exe");
     off_t fsz = lseek(fd, 0, SEEK_END);
-    if (fsz < (off_t)(40 + 24)) { werr("zpk: file too small\n", 20); return 127; }
+    if (fsz < (off_t)(40 + 24)) die("file too small");
 
     uint64_t tail[3]; /* nframes | payload_off | magic */
     if (pread(fd, tail, 24, fsz - 24) != 24 || memcmp((char *)tail + 16, MAGIC, 8) != 0) {
-        werr("zpk: bad trailer\n", 18); return 127;
+        die("bad trailer");
     }
     uint64_t nframes     = tail[0];
     uint64_t payload_off = tail[1];
-    if (nframes == 0 || nframes > 4096) { werr("zpk: bad frame count\n", 22); return 127; }
+    if (nframes == 0 || nframes > 4096) die("bad frame count");
 
     size_t tbl_sz = (size_t)nframes * 16;
     uint64_t *tbl = malloc(tbl_sz);
-    if (!tbl || pread(fd, tbl, tbl_sz, fsz - 24 - (off_t)tbl_sz) != (ssize_t)tbl_sz) { werr("read frame table\n", 19); die(""); }
+    if (!tbl || pread(fd, tbl, tbl_sz, fsz - 24 - (off_t)tbl_sz) != (ssize_t)tbl_sz) die("read frame table");
 
     /* map payload (contiguous frames, page-aligned offset) */
     size_t payload_len = 0, unpacked_len = 0;
     for (uint64_t i = 0; i < nframes; i++) { payload_len += tbl[2*i]; unpacked_len += tbl[2*i+1]; }
     const unsigned char *src = mmap(NULL, payload_len, PROT_READ, MAP_PRIVATE, fd, (off_t)payload_off);
-    if (src == MAP_FAILED) { werr("mmap payload\n", 14); die(""); }
+    if (src == MAP_FAILED) die("mmap payload");
 
     int mfd = memfd_exec();
-    if (mfd < 0) { werr("memfd_create\n", 15); die(""); }
-    if (ftruncate(mfd, (off_t)unpacked_len) != 0) { werr("ftruncate\n", 11); die(""); }
+    if (mfd < 0) die("memfd_create");
+    if (ftruncate(mfd, (off_t)unpacked_len) != 0) die("ftruncate");
     unsigned char *dst = mmap(NULL, unpacked_len, PROT_READ | PROT_WRITE, MAP_SHARED, mfd, 0);
-    if (dst == MAP_FAILED) { werr("mmap memfd\n", 13); die(""); }
+    if (dst == MAP_FAILED) die("mmap memfd");
 
     /* parallel decompression via a shared atomic frame queue: any frame count
      * spreads over min(ncpu, nframes) workers; workers also drop their input
@@ -136,7 +142,7 @@ int main(int argc, char **argv, char **envp) {
 
     pthread_t *tid = calloc(maxth > 1 ? maxth - 1 : 1, sizeof(pthread_t));
     job_t *jobs = calloc(nframes, sizeof(job_t));
-    if (!tid || !jobs) { werr("alloc\n", 8); die(""); }
+    if (!tid || !jobs) die("alloc");
     g_jobs = jobs; g_nframes = nframes; g_next = 0; g_rc = 0;
 
     size_t so = 0, doff = 0;
@@ -153,7 +159,7 @@ int main(int argc, char **argv, char **envp) {
     }
     worker(NULL);                                    /* main thread pulls from the queue too */
     for (long t = 0; t < spawned; t++) pthread_join(tid[t], NULL);
-    if (g_rc) { werr("zpk: a frame failed\n", 21); return 127; }
+    if (fail_get()) die("a frame failed");
 
     if (getenv("ZPK_DEBUG_SLEEP_MS")) {
         long ms = atol(getenv("ZPK_DEBUG_SLEEP_MS"));
@@ -162,5 +168,5 @@ int main(int argc, char **argv, char **envp) {
     }
 
     fexecve(mfd, argv, envp);
-    werr("fexecve\n", 10); die("");
+    die("fexecve");
 }
