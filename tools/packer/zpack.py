@@ -19,27 +19,43 @@ import struct
 import subprocess
 
 
+def die(msg):
+    raise SystemExit(f"zpack: {msg}")
+
+
 def parse_pe64(data):
     if data[:2] != b"MZ":
-        raise SystemExit("zpack: --pe payload is not an MZ/PE image")
+        die("--pe payload is not an MZ/PE image")
+    try:
+        return _parse_pe64(data)
+    except struct.error:
+        die("--pe payload is truncated (header/section table past EOF)")
+
+
+def _parse_pe64(data):
     e = struct.unpack_from("<I", data, 0x3C)[0]
     if data[e:e + 4] != b"PE\0\0":
-        raise SystemExit("zpack: --pe payload has no PE signature")
+        die("--pe payload has no PE signature")
     coff = e + 4
     nsec = struct.unpack_from("<H", data, coff + 2)[0]
     optsz = struct.unpack_from("<H", data, coff + 16)[0]
     opt = coff + 20
     (magic,) = struct.unpack_from("<H", data, opt)
     if magic != 0x20B:
-        raise SystemExit("zpack: --pe requires PE32+ (x64)")
+        die("--pe requires PE32+ (x64)")
     size_of_headers = struct.unpack_from("<I", data, opt + 60)[0]
     subsystem = struct.unpack_from("<H", data, opt + 68)[0]
     secs = []
     so = opt + optsz
+    if so + 40 * nsec > len(data):
+        die("--pe payload section table runs past end of file")
     for i in range(nsec):
         off = so + 40 * i
         vsize, va, rawsz, ptrraw = struct.unpack_from("<IIII", data, off + 8)
-        secs.append((va, vsize, rawsz, ptrraw))
+        if rawsz and ptrraw:
+            if ptrraw + rawsz > len(data):
+                die(f"--pe section {i} raw data ({ptrraw:#x}+{rawsz:#x}) runs past end of file")
+            secs.append((va, vsize, rawsz, ptrraw))
     return size_of_headers, subsystem, secs
 
 
@@ -57,18 +73,25 @@ def main():
     ap.add_argument("--pe", action="store_true",
                     help="PE32+ payload: image-layout frames + subsystem passthrough")
     args = ap.parse_args()
+    if not 1 <= args.level <= 22:
+        die(f"--level must be 1..22 (got {args.level})")
+    if args.pe_chunk <= 0:
+        die(f"--pe-chunk must be > 0 MiB (got {args.pe_chunk})")
+    if args.page <= 0 or args.page % 4096:
+        die(f"--page must be a positive multiple of 4096 (got {args.page})")
 
     with open(args.input, "rb") as f:
         plain = f.read()
+    if not plain:
+        die(f"input {args.input!r} is empty")
 
     frames = []  # (plain_bytes, dest_off)
     if args.pe:
         size_of_headers, subsystem, secs = parse_pe64(plain)
         # segments that carry raw file data
-        segs = [(0, size_of_headers)]
+        segs = [(0, size_of_headers)] if size_of_headers else []
         for _va, _vsize, rawsz, ptrraw in secs:
-            if rawsz and ptrraw:
-                segs.append((ptrraw, rawsz))
+            segs.append((ptrraw, rawsz))
         segs.sort()
         # tile the file 1:1: cover alignment padding between segments and
         # any trailing overlay (e.g. signature tables) so extract-to-temp
@@ -76,6 +99,8 @@ def main():
         tiled = []
         cur = 0
         for off, ln in segs:
+            if off < cur:
+                die("overlapping raw sections are not supported")
             if off > cur:
                 tiled.append((cur, off - cur))
             tiled.append((off, ln))
