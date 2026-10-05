@@ -125,7 +125,9 @@ python3 zpack.py zpe-stub.exe byteshaver.exe byteshaver-packed.exe --pe
 - ZPE_DEBUG=1 - write QPC-timed phases (self read / decompressed / payload
   written|cache hit / done) to %TEMP%\zpe-debug.log (also suppresses the
   error MessageBox, so automation stays headless)
-- ZPE_NO_CACHE=1 - extract to %TEMP% and delete after exit (legacy behavior)
+- ZPE_NO_CACHE=1 - extract to %TEMP% and delete after exit (legacy behavior;
+  with a GUI payload each run leaves one zpe-<pid>.exe behind — a running
+  image cannot be deleted)
 - ZPE_KEEP_TEMP=1 - with ZPE_NO_CACHE: keep the temp exe for inspection
   (with the cache, inspect %LOCALAPPDATA%\byteshaver\zpe-cache\*.exe
   directly; it is sha256-identical to the payload)

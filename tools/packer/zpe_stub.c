@@ -144,8 +144,11 @@ static uint64_t fnv1a(uint64_t h, const void *p, size_t n) {
     return h;
 }
 
-/* <cache_dir>\<key>\<basename of the packed exe>[.tmp] — the hash goes into
- * the directory so Task Manager shows the real binary name */
+/* <cache_dir>\<key>\<basename of the packed exe>[.<pid>.tmp] — the hash goes
+ * into the directory so Task Manager shows the real binary name; the tmp
+ * carry a per-process suffix so two concurrent first runs never write the
+ * same staging file (a shared <key>.tmp let one process truncate mid-write
+ * and promote a torn payload into the cache) */
 static void cache_paths(const char *keyname, int tmp, char *out) {
     size_t n = 0;
     append_bounded(out, MAX_PATH, &n, g_cache_dir);
@@ -156,7 +159,11 @@ static void cache_paths(const char *keyname, int tmp, char *out) {
     const char *base = g_self_path + lstrlenA(g_self_path);
     while (base > g_self_path && base[-1] != '\\' && base[-1] != '/') --base;
     append_bounded(out, MAX_PATH, &n, base);
-    if (tmp) append_bounded(out, MAX_PATH, &n, ".tmp");
+    if (tmp) {
+        char pid[16];
+        wsprintfA(pid, ".%lu.tmp", (unsigned long)GetCurrentProcessId());
+        append_bounded(out, MAX_PATH, &n, pid);
+    }
 }
 
 /* decompression (frames -> dest offsets, parallel) */
@@ -188,13 +195,19 @@ static void decompress_payload(uint64_t nframes, const uint64_t *tbl, uint64_t p
     HANDLE *th = (HANDLE *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)(nframes * sizeof(HANDLE)));
     if (!jobs || !th) die("zpe: OOM (jobs)\n");
 
+    /* frames must tile [payload_off, trailer) — unvalidated comp lens used to
+     * hand the decoder pointers past the self buffer (wild read; crash or
+     * garbage depending on what happened to be mapped there) */
+    uint64_t frames_end = g_self_len - 24 - nframes * 24;
     uint64_t src = payload_off; DWORD nthread = 0;
     for (uint64_t i = 0; i < nframes; i++) {
         size_t dest = (size_t)tbl[3*i + 2], uncomp = (size_t)tbl[3*i + 1];
+        size_t comp = (size_t)tbl[3*i];
+        if (comp > frames_end - src) die("zpe: bad frame table\n");
         if (dest > g_payload_len || uncomp > g_payload_len - dest)
             die("zpe: bad frame dest\n");
         jobs[i].src = g_self + src;
-        jobs[i].comp = (size_t)tbl[3*i];
+        jobs[i].comp = comp;
         jobs[i].uncomp = uncomp;
         jobs[i].dst = g_payload + dest;
         src += jobs[i].comp;
@@ -236,7 +249,8 @@ static void write_cache_exe(const char *keyname) {
     }
 }
 
-/* keep the cache at one generation: drop entries other than keyname */
+/* keep the cache at one generation: drop entries other than keyname, and
+ * sweep crash-leftover staging files (*.tmp) from the current generation */
 static void cache_evict_others(const char *keyname) {
     char srch[MAX_PATH], path[MAX_PATH], inner[MAX_PATH];
     wsprintfA(srch, "%s\\*", g_cache_dir);
@@ -247,21 +261,23 @@ static void cache_evict_others(const char *keyname) {
         if (!lstrcmpiA(fd.cFileName, ".") || !lstrcmpiA(fd.cFileName, "..")) continue;
         wsprintfA(path, "%s\\%s", g_cache_dir, fd.cFileName);
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-            if (lstrcmpiA(fd.cFileName, keyname) == 0) continue;
-            /* wipe the generation's files, then remove the directory
-             * (RemoveDirectory may fail while an old gen still runs) */
+            int keep = lstrcmpiA(fd.cFileName, keyname) == 0;
+            /* wipe the generation's files (everything when evicting, only
+             * *.tmp when it is the live generation), then remove the
+             * directory (RemoveDirectory may fail while an old gen runs) */
             wsprintfA(srch, "%s\\*", path);
             WIN32_FIND_DATAA fd2;
             HANDLE f2 = FindFirstFileA(srch, &fd2);
             if (f2 != INVALID_HANDLE_VALUE) {
                 do {
                     if (fd2.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+                    if (keep && !strstr(fd2.cFileName, ".tmp")) continue;
                     wsprintfA(inner, "%s\\%s", path, fd2.cFileName);
                     DeleteFileA(inner);
                 } while (FindNextFileA(f2, &fd2));
                 FindClose(f2);
             }
-            RemoveDirectoryA(path);
+            if (!keep) RemoveDirectoryA(path);
         } else {
             DeleteFileA(path);      /* legacy flat <hash>.exe layout */
         }
@@ -274,9 +290,11 @@ static void cache_evict_others(const char *keyname) {
 static USHORT self_subsystem(void) {
     static unsigned char hdr[0x400];
     if (pread_range(0, hdr, sizeof hdr) != sizeof hdr) return 0;
-    if (memcmp(hdr + *(DWORD *)(hdr + 0x3C), "PE\0\0", 4) != 0) return 0;
-    DWORD opt = *(DWORD *)(hdr + 0x3C) + 24;
-    if (opt + 70 > sizeof hdr || *(USHORT *)(hdr + opt) != 0x20B) return 0;
+    DWORD e = *(DWORD *)(hdr + 0x3C);
+    if (e < 0x40 || e + 24 + 70 > sizeof hdr) return 0;   /* bound before any deref */
+    if (memcmp(hdr + e, "PE\0\0", 4) != 0) return 0;
+    DWORD opt = e + 24;
+    if (*(USHORT *)(hdr + opt) != 0x20B) return 0;
     return *(USHORT *)(hdr + opt + 68);
 }
 
@@ -347,6 +365,22 @@ int main(void) {
     if (nframes == 0 || nframes > 4096 || payload_off + 24 + nframes * 24 > self_size)
         die("zpe: bad frame count\n");
 
+    /* expected payload size + per-frame dest/uncomp sanity, straight from the
+     * tail copy of the table — also lets the cache-hit path detect a torn or
+     * tampered cache entry (size mismatch) before launching it */
+    uint64_t expect_len = 0;
+    {
+        const unsigned char *tb = tail + tail_len - 24 - nframes * 24;
+        for (uint64_t i = 0; i < nframes; i++) {
+            uint64_t uncomp, dest;
+            memcpy(&uncomp, tb + 24*i + 8, 8);
+            memcpy(&dest, tb + 24*i + 16, 8);
+            if (uncomp > (1ULL << 40) || dest > (1ULL << 40) || dest + uncomp > (1ULL << 41))
+                die("zpe: bad frame table\n");
+            if (dest + uncomp > expect_len) expect_len = dest + uncomp;
+        }
+    }
+
     /* cache key: FNV-1a over sizes, frame table and the first payload bytes */
     uint64_t key = 0xcbf29ce484222325ULL;
     key = fnv1a(key, &self_size, sizeof self_size);
@@ -378,10 +412,19 @@ int main(void) {
     char entry[MAX_PATH];
     cache_paths(keyname, 0, entry);
 
+    int have_cached = 0;
     if (use_cache && GetFileAttributesA(entry) != INVALID_FILE_ATTRIBUTES) {
-        lstrcpyA(g_child, entry);
-        phase("cache hit\n");
-    } else {
+        WIN32_FILE_ATTRIBUTE_DATA fa;
+        if (GetFileAttributesExA(entry, GetFileExInfoStandard, &fa) &&
+            ((uint64_t)fa.nFileSizeHigh << 32 | fa.nFileSizeLow) == expect_len) {
+            lstrcpyA(g_child, entry);
+            phase("cache hit\n");
+            have_cached = 1;
+        } else {
+            phase("cache entry wrong size\n");  /* torn entry: re-extract */
+        }
+    }
+    if (!have_cached) {
         read_self(); /* full read; trailer/table already validated above */
         uint64_t *tbl = (uint64_t *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)(nframes * 24));
         if (!tbl) die("zpe: OOM (table)\n");
