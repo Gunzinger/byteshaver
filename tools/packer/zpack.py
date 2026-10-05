@@ -17,6 +17,7 @@ import argparse
 import os
 import struct
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 
 
 def die(msg):
@@ -122,10 +123,20 @@ def main():
             c = plain[i:i + chunk]
             frames.append((c, i))
 
+    # frames are independent -> compress them in parallel (zstd -19 is slow;
+    # threads suffice, the work happens in the zstd subprocesses)
+    def compress(chunk):
+        return subprocess.run(["zstd", f"-{args.level}", "-T1", "-q"],
+                              input=chunk, capture_output=True, check=True).stdout
+
+    workers = min(len(frames), os.cpu_count() or 1)
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            comps = list(ex.map(compress, (c for c, _dest in frames)))
+    else:
+        comps = [compress(c) for c, _dest in frames]
     comp_frames = []  # (comp, uncomp, dest)
-    for c, dest in frames:
-        comp = subprocess.run(["zstd", f"-{args.level}", "-T1", "-q"],
-                              input=c, capture_output=True, check=True).stdout
+    for comp, (c, dest) in zip(comps, frames):
         comp_frames.append((comp, len(c), dest))
 
     with open(args.stub, "rb") as f:
