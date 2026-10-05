@@ -397,10 +397,14 @@ jobs:
       - name: Build zpack stubs
         run: |
           set -euo pipefail
+          ZSTD_URL=https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
+          ZSTD_SHA256=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
           docker run --rm -v "$PWD":/w -w /w alpine:3.22 sh -c '
             set -e
             apk add --no-cache gcc musl-dev make curl mingw-w64-gcc >/dev/null
-            curl -sL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz | tar xz
+            curl -sL -o zstd-1.5.7.tar.gz '"$ZSTD_URL"'
+            echo '"$ZSTD_SHA256"'  zstd-1.5.7.tar.gz | sha256sum -c -
+            tar xzf zstd-1.5.7.tar.gz
             ZFLAGS="-Os -ffunction-sections -fdata-sections -DDYNAMIC_BMI2=0"
             make -C zstd-1.5.7/lib libzstd.a -j4 CFLAGS="$ZFLAGS" ZSTD_LEGACY_SUPPORT=0 >/dev/null
             gcc -Os -static -s -ffunction-sections -fdata-sections -Wl,--gc-sections \

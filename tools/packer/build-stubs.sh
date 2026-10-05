@@ -14,11 +14,16 @@ cd "$(dirname "$0")/../.."
 OUT="$PWD/packer-out"
 mkdir -p "$OUT"
 
+ZSTD_URL="https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz"
+ZSTD_SHA256="eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3"
+
 echo "==> zstd sources"
 if [ ! -f zstd-1.5.7/lib/zstd.h ]; then
     rm -rf zstd-1.5.7
     echo "  fetching zstd 1.5.7"
-    curl -sL "https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz" | tar xz
+    curl -sL -o zstd-1.5.7.tar.gz "$ZSTD_URL"
+    echo "$ZSTD_SHA256  zstd-1.5.7.tar.gz" | sha256sum -c -
+    tar xzf zstd-1.5.7.tar.gz
 fi
 
 echo "==> ELF stub (linux)"

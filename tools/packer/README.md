@@ -41,7 +41,9 @@ Requires an Alpine (musl) environment and zstd 1.5.x sources:
 
 ```sh
 apk add gcc musl-dev make curl
-curl -sL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz | tar xz
+curl -sL -o zstd-1.5.7.tar.gz https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
+echo "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3  zstd-1.5.7.tar.gz" | sha256sum -c -
+tar xzf zstd-1.5.7.tar.gz
 make -C zstd-1.5.7/lib libzstd.a -j4 \
   CFLAGS="-Os -ffunction-sections -fdata-sections -DDYNAMIC_BMI2=0" \
   ZSTD_LEGACY_SUPPORT=0
@@ -111,7 +113,9 @@ for GUI). Console payloads wait and propagate.
 ```sh
 # in an alpine container with the mingw-w64 cross toolchain
 apk add mingw-w64-gcc make curl
-curl -sL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz | tar xz
+curl -sL -o zstd-1.5.7.tar.gz https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
+echo "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3  zstd-1.5.7.tar.gz" | sha256sum -c -
+tar xzf zstd-1.5.7.tar.gz
 make -C zstd-1.5.7/lib libzstd.a -j4 CC=x86_64-w64-mingw32-gcc AR=x86_64-w64-mingw32-ar \
   CFLAGS="-Os -ffunction-sections -fdata-sections -DDYNAMIC_BMI2=0" ZSTD_LEGACY_SUPPORT=0
 x86_64-w64-mingw32-gcc -Os -static -s -ffunction-sections -fdata-sections \
