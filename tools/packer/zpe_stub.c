@@ -97,6 +97,10 @@ static void append_bounded(char *dst, size_t cap, size_t *len, const char *src) 
     while (*src && *len + 1 < cap) dst[(*len)++] = *src++;
     dst[*len] = 0;
 }
+static void append_n(char *dst, size_t cap, size_t *len, const char *src, size_t n) {
+    while (n-- && *len + 1 < cap) dst[(*len)++] = *src++;
+    dst[*len] = 0;
+}
 
 /* ---------- self file ---------- */
 static char g_self_path[MAX_PATH];
@@ -315,15 +319,18 @@ static DWORD launch_child(const char *exe) {
     }
     char cmd[32768];
     size_t n = 0;
-    append_bounded(cmd, sizeof cmd, &n, "\"");
-    append_bounded(cmd, sizeof cmd, &n, exe);
-    append_bounded(cmd, sizeof cmd, &n, "\" ");
-    {
-        char *cl = GetCommandLineA();
-        if (*cl == '"') { ++cl; while (*cl && *cl != '"') ++cl; if (*cl) ++cl; }
-        else { while (*cl && *cl != ' ' && *cl != '\t') ++cl; while (*cl == ' ' || *cl == '\t') ++cl; }
-        append_bounded(cmd, sizeof cmd, &n, cl);
-    }
+    /* keep the user-visible argv[0] (the packed exe as invoked) verbatim;
+     * the loader uses lpApplicationName, argv[0] is conventional only */
+    const char *cl = GetCommandLineA();
+    const char *p = cl;
+    if (*p == '"') { ++p; while (*p && *p != '"') ++p; if (*p) ++p; }
+    else { while (*p && *p != ' ' && *p != '\t') ++p; }
+    size_t a0 = (size_t)(p - cl);              /* argv[0] token, incl. quotes */
+    while (*p == ' ' || *p == '\t') ++p;       /* skip to the first argument */
+    if (a0 + strlen(p) + 2 > sizeof cmd) die("zpe: command line too long\n");
+    append_n(cmd, sizeof cmd, &n, cl, a0);
+    append_bounded(cmd, sizeof cmd, &n, " ");
+    append_bounded(cmd, sizeof cmd, &n, p);
     if (!CreateProcessA(exe, cmd, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi))
         die("zpe: CreateProcess failed\n");
     if (g_gui_detach) {
