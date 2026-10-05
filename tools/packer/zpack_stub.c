@@ -132,6 +132,10 @@ int main(int argc, char **argv, char **envp) {
         if (tbl[2*i+1] > (1ULL << 40)) die("bad frame table");
         payload_len += tbl[2*i]; unpacked_len += tbl[2*i+1];
     }
+    /* kick off readahead for the payload: no-op warm (pages resident), but
+     * overlaps the table read + setup with disk I/O on a cold cache (first
+     * run after download) */
+    posix_fadvise(fd, (off_t)payload_off, (off_t)payload_len, POSIX_FADV_WILLNEED);
     const unsigned char *src = mmap(NULL, payload_len, PROT_READ, MAP_PRIVATE, fd, (off_t)payload_off);
     if (src == MAP_FAILED) die("mmap payload");
 
