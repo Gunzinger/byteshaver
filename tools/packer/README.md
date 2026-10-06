@@ -5,6 +5,11 @@ C stub plus the zstd codec: **smaller artifacts than `upx --best` and ~4-5×
 faster unpacking**. Design rationale and full measurements:
 [`docs/zstd-packer-analysis.md`](../../docs/zstd-packer-analysis.md).
 
+Quick start: `tools/packer/build-stubs.sh` builds both stubs into
+`packer-out/` (ELF stub needs a host gcc, PE stub a windows cross toolchain
+such as `. ./env-win.sh`); `tools/packer/selftest.sh` round-trip-tests the
+whole pipeline.
+
 ```
 packed layout:  [stub ELF, padded to page size][zstd frame 0]...[frame n-1][trailer]
 trailer:        n×{comp_len,uncomp_len} | nframes u64 | payload_off u64 | magic "ZPK2zstd"
@@ -36,7 +41,9 @@ Requires an Alpine (musl) environment and zstd 1.5.x sources:
 
 ```sh
 apk add gcc musl-dev make curl
-curl -sL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz | tar xz
+curl -sL -o zstd-1.5.7.tar.gz https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
+echo "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3  zstd-1.5.7.tar.gz" | sha256sum -c -
+tar xzf zstd-1.5.7.tar.gz
 make -C zstd-1.5.7/lib libzstd.a -j4 \
   CFLAGS="-Os -ffunction-sections -fdata-sections -DDYNAMIC_BMI2=0" \
   ZSTD_LEGACY_SUPPORT=0
@@ -76,25 +83,39 @@ python3 zpack.py zpack-stub byteshaver byteshaver-zpk --frames 4
 - Payloads are plain zstd frames — recoverable via `dd` + `zstd -d`, and the
   AV-heuristic caveats of self-extracting executables apply.
 
-## Windows (zpe_stub.c) - extract-to-temp + CreateProcess
+## Windows (zpe_stub.c) - extract-to-cache + CreateProcess
 
-The Windows stub uses the extract-to-temp model: it decompresses the payload
-to %TEMP%, then CreateProcess's it with the original command line and
-environment. The payload runs as a normal PE loaded by the standard Windows
-loader - TLS, SEH, COM, module-list registration, DEP/CFG all work because
-the OS does the loading. The temp file is deleted after the process exits.
+The Windows stub decompresses the payload into
+`%LOCALAPPDATA%\byteshaver\zpe-cache\<key>\<packed-name>.exe` (hash in the
+directory so Task Manager shows the real binary name) (written via `<key>.tmp` +
+`MoveFileEx`, so a crash never leaves a half-written entry; older
+generations are evicted, the cache holds one payload) and CreateProcess's
+it with the original command line and environment. The payload runs as a
+normal PE loaded by the standard Windows loader - TLS, SEH, COM,
+module-list registration, DEP/CFG all work because the OS does the loading.
+`<key>` is an FNV-1a over the frame table and payload head, so a repacked
+binary remaps to a fresh entry; every run after the first launches the
+cached exe directly, skipping decompression, the 16 MB write and the
+Defender fresh-file scan (steady-state startup approaches the unpacked
+binary).
 
 This is deliberately simpler than in-memory PE mapping (which requires
 reimplementing TLS directory processing, SEH interplay, and module-list
 registration - see plan 17 section B for why that approach was abandoned).
-The trade-off is a visible temp file during execution.
+
+GUI payloads fire-and-forget: the stub reads its own (patched) Subsystem
+field and, for GUI payloads, exits immediately after launching the cached
+exe - no lingering parent process, no exit-code propagation (meaningless
+for GUI). Console payloads wait and propagate.
 
 ### Build
 
 ```sh
 # in an alpine container with the mingw-w64 cross toolchain
 apk add mingw-w64-gcc make curl
-curl -sL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz | tar xz
+curl -sL -o zstd-1.5.7.tar.gz https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
+echo "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3  zstd-1.5.7.tar.gz" | sha256sum -c -
+tar xzf zstd-1.5.7.tar.gz
 make -C zstd-1.5.7/lib libzstd.a -j4 CC=x86_64-w64-mingw32-gcc AR=x86_64-w64-mingw32-ar \
   CFLAGS="-Os -ffunction-sections -fdata-sections -DDYNAMIC_BMI2=0" ZSTD_LEGACY_SUPPORT=0
 x86_64-w64-mingw32-gcc -Os -static -s -ffunction-sections -fdata-sections \
@@ -105,4 +126,20 @@ python3 zpack.py zpe-stub.exe byteshaver.exe byteshaver-packed.exe --pe
 
 ### Diagnostic env
 
-- ZPE_DEBUG=1 - write phase-by-phase status to %TEMP%\zpe-debug.log
+- ZPE_DEBUG=1 - write QPC-timed phases (self read / decompressed / payload
+  written|cache hit / done) to %TEMP%\zpe-debug.log (also suppresses the
+  error MessageBox, so automation stays headless)
+- ZPE_NO_CACHE=1 - extract to %TEMP% and delete after exit (legacy behavior;
+  with a GUI payload each run leaves one zpe-<pid>.exe behind — a running
+  image cannot be deleted)
+- ZPE_KEEP_TEMP=1 - with ZPE_NO_CACHE: keep the temp exe for inspection
+  (with the cache, inspect %LOCALAPPDATA%\byteshaver\zpe-cache\*.exe
+  directly; it is sha256-identical to the payload)
+- ZPE_THREADS=1 - decompress serially (benchmarking; default is one thread
+  per frame, dest regions are disjoint so no synchronization is needed)
+
+The child process inherits the stub's std handles, so stdout/stderr reach
+pipes and redirects (`byteshaver-packed.exe in.heic out.jpg | tee log`).
+Container trailer: `n x {comp u64, uncomp u64, dest u64}` - frames tile the
+payload file 1:1 (headers, sections, alignment padding, overlay) and `dest`
+is each frame's offset in the reconstructed file.
