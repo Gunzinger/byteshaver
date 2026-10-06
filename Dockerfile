@@ -37,10 +37,15 @@ RUN apk add --no-cache \
 FROM scratch AS prebuilt
 COPY byteshaver /
 
+# --- binary selection -------------------------------------------------------
+# COPY --from cannot expand variables under BuildKit ("variable expansion is
+# not supported for --from"), but FROM consumes the global SOURCE arg — alias
+# the selected stage here so the runtime stage can COPY from a fixed name.
+FROM ${SOURCE} AS byteshaver-bin
+
 # --- runtime -----------------------------------------------------------------
 FROM alpine
-ARG SOURCE
-COPY --from=${SOURCE} /byteshaver /usr/local/bin/byteshaver
+COPY --from=byteshaver-bin /byteshaver /usr/local/bin/byteshaver
 COPY THIRD-PARTY-NOTICES.md docs/dependency-licenses.md /usr/share/doc/byteshaver/
 RUN chmod +x /usr/local/bin/byteshaver
 WORKDIR /targets
