@@ -496,11 +496,13 @@ jobs:
           BIN="$(find artifact -maxdepth 1 -name 'byteshaver-*' ! -name 'byteshaver-gui-*' ! -name '*.sha256' | head -1)"
           test -n "$BIN" || { echo "FATAL: no CLI binary in artifact"; exit 1; }
           cp "$BIN" byteshaver
-          cp THIRD-PARTY-NOTICES.md docs/dependency-licenses.md .
           file byteshaver | grep -q "static-pie" \
             || { echo "FATAL: binary is not static-pie"; exit 1; }
-          # license/attribution materials ride along into the image
-          cp THIRD-PARTY-NOTICES.md docs/dependency-licenses.md .
+          # THIRD-PARTY-NOTICES.md and docs/dependency-licenses.md are part of
+          # the checkout (the .dockerignore re-includes the latter), so only
+          # the versioned artifact needs renaming to the `byteshaver` the
+          # Dockerfile expects — no license staging (a `cp <file> .` of an
+          # already-root file used to fail as 'same file')
 
 
       - name: Set up Buildx
@@ -563,7 +565,6 @@ jobs:
           BIN="$(find artifact -maxdepth 1 -name 'byteshaver-*' ! -name 'byteshaver-gui-*' ! -name '*.sha256' | head -1)"
           test -n "$BIN" || { echo "FATAL: no CLI binary in artifact"; exit 1; }
           cp "$BIN" byteshaver
-          cp THIRD-PARTY-NOTICES.md docs/dependency-licenses.md .
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v4

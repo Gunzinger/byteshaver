@@ -1,4 +1,7 @@
-docs/
+# docs/ stays out of the image context except the license attribution the
+# runtime stage COPYs (exclude contents, then re-include that one file)
+docs/*
+!docs/dependency-licenses.md
 examples/
 target/
 target-linux/
