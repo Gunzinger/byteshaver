@@ -44,11 +44,21 @@ fn windows_gnu_stdcxx_dir() -> Option<std::path::PathBuf> {
 }
 
 fn main() {
+    // Rebuild triggers (audit M-42): versions.rs below is generated from
+    // cargo metadata, so Cargo.toml/Cargo.lock changes must re-run this
+    // script; build.rs is re-emitted at the bottom for the same reason.
+    println!("cargo:rerun-if-changed=Cargo.toml");
+    println!("cargo:rerun-if-changed=Cargo.lock");
+
     // WS2: build the vendored static libjxl when the `jxl` feature is active.
     // Build-dependencies cannot be optional, so jpegxl-src is always present
     // here; its use is guarded by the feature environment variable instead.
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_JXL");
     if std::env::var_os("CARGO_FEATURE_JXL").is_some() {
+        // the vendored libjxl tree is only a build input under the jxl
+        // feature (kept inside the gate so other feature sets never depend
+        // on the submodule being initialized)
+        println!("cargo:rerun-if-changed=tools/jpegxl-src");
         // jpegxl-src emits `cargo:rustc-link-lib=stdc++` based on the build
         // script's *host* cfg (a `cfg!()` in build scripts never sees the
         // target), so cross builds from linux to windows-gnu link the dynamic
@@ -56,13 +66,16 @@ fn main() {
         // stock windows does not ship. Linking the static archive first
         // satisfies all C++ symbols up front, leaving that dynamic `-lstdc++`
         // with nothing left to resolve.
-        if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
-            && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu")
-        {
-            if let Some(dir) = windows_gnu_stdcxx_dir() {
-                println!("cargo:rustc-link-search=native={}", dir.display());
-                println!("cargo:rustc-link-lib=static=stdc++");
-            }
+        let windows_gnu = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+            && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu");
+        let stdcxx_dir = if windows_gnu {
+            windows_gnu_stdcxx_dir()
+        } else {
+            None
+        };
+        if let Some(dir) = stdcxx_dir {
+            println!("cargo:rustc-link-search=native={}", dir.display());
+            println!("cargo:rustc-link-lib=static=stdc++");
         }
         jpegxl_src::build();
     }

@@ -15,13 +15,37 @@ Usage: zpack.py <stub> <input> <output> [--frames N] [--level N] [--pe] [--page 
 """
 import argparse
 import os
+import re
 import struct
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 
+# zstd decoder embedded in the release stubs (tools/packer/build-stubs.sh,
+# tools/packer/selftest.sh and the workflow all pin zstd 1.5.7); frames
+# emitted by a different zstd major.minor may not be decodable by it
+ZSTD_DECODER_VERSION = "1.5.7"
+
+# both stubs die() past this many frames (fixed-size tail window in zpe)
+MAX_FRAMES = 4096
+
 
 def die(msg):
     raise SystemExit(f"zpack: {msg}")
+
+
+def require_compatible_zstd():
+    try:
+        proc = subprocess.run(["zstd", "--version"], capture_output=True, text=True, check=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        die(f"zstd CLI not usable ({exc}); the stubs embed zstd {ZSTD_DECODER_VERSION}")
+    m = re.search(r"v(\d+)\.(\d+)", proc.stdout + proc.stderr)
+    if not m:
+        die(f"cannot parse zstd version from {proc.stdout!r}")
+    want = ZSTD_DECODER_VERSION.rsplit(".", 1)[0]
+    got = ".".join(m.groups())
+    if got != want:
+        die(f"system zstd {got} does not match the stubs' vendored {want}.x decoder "
+            f"(install zstd {want}.x or update ZSTD_DECODER_VERSION)")
 
 
 def parse_pe64(data):
@@ -80,6 +104,7 @@ def main():
         die(f"--pe-chunk must be > 0 MiB (got {args.pe_chunk})")
     if args.page <= 0 or args.page % 4096:
         die(f"--page must be a positive multiple of 4096 (got {args.page})")
+    require_compatible_zstd()
 
     with open(args.input, "rb") as f:
         plain = f.read()
@@ -122,6 +147,10 @@ def main():
         for i in range(0, total, chunk):
             c = plain[i:i + chunk]
             frames.append((c, i))
+
+    if len(frames) > MAX_FRAMES:
+        hint = "raise --pe-chunk" if args.pe else "lower --frames"
+        die(f"{len(frames)} frames exceeds the stubs' {MAX_FRAMES}-frame cap ({hint})")
 
     # frames are independent -> compress them in parallel (zstd -19 is slow;
     # threads suffice, the work happens in the zstd subprocesses)
