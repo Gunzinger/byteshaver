@@ -43,15 +43,15 @@ heif = ["byteshaver/dec-heif"]
 # `path: Option<PathBuf>`).
 # `default-features = false` + explicit base features so the wayland/x11
 # backends are opt-in via the crate features above.
-eframe = { version = "0.36", default-features = false, features = [
+eframe = { version = "0.37", default-features = false, features = [
     "accesskit",
     "default_fonts",
     "glow",
 ] }
-egui = "0.36"
+egui = "0.37"
 # table widget (sortable headers, resizable columns, row virtualization)
 # — pinned to the same 0.36 line as egui/eframe above
-egui_extras = "0.36"
+egui_extras = "0.37"
 # thumbnail decode + header-only dimension reads (plan 11 §6): same
 # version line as the core's `image` dependency, no extra features
 image = "0.25"
