@@ -211,10 +211,16 @@ static void decompress_payload(uint64_t nframes, const uint64_t *tbl, uint64_t p
     frame_job *jobs = (frame_job *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)(nframes * sizeof(frame_job)));
     if (!jobs) die("zpe: OOM (jobs)\n");
 
-    /* frames must tile [payload_off, trailer) — unvalidated comp lens used to
+    /* frames must tile [payload_off, frames_end) — unvalidated comp lens used to
      * hand the decoder pointers past the self buffer (wild read; crash or
-     * garbage depending on what happened to be mapped there) */
+     * garbage depending on what happened to be mapped there). Order matters
+     * (audit CR-5): prove the table fits and payload_off <= frames_end
+     * BEFORE any subtraction; nframes <= 4096 keeps 24 + nframes*24 from
+     * wrapping, so frames_end - src can never wrap below zero afterwards. */
+    if (nframes == 0 || nframes > 4096 || g_self_len < 24 + nframes * 24)
+        die("zpe: bad frame count\n");
     uint64_t frames_end = g_self_len - 24 - nframes * 24;
+    if (payload_off > frames_end) die("zpe: bad payload offset\n");
     uint64_t src = payload_off;
     for (uint64_t i = 0; i < nframes; i++) {
         size_t dest = (size_t)tbl[3*i + 2], uncomp = (size_t)tbl[3*i + 1];
@@ -402,8 +408,16 @@ int main(void) {
     uint64_t nframes, payload_off;
     memcpy(&nframes, tail + tail_len - 24, 8);
     memcpy(&payload_off, tail + tail_len - 16, 8);
-    if (nframes == 0 || nframes > 4096 || payload_off + 24 + nframes * 24 > self_size)
-        die("zpe: bad frame count\n");
+    /* non-wrapping validation (audit CR-5): self_size >= 64 is proven above
+     * and nframes <= 4096 keeps 24 + nframes*24 from wrapping, so proving
+     * the table fits FIRST makes every later subtraction (frames_end,
+     * frames_end - src in decompress_payload) provably in range. The old
+     * single expression "payload_off + 24 + nframes*24 > self_size" wrapped
+     * on hostile payload_off values and let garbage through to the decoder. */
+    if (nframes == 0 || nframes > 4096) die("zpe: bad frame count\n");
+    if (self_size < 24 + nframes * 24) die("zpe: bad frame count\n");
+    uint64_t frames_end = self_size - 24 - nframes * 24;   /* table start */
+    if (payload_off > frames_end) die("zpe: bad payload offset\n");
 
     /* expected payload size + per-frame dest/uncomp sanity, straight from the
      * tail copy of the table — also lets the cache-hit path detect a torn or

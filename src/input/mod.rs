@@ -355,10 +355,26 @@ fn load_source_animated_if_container_is(
     }))
 }
 
+/// Decompression-bomb protection (audit CR-3): per-axis pixel cap and a
+/// 2 GiB decoder allocation budget. A legitimate 100 MP RGBA photo needs
+/// ~400 MB and still passes; a hostile header declaring ~40 GB of pixels
+/// fails as a normal per-file decoder error instead of aborting the
+/// process on the allocation.
+const MAX_IMAGE_DIMENSION: u32 = 100_000;
+const MAX_DECODER_ALLOC_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+fn decoder_limits() -> Limits {
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
+    limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
+    limits.max_alloc = Some(MAX_DECODER_ALLOC_BYTES);
+    limits
+}
+
 fn open_reader(path: &Path) -> Result<ImageReader<BufReader<fs::File>>, Error> {
     let mut reader = ImageReader::new(BufReader::new(fs::File::open(path)?));
-    // disable image-rs decoding limits
-    reader.no_limits();
+    // decode with real resource limits (bomb protection, audit CR-3)
+    reader.limits(decoder_limits());
     Ok(reader)
 }
 
@@ -413,8 +429,8 @@ fn fallback_retry_read_image(input_path: &Path, input_error: Error) -> Result<Dy
     }
 
     let mut reader = ImageReader::open(input_path)?;
-    // disable image-rs decoding limits
-    reader.limits(Limits::no_limits());
+    // decode with real resource limits (bomb protection, audit CR-3)
+    reader.limits(decoder_limits());
     match ext.as_str() {
         "pjpeg" | "jpg" | "jpeg" => reader.set_format(ImageCrateFormat::Jpeg),
         "x-png" | "png" => reader.set_format(ImageCrateFormat::Png),

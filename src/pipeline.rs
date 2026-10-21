@@ -13,11 +13,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use humansize::{BINARY, FormatSizeOptions, format_size};
+use image::ImageDecoder;
+use image::codecs::gif::GifDecoder;
+use image::codecs::png::PngDecoder;
+use image::codecs::webp::WebPDecoder;
 use rayon::prelude::*;
 
 use crate::Error;
@@ -295,6 +300,16 @@ fn claim_output(claimed_outputs: &ClaimedOutputs, output_path: &Path) -> bool {
         .insert(output_path.to_path_buf())
 }
 
+/// Releases an output path claimed by an input that subsequently failed
+/// before writing, so a later input mapping to the same output is
+/// processed instead of being skipped as a collision (M-1).
+fn release_output(claimed_outputs: &ClaimedOutputs, output_path: &Path) {
+    claimed_outputs
+        .lock()
+        .expect("output claim mutex poisoned")
+        .remove(output_path);
+}
+
 /// A single work item of the processing queue: a plain input file, or one
 /// image of a multi-image HEIC/HEIF container (`--heif-image-policy all`,
 /// `dec-heif` feature).
@@ -412,18 +427,34 @@ pub fn output_path_for(
     output: &str,
     pattern_base: &str,
 ) -> PathBuf {
-    if output.is_empty() {
+    output_path_for_dir(input_path, extension, Path::new(output), pattern_base)
+}
+
+/// Path-based core of [`output_path_for`]: the job API's output directory
+/// stays a `Path` end-to-end instead of a lossy `String` round-trip (L10).
+fn output_path_for_dir(
+    input_path: &Path,
+    extension: &str,
+    output: &Path,
+    pattern_base: &str,
+) -> PathBuf {
+    if output.as_os_str().is_empty() {
         input_path.with_extension(extension)
     } else {
         let pattern_base_norm = normalize_prefix(pattern_base);
         let input_path_norm = normalize_prefix(input_path);
-        let rel_path = input_path_norm
+        // inputs outside the pattern base cannot keep their relative
+        // structure: flatten them into the output root instead of joining
+        // their (absolute) parent, which would escape the output
+        // directory (M-2)
+        let rel_parent = input_path_norm
             .strip_prefix(&pattern_base_norm)
-            .unwrap_or_else(|_| Path::new(&input_path_norm));
+            .ok()
+            .and_then(|rel_path| rel_path.parent());
 
-        Path::new(output)
-            .join(rel_path.parent().unwrap_or_else(|| Path::new("")))
-            .join(input_path_norm.file_stem().unwrap_or_default())
+        output
+            .join(rel_parent.unwrap_or_else(|| Path::new("")))
+            .join(input_path_norm.file_name().unwrap_or_default())
             .with_extension(extension)
     }
 }
@@ -439,10 +470,70 @@ fn source_buffer_size_bytes(source: &SourceImage) -> u64 {
     match &source.content {
         ImageContent::Still(image) => input::buffer_size_bytes(image),
         ImageContent::Animated(animation) => {
-            let frame_bytes = u64::from(animation.width) * u64::from(animation.height) * 4;
-            frame_bytes * animation.frames.len() as u64
+            // checked math: a crafted header must not wrap the projection
+            // to a small value (CR-4) — saturating to u64::MAX instead
+            // always trips the memory cap
+            u64::from(animation.width)
+                .checked_mul(u64::from(animation.height))
+                .and_then(|pixels| pixels.checked_mul(4))
+                .and_then(|frame_bytes| frame_bytes.checked_mul(animation.frames.len() as u64))
+                .unwrap_or(u64::MAX)
         }
     }
+}
+
+/// Cheap animation budget probe (CR-4): reads only container headers
+/// (dimensions, animation flag) of the formats the image crate decodes
+/// and returns an error message when a single full-canvas frame buffer
+/// already exceeds `--max-animation-memory` — before any pixel is
+/// decoded. None of the image crate's decoders exposes a frame count
+/// without decoding, so multi-frame overruns stay with the post-decode
+/// guard in [`convert_file`]; JXL/HEIF inputs are not probeable here at
+/// all and keep that guard as well.
+///
+/// Returns `None` when the file passes the probe, cannot be probed, or
+/// fails to open (the regular load path surfaces the latter).
+fn animation_preflight_error(input_path: &Path, conf: &ConversionConfig) -> Option<String> {
+    let format = ImageFormat::from(input_path);
+    if !matches!(
+        format,
+        ImageFormat::Gif | ImageFormat::Webp | ImageFormat::Png
+    ) {
+        return None;
+    }
+    let file = fs::File::open(input_path).ok()?;
+    let reader = std::io::BufReader::new(file);
+    let (width, height) = match format {
+        ImageFormat::Gif => GifDecoder::new(reader).ok()?.dimensions(),
+        ImageFormat::Webp => {
+            let decoder = WebPDecoder::new(reader).ok()?;
+            if !decoder.has_animation() {
+                return None; // still containers are not subject to the cap
+            }
+            decoder.dimensions()
+        }
+        _ => {
+            let decoder = PngDecoder::new(reader).ok()?;
+            if !decoder.is_apng().ok()? {
+                return None;
+            }
+            decoder.dimensions()
+        }
+    };
+    let cap_bytes = conf.max_animation_memory_mib.saturating_mul(1024 * 1024);
+    let single_frame_bytes = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|pixels| pixels.checked_mul(4));
+    if single_frame_bytes.is_none_or(|bytes| bytes > cap_bytes) {
+        return Some(format!(
+            "{}: animated image ({}x{}px) exceeds the --max-animation-memory limit of {} MiB before decoding",
+            input_path.display(),
+            width,
+            height,
+            conf.max_animation_memory_mib
+        ));
+    }
+    None
 }
 
 /// Image index for the source loader: multi-image HEIF work items decode
@@ -524,23 +615,72 @@ fn apply_exif_policy_to_source(
     false
 }
 
+/// Per-process counter making atomic-write temp file names unique.
+static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Writes `data` to `target` via a unique temp file in the target's
+/// directory and an atomic rename (CR-6): crashes, full disks and
+/// Ctrl+C mid-write never leave a half-written output, and in-place
+/// overwrites keep the original intact until the rename succeeds. On a
+/// write or rename error the temp file is removed (best effort) and the
+/// error propagates.
+fn write_atomic(target: &Path, data: &[u8]) -> std::io::Result<()> {
+    let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let mut temp_name = target.file_name().unwrap_or_default().to_os_string();
+    temp_name.push(format!(".tmp-{}-{}", std::process::id(), sequence));
+    let temp_path = target.with_file_name(temp_name);
+    if let Err(err) = fs::write(&temp_path, data) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(err);
+    }
+    if let Err(err) = fs::rename(&temp_path, target) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(err);
+    }
+    Ok(())
+}
+
+/// Output parent directories already created by this process (L1): the
+/// per-file `create_dir_all` syscall only runs once per unique parent.
+static CREATED_OUTPUT_DIRS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+
+/// Creates the output parent directory of `output_path` once per unique
+/// path; failures propagate (the path is only cached after success).
+fn ensure_output_parent_dir(output_path: &Path) -> std::io::Result<()> {
+    let Some(parent) = output_path.parent() else {
+        return Ok(());
+    };
+    let mut created = CREATED_OUTPUT_DIRS
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .expect("output directory cache mutex poisoned");
+    if !created.contains(parent) {
+        fs::create_dir_all(parent)?;
+        created.insert(parent.to_path_buf());
+    }
+    Ok(())
+}
+
 /// Converts a single work item (file, or one image of a multi-image HEIF
 /// container) and returns the resulting [`Outcome`].
 ///
 /// Ad-hoc messages (collisions, huge-image warnings) are emitted as
 /// [`JobEvent::Notice`]s; the caller emits the per-file error notice.
+#[allow(clippy::too_many_arguments)]
 fn convert_file(
     item: &WorkItem,
     encoder: &dyn ImageEncoder,
     conf: &ConversionConfig,
     policy: CollisionPolicy,
     pattern_base: &str,
+    output_dir: Option<&Path>,
     claimed_outputs: &ClaimedOutputs,
     reporter: &dyn Reporter,
 ) -> Outcome {
     let input_path = item.path();
     let extension = encoder.extension();
-    let mut output_path = output_path_for(input_path, extension, &conf.output, pattern_base);
+    let output = output_dir.unwrap_or_else(|| Path::new(""));
+    let mut output_path = output_path_for_dir(input_path, extension, output, pattern_base);
     // multi-image HEIF expansion: the first image keeps the base name, the
     // following ones get a deterministic `_N` suffix
     if let WorkItem::HeifMulti { index, .. } = item {
@@ -564,33 +704,85 @@ fn convert_file(
         };
     }
 
+    let outcome = convert_claimed(
+        item,
+        &output_path,
+        encoder,
+        conf,
+        policy,
+        output_dir,
+        reporter,
+    );
+    // M-1: a claim is only justified by a written output — release it when
+    // the item failed first, so a later input mapping to the same output
+    // is processed instead of being skipped as a collision
+    if matches!(outcome, Outcome::Error(_)) {
+        release_output(claimed_outputs, &output_path);
+    }
+    outcome
+}
+
+/// Post-claim conversion flow of [`convert_file`]: the exclusive claim on
+/// `output_path` is held for the duration of the call.
+fn convert_claimed(
+    item: &WorkItem,
+    output_path: &Path,
+    encoder: &dyn ImageEncoder,
+    conf: &ConversionConfig,
+    policy: CollisionPolicy,
+    output_dir: Option<&Path>,
+    reporter: &dyn Reporter,
+) -> Outcome {
+    let input_path = item.path();
     let input_size = match fs::metadata(input_path) {
         Ok(meta) => meta.len(),
         Err(err) => return Outcome::Error(err.to_string()),
     };
-    let output_exists = match fs::exists(output_path.clone()) {
+
+    // CR-6: in-place conversion (no output directory, target extension
+    // equal to the source extension) — the default policy turns this into
+    // a silent skip, overwrite policies replace the input file itself
+    // (atomically, via the temp-file write below); either way the user
+    // should hear about it
+    if output_path == input_path {
+        reporter.on_event(JobEvent::Notice {
+            path: Some(input_path.to_path_buf()),
+            message: format!(
+                "Warning: output path equals input path ({}): converting in place; use an output directory to keep the original file",
+                input_path.display()
+            ),
+        });
+    }
+
+    let output_exists = match fs::exists(output_path) {
         Ok(exists) => exists,
         Err(err) => return Outcome::Error(err.to_string()),
     };
     if output_exists && policy == CollisionPolicy::KeepExisting {
         // file exists, and we do not have any overwrite policy on? => return early
-        let existing_size = match fs::metadata(output_path.clone()) {
+        let existing_size = match fs::metadata(output_path) {
             Ok(meta) => meta.len(),
             Err(err) => return Outcome::Error(err.to_string()),
         };
         return Outcome::SkippedExisting {
             input_size,
             existing_size,
-            output_path: output_path.clone(),
+            output_path: output_path.to_path_buf(),
         };
     }
 
     // create output subdirectories if an output directory is configured
-    if !conf.output.is_empty()
-        && let Some(parent) = output_path.parent()
-        && let Err(err) = fs::create_dir_all(parent)
+    if output_dir.is_some()
+        && let Err(err) = ensure_output_parent_dir(output_path)
     {
         return Outcome::Error(err.to_string());
+    }
+
+    // CR-4: reject oversized animations from container headers alone,
+    // before any frame is decoded (the post-decode guard further below
+    // stays as the fallback for inputs the probe cannot read)
+    if let Some(message) = animation_preflight_error(input_path, conf) {
+        return Outcome::Error(message);
     }
 
     let mut source = match input::load_source_with_index(input_path, heif_image_index(item)) {
@@ -665,7 +857,7 @@ fn convert_file(
         Ok(image_data) => {
             let output_size = image_data.len() as u64;
             if policy == CollisionPolicy::OverwriteIfSmaller && output_exists {
-                let existing_size = match fs::metadata(output_path.clone()) {
+                let existing_size = match fs::metadata(output_path) {
                     Ok(meta) => meta.len(),
                     Err(err) => return Outcome::Error(err.to_string()),
                 };
@@ -675,7 +867,7 @@ fn convert_file(
                     return Outcome::SkippedExisting {
                         input_size,
                         existing_size,
-                        output_path: output_path.clone(),
+                        output_path: output_path.to_path_buf(),
                     };
                 }
             }
@@ -687,14 +879,14 @@ fn convert_file(
                 };
             }
 
-            if let Err(err) = fs::write(output_path.clone(), image_data) {
+            if let Err(err) = write_atomic(output_path, &image_data) {
                 return Outcome::Error(err.to_string());
             }
             Outcome::Encoded {
                 input_size,
                 output_size,
                 metadata_dropped,
-                output_path: output_path.clone(),
+                output_path: output_path.to_path_buf(),
             }
         }
         Err(err) => Outcome::Error(format!("Image encoding failed: {:?}", err)),
@@ -716,17 +908,62 @@ fn sort_paths(paths: &mut [PathBuf], reverse: bool) {
     });
 }
 
+/// Maximum recursion depth of [`collect_directory`]: a backstop against
+/// directory cycles the canonical-path guard cannot express (e.g. bind
+/// mounts).
+const MAX_DIRECTORY_DEPTH: usize = 64;
+
 /// Collects supported image files below `dir` recursively (the same
 /// extension-based format filter the glob discovery applies to its
-/// results). Unreadable directories are skipped.
+/// results).
+///
+/// Directory symlinks are never followed and already-visited
+/// (canonicalized) directories are skipped, so symlink cycles cannot
+/// recurse endlessly (CR-2); symlinked *files* are still accepted by the
+/// extension filter. Unreadable directories are reported on stderr
+/// instead of vanishing silently (M-7).
 fn collect_directory(dir: &Path, paths: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    if let Ok(canonical) = dir.canonicalize() {
+        visited.insert(canonical);
+    }
+    collect_directory_inner(dir, paths, &mut visited, 0);
+}
+
+fn collect_directory_inner(
+    dir: &Path,
+    paths: &mut Vec<PathBuf>,
+    visited: &mut HashSet<PathBuf>,
+    depth: usize,
+) {
+    if depth >= MAX_DIRECTORY_DEPTH {
+        eprintln!(
+            "Warning: maximum directory depth ({MAX_DIRECTORY_DEPTH}) exceeded below {}; skipping",
+            dir.display()
+        );
         return;
+    }
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            eprintln!("Warning: cannot read directory {}: {err}", dir.display());
+            return;
+        }
     };
     for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
         let path = entry.path();
-        if path.is_dir() {
-            collect_directory(&path, paths);
+        if file_type.is_dir() {
+            // only real directories are recursed into (file_type() does
+            // not follow symlinks); the canonicalized-visited set guards
+            // against re-entering the same physical directory
+            if let Ok(canonical) = path.canonicalize()
+                && visited.insert(canonical)
+            {
+                collect_directory_inner(&path, paths, visited, depth + 1);
+            }
         } else if ImageFormat::from(path.as_path()) != ImageFormat::Unknown {
             paths.push(path);
         }
@@ -785,11 +1022,15 @@ pub fn execute(
     stop: &StopFlag,
     budget: ThreadBudget,
 ) -> Result<RunStats, Error> {
-    // the spec's output directory overrides the common configuration's
-    let mut conf = spec.common.clone();
-    if let Some(output) = &spec.output {
-        conf.output = output.to_string_lossy().to_string();
-    }
+    // the spec's output directory overrides the common configuration's;
+    // it stays a Path end-to-end instead of a lossy String round-trip,
+    // so non-UTF8 directories keep working (L10)
+    let conf = spec.common.clone();
+    let output_dir: Option<PathBuf> = match &spec.output {
+        Some(output) => Some(output.clone()),
+        None if !conf.output.is_empty() => Some(PathBuf::from(&conf.output)),
+        None => None,
+    };
 
     let (paths, pattern_base) = match &spec.inputs {
         InputSelection::Pattern(pattern) => {
@@ -818,21 +1059,20 @@ pub fn execute(
     }
 
     // create output directory if it does not exist
-    if !conf.output.is_empty() {
-        let output_directory = Path::new(&conf.output);
-        if !fs::exists(output_directory)? {
+    if let Some(output_directory) = output_dir.as_deref()
+        && !fs::exists(output_directory)?
+    {
+        reporter.on_event(JobEvent::Notice {
+            path: None,
+            message: format!("Creating output directory {output_directory:?}"),
+        });
+        if let Err(err) = fs::create_dir_all(output_directory) {
+            let message = format!("Error creating the output directory: {err}");
             reporter.on_event(JobEvent::Notice {
                 path: None,
-                message: format!("Creating output directory {output_directory:?}"),
+                message: message.clone(),
             });
-            if let Err(err) = fs::create_dir_all(output_directory) {
-                let message = format!("Error creating the output directory: {err}");
-                reporter.on_event(JobEvent::Notice {
-                    path: None,
-                    message: message.clone(),
-                });
-                return Err(Error::from_string(message));
-            }
+            return Err(Error::from_string(message));
         }
     }
     // IDEA: create output filename from configurable regex
@@ -893,6 +1133,7 @@ pub fn execute(
                 &conf,
                 policy,
                 &pattern_base,
+                output_dir.as_deref(),
                 &claimed_outputs,
                 reporter.as_ref(),
             )
@@ -1139,9 +1380,11 @@ mod tests {
         let path = output_path_for(Path::new("images/sub/a.jpeg"), "webp", "/tmp/out", "images");
         assert_eq!(path, Path::new("/tmp/out/sub/a.webp"));
 
-        // files outside the pattern base keep their relative structure
+        // files outside the pattern base are flattened into the output
+        // root: joining their absolute parent would escape the output
+        // directory (M-2)
         let path = output_path_for(Path::new("elsewhere/a.jpeg"), "png", "/tmp/out", "images");
-        assert_eq!(path, Path::new("/tmp/out/elsewhere/a.png"));
+        assert_eq!(path, Path::new("/tmp/out/a.png"));
     }
 
     #[test]
@@ -1244,7 +1487,7 @@ mod tests {
     }
 
     #[test]
-    fn convert_file_reports_collision_for_same_stem_inputs() {
+    fn failed_input_releases_claim_for_same_stem_inputs() {
         let dir =
             std::env::temp_dir().join(format!("byteshaver-pipeline-test-{}", std::process::id()));
         fs::create_dir_all(&dir).expect("create temp dir");
@@ -1253,8 +1496,9 @@ mod tests {
         fs::write(&input_a, []).expect("write input a");
         fs::write(&input_b, []).expect("write input b");
 
+        let out_dir = dir.join("out");
         let conf = ConversionConfig {
-            output: dir.join("out").display().to_string(),
+            output: out_dir.display().to_string(),
             ..ConversionConfig::default()
         };
         let encoder = EncoderRegistry::build(&EncoderConfig::Jpeg, ThreadBudget::global());
@@ -1267,6 +1511,7 @@ mod tests {
             &conf,
             CollisionPolicy::KeepExisting,
             "does-not-matter",
+            Some(&out_dir),
             &claimed,
             &reporter,
         );
@@ -1276,20 +1521,103 @@ mod tests {
             &conf,
             CollisionPolicy::KeepExisting,
             "does-not-matter",
+            Some(&out_dir),
             &claimed,
             &reporter,
         );
 
-        // both inputs map to the same output file (for inputs outside the
-        // pattern base the relative parent is absolute, matching historical
-        // naming); the second input is reported as a collision
+        // both inputs map to the same flattened output file
+        // (out/photo.jpeg); the first input fails decoding and releases
+        // its claim (M-1), so the second is processed under the same
+        // output path instead of being skipped as a collision
         assert!(
             matches!(outcome_a, Outcome::Error(_)),
             "empty png input should fail decoding, not collide"
         );
         assert!(
-            matches!(outcome_b, Outcome::SkippedCollision { output_path, .. } if output_path == dir.join("photo.jpeg"))
+            matches!(outcome_b, Outcome::Error(_)),
+            "failed claim must be released: the second input fails on its own instead of colliding"
         );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_atomic_replaces_target_and_leaves_no_temp_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "byteshaver-pipeline-test-{}-atomic",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let target = dir.join("out.bin");
+        fs::write(&target, b"old").expect("write target");
+
+        write_atomic(&target, b"new content").expect("atomic write");
+
+        assert_eq!(fs::read(&target).expect("read target"), b"new content");
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .expect("read dir")
+            .flatten()
+            .map(|entry| entry.file_name())
+            .filter(|name| name.to_string_lossy().contains(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp files removed: {leftovers:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_directory_survives_symlink_cycles() {
+        let dir =
+            std::env::temp_dir().join(format!("byteshaver-pipeline-cycle-{}", std::process::id()));
+        fs::create_dir_all(dir.join("sub")).expect("create temp dirs");
+        fs::write(dir.join("sub/a.png"), []).expect("write png");
+        // self-referencing directory cycles (CR-2)
+        std::os::unix::fs::symlink(".", dir.join("sub/loop")).expect("symlink .");
+        std::os::unix::fs::symlink(dir.join("sub"), dir.join("back")).expect("symlink back");
+        // symlinked files stay accepted
+        std::os::unix::fs::symlink(dir.join("sub/a.png"), dir.join("b.png")).expect("symlink file");
+
+        let mut paths = Vec::new();
+        collect_directory(&dir, &mut paths);
+
+        assert_eq!(paths.len(), 2, "symlinked directories are not followed");
+        assert!(paths.contains(&dir.join("sub/a.png")));
+        assert!(paths.contains(&dir.join("b.png")));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn animation_preflight_rejects_oversized_canvases_before_decoding() {
+        let dir = std::env::temp_dir().join(format!(
+            "byteshaver-pipeline-test-{}-preflight",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        // bare GIF89a header declaring a 65535x65535 canvas (~16 GiB of
+        // RGBA frame buffer) without any frame data: the probe must
+        // reject it from the header alone (CR-4). The trailing zeros
+        // satisfy the decoder's block lookahead without adding frames.
+        let mut huge = b"GIF89a".to_vec();
+        huge.extend_from_slice(&65535u16.to_le_bytes());
+        huge.extend_from_slice(&65535u16.to_le_bytes());
+        huge.extend_from_slice(&[0x70, 0, 0]);
+        huge.extend_from_slice(&[0u8; 16]);
+        let huge_path = dir.join("huge.gif");
+        fs::write(&huge_path, huge).expect("write gif header");
+
+        let conf = ConversionConfig::default(); // 4096 MiB cap
+        assert!(animation_preflight_error(&huge_path, &conf).is_some());
+
+        // a small canvas passes the header probe
+        let mut small = b"GIF89a".to_vec();
+        small.extend_from_slice(&8u16.to_le_bytes());
+        small.extend_from_slice(&8u16.to_le_bytes());
+        small.extend_from_slice(&[0x70, 0, 0]);
+        small.extend_from_slice(&[0u8; 16]);
+        let small_path = dir.join("small.gif");
+        fs::write(&small_path, small).expect("write gif header");
+        assert!(animation_preflight_error(&small_path, &conf).is_none());
 
         let _ = fs::remove_dir_all(&dir);
     }

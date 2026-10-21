@@ -1,5 +1,24 @@
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
+/// Parses an `f32` in `min..=max` (clap has no built-in ranged float
+/// parser; NaN/inf fail the bounds check). Float twin of the integer
+/// `clap::value_parser!(u8).range(..)` pattern.
+fn parse_f32_range(value: &str, min: f32, max: f32) -> Result<f32, String> {
+    let parsed: f32 = value
+        .parse()
+        .map_err(|_| format!("{value:?} is not a number"))?;
+    if !(min..=max).contains(&parsed) {
+        return Err(format!("{parsed} is not in {min}..={max}"));
+    }
+    Ok(parsed)
+}
+
+
+/// Quality value in 1..=100 (ravif asserts quality >= 1).
+fn parse_quality_1_100(value: &str) -> Result<f32, String> {
+    parse_f32_range(value, 1.0, 100.0)
+}
+
 /// EXIF metadata policy values of the `--exif` flag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum ExifPolicyArg {
@@ -156,14 +175,15 @@ pub enum Command {
 
     /// Convert images to avif format (using ravif crate)
     Avif {
-        /// Control target quality (0 - 100, lower is worse but results in smaller files).
+        /// Control target quality (1 - 100, lower is worse but results in smaller files;
+        /// ravif asserts quality >= 1).
         /// Defaults to 90.0.
-        #[clap(short, long)]
+        #[clap(short, long, value_parser = parse_quality_1_100)]
         quality: Option<f32>,
 
         /// Control encoding speed (1 - 10, lower is much slower but has a better quality and lower filesize).
         /// Defaults to 3.
-        #[clap(short, long)]
+        #[clap(short, long, value_parser = clap::value_parser!(u8).range(1..=10))]
         speed: Option<u8>,
 
         /// Choose internal bit depth. (in the generated avif file, nothing to do with the input file)
@@ -179,9 +199,9 @@ pub enum Command {
         #[clap(long, value_enum)]
         alpha_color_mode: Option<crate::config::AlphaColorMode>,
 
-        /// Control target alpha quality (0 - 100, lower is worse).
+        /// Control target alpha quality (1 - 100, lower is worse).
         /// Defaults to 90.0.
-        #[clap(short, long)]
+        #[clap(short, long, value_parser = parse_quality_1_100)]
         alpha_quality: Option<f32>,
     },
 
