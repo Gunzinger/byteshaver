@@ -65,14 +65,14 @@ itself cannot run without a display server.
 
 ## Release packaging (implemented in CI)
 
-The release pipeline builds **separate CLI and GUI binaries for Linux (musl,
-static-pie) and Windows (gnu)** for every CPU target (x86-64-v3/v4, znver3,
-znver5). Build configurations per platform:
+The release pipeline builds **separate CLI binaries for Linux (musl, static-pie) and
+Windows (gnu), the GUI for Linux (glibc, dynamic) and Windows (gnu)** for every CPU
+target (x86-64-v3/v4, znver3, znver5). Build configurations per platform:
 
 | Artifact | Build | Notes |
 |----------|-------|-------|
 | `byteshaver-<ver>[-cpu]` (Linux) | alpine container, `cargo build --release -p byteshaver` | native musl toolchain (gcc/g++/make/cmake) so the vendored libjxl builds; validated static-pie |
-| `byteshaver-gui-<ver>[-cpu]` (Linux) | alpine container, `-p byteshaver-gui --no-default-features --features x11` | x11-only windowing (no wayland system libraries); validated static-pie |
+| `byteshaver-gui-<ver>[-cpu]` (Linux) | ubuntu host, `--target x86_64-unknown-linux-gnu -p byteshaver-gui --no-default-features --features wayland,x11,heif` (+ `PKG_CONFIG_PATH` to the glibc heif-deps dist) | dynamic glibc on purpose: winit dlopens `libwayland-client`/`libX11` (and glutin dlopens libGL/libEGL), which is impossible from a static binary — the 0.7.1 static GUI could not open a window on any Linux desktop; both backends enabled; libheif + dec265/dav1d embedded statically (no dynamic codec deps, asserted in CI); xvfb launch smoke test in CI |
 | `byteshaver-<ver>[-cpu].exe` (Windows) | ubuntu host, `--target x86_64-pc-windows-gnu -p byteshaver` | full features; the libjxl cmake cross needs the target-suffixed `CC/CXX/AR` env vars set by the workflow |
 | `byteshaver-gui-<ver>[-cpu].exe` (Windows) | ubuntu host, `--no-default-features` | winit auto-selects its windows backend; eframe's wayland/x11 features are not target-gated and must stay off |
 

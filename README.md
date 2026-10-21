@@ -74,10 +74,11 @@ when the `dec-heif` feature is compiled in:
 
 Without the feature, HEIC/HEIF/AVIF inputs fail per-file with a clear message while the
 rest of the batch keeps converting. `dec-heif` is **enabled by default in all release
-binaries** (Linux musl static-pie, Linux GUI, Windows): the libheif version matching the
-bindings is compiled in statically (libheif-sys `embedded-libheif`), with HEVC decode via
-a statically linked libde265 and AV1/AVIF decode via dav1d (see `tools/libheif-static/`
-and [docs/plans/17-static-libheif-and-jxl-avx512.md](docs/plans/17-static-libheif-and-jxl-avx512.md)).
+binaries** (Linux musl static-pie CLI, Linux GUI, Windows, docker): the libheif version
+matching the bindings is compiled in statically (libheif-sys `embedded-libheif`), with
+HEVC decode via a statically linked libde265 and AV1/AVIF decode via dav1d (see
+`tools/libheif-static/` and
+[docs/plans/17-static-libheif-and-jxl-avx512.md](docs/plans/17-static-libheif-and-jxl-avx512.md)).
 The Windows binaries use the gnullvm/ucrt toolchain (UCRT ships with Windows 10+).
 Building locally requires `pkg-config` plus static libde265 + dav1d
 (`tools/libheif-static/build-decode-only.sh`) on the library search path; on Windows,
@@ -307,7 +308,10 @@ CLI binary **and** the desktop GUI as separate downloads:
 
 - `byteshaver-<version>[-cpu]` — CLI, Linux (musl, static-pie)
 - `byteshaver-<version>[-cpu].exe` — CLI, Windows
-- `byteshaver-gui-<version>[-cpu]` — desktop GUI, Linux (musl, static-pie, X11)
+- `byteshaver-gui-<version>[-cpu]` — desktop GUI, Linux (glibc, dynamic; Wayland
+  and X11 backends both enabled — winit loads `libwayland-client` / `libX11` at
+  runtime, so the GUI cannot be a static binary; needs a normal desktop library
+  set, which every mainstream distro ships; HEIC/AVIF decode embedded statically)
 - `byteshaver-gui-<version>[-cpu].exe` — desktop GUI, Windows
 - `...-packed[.exe]` variants of each of the above — optional self-extracting
   packed copies (65–70 % smaller download/disk at the cost of ~9 ms slower
