@@ -20,14 +20,20 @@ categories = [
 
 [features]
 default = ["wayland", "x11", "heif"]
-# windowing backend passthrough: the static musl GUI build uses
-# `--no-default-features --features x11` (no wayland system libraries),
-# desktop builds use the default (wayland + x11)
+# windowing backend passthrough: the release build is a dynamically
+# linked glibc binary with BOTH backends (see the workflow's linux GUI
+# step): winit loads libwayland-client.so.0 / libX11.so.6 via dlopen at
+# runtime (wayland-sys / x11-dl), which cannot work from a fully static
+# binary — and accesskit_winit's default features enable winit/wayland
+# regardless, so a "wayland-free" build is not expressible anyway.
 wayland = ["eframe/wayland"]
 x11 = ["eframe/x11"]
-# HEIC/HEIF/AVIF input passthrough: default-on like the core's own default
-# feature set, but opt-in so `--no-default-features` builds (and workspace
-# clippy runs) stay buildable without the vendored libheif toolchain
+# HEIC/HEIF/AVIF input passthrough: default-on everywhere, including
+# the release build — libheif-sys's embedded-libheif compiles the
+# vendored libheif statically with the decode-only libde265/dav1d
+# plugins baked in (see tools/libheif-static/), adding no runtime
+# library dependency. The feature exists so toolchain-less builds
+# (and `cargo clippy --workspace`) can opt out of the vendored build.
 heif = ["byteshaver/dec-heif"]
 
 [dependencies]
@@ -52,10 +58,10 @@ image = "0.25"
 # native file dialogs; on Linux the default `xdg-portal` backend compiles
 # without GTK dev packages (needs the xdg-desktop-portal service at runtime)
 rfd = "0.17"
-# the conversion core; the explicit feature list mirrors the core's defaults
-# minus dec-heif (kept opt-in via the `heif` feature above): the options
-# editors and the EXIF policy injection reference their types/fields
-# unconditionally (see gui/README.md)
+# the conversion core; the explicit feature list mirrors the core's
+# defaults minus dec-heif (kept opt-in via the `heif` feature above):
+# the options editors and the EXIF policy injection reference their
+# types/fields unconditionally (see gui/README.md)
 byteshaver = { path = "..", default-features = false, features = [
     "opt-oxipng",
     "exif",

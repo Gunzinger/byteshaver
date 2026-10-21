@@ -171,7 +171,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       # ---------------------------------------------------------------
-      # Linux (musl, static-pie) — CLI and GUI
+      # Linux CLI (musl, static-pie)
       #
       # Built natively inside an alpine container: the vendored libjxl
       # (jxl feature) needs a C++ compiler against musl, which
@@ -181,13 +181,12 @@ jobs:
       # the static artifacts (libheif has no static archives); it is
       # only shipped in the docker images (see validate_docker job).
       #
-      # The GUI build disables eframe's wayland/x11 features per target:
-      # alpine gets x11 only, windows gets neither (winit auto-selects
-      # its windows backend; the wayland feature is not target-gated
-      # and must stay off for non-linux targets).
+      # The GUI is NOT built here — see the glibc GUI step below:
+      # winit's windowing backends dlopen their client libraries, which
+      # cannot work from a static-pie musl binary.
       # ---------------------------------------------------------------
       # ---------------------------------------------------------------
-      # Linux (musl, static-pie) — CLI and GUI
+      # Linux (musl, static-pie) — target-cpu tuning
       #
       # Target-cpu tuning is passed via CARGO_TARGET_*_RUSTFLAGS **and**
       # the build uses an explicit --target: on a native build cargo
@@ -235,7 +234,7 @@ jobs:
           # restore only ever costs a rebuild, never stale codecs.
           restore-keys: heif-deps-decodeonly-
 
-      - name: Build linux binaries (musl, in alpine container)
+      - name: Build linux CLI (musl, in alpine container)
         shell: bash
         run: |
           echo "Building for CPU: ${{ matrix.cpu_target }} (alpine/musl)"
@@ -266,21 +265,113 @@ jobs:
               # NOTE: the static-pie assertion must run before any packing.
               # CLI: full default features (opt-oxipng, exif, jxl, anim-webp, anim-apng, logs)
               cargo build --release --target x86_64-unknown-linux-musl -p byteshaver
-              # GUI: static, x11-only windowing
-              cargo build --release --target x86_64-unknown-linux-musl -p byteshaver-gui --no-default-features --features x11
               file target-linux/x86_64-unknown-linux-musl/release/byteshaver | grep -q "static-pie" \
                 || (echo "ERROR: byteshaver is not static-pie" && exit 1)
-              file target-linux/x86_64-unknown-linux-musl/release/byteshaver-gui | grep -q "static-pie" \
-                || (echo "ERROR: byteshaver-gui is not static-pie" && exit 1)
             '
           mkdir -p current_release
           if [ "${{ matrix.cpu_target }}" == "${{ env.BASE_CPU }}" ]; then SUFFIX=""; else SUFFIX="-${{ matrix.cpu_target }}"; fi
           cp target-linux/x86_64-unknown-linux-musl/release/byteshaver "current_release/byteshaver-${{ env.VERSION }}${SUFFIX}"
-          cp target-linux/x86_64-unknown-linux-musl/release/byteshaver-gui "current_release/byteshaver-gui-${{ env.VERSION }}${SUFFIX}"
           # license/attribution materials ship with every release
           cp THIRD-PARTY-NOTICES.md docs/dependency-licenses.md current_release/
-          ( cd current_release && sha256sum "byteshaver-${{ env.VERSION }}${SUFFIX}" > "byteshaver-${{ env.VERSION }}${SUFFIX}.sha256" && \
-            sha256sum "byteshaver-gui-${{ env.VERSION }}${SUFFIX}" > "byteshaver-gui-${{ env.VERSION }}${SUFFIX}.sha256" )
+          ( cd current_release && sha256sum "byteshaver-${{ env.VERSION }}${SUFFIX}" > "byteshaver-${{ env.VERSION }}${SUFFIX}.sha256" )
+
+      # ---------------------------------------------------------------
+      # Linux GUI (glibc, wayland + x11) — dynamic on purpose
+      #
+      # winit's windowing backends load their client libraries at
+      # RUNTIME via dlopen (wayland-sys: libwayland-client.so.0,
+      # x11-dl: libX11.so.6 and friends) — and static-pie musl
+      # binaries cannot dlopen at all ("Dynamic loading not
+      # supported"). The v0.7.1 static GUI was therefore dead on
+      # every Linux desktop (NoWaylandLib under Wayland,
+      # XNotSupported under X11), regardless of which backend the
+      # session selected. accesskit_winit additionally enables
+      # winit/wayland through its default features, so a
+      # "wayland-free" build is not expressible either.
+      #
+      # The GUI is consequently a plain dynamically linked glibc
+      # build with BOTH backends enabled: every mainstream desktop
+      # ships libwayland-client / libX11 (and a GL stack; glutin
+      # dlopens libGL/libEGL the same way). dec-heif IS included:
+      # libheif-sys's embedded-libheif compiles the vendored libheif
+      # statically — same as the CLI and Windows builds — with the
+      # decode-only static libde265/dav1d plugins baked in, so it
+      # adds NO runtime dependency: the binary keeps only
+      # libstdc++/libm/libgcc/libc as DT_NEEDED entries.
+      # ---------------------------------------------------------------
+
+      # Static libde265 + dav1d for the GUI's embedded libheif, built
+      # with the host (glibc) toolchain — the container tree above
+      # holds musl objects and is not reusable here. Cached on the
+      # recipe hash exactly like the musl one.
+      - name: Cache static heif codec deps (glibc host)
+        uses: actions/cache@v6
+        with:
+          path: heif-deps-glibc
+          key: heif-deps-glibc-decodeonly-${{ hashFiles('tools/libheif-static/**') }}
+          restore-keys: heif-deps-glibc-decodeonly-
+
+      - name: Build static heif codec deps (glibc host)
+        run: tools/libheif-static/build-decode-only.sh "$PWD/heif-deps-glibc/dist"
+
+      - name: Build linux GUI (glibc, wayland + x11, embedded HEIF decode)
+        shell: bash
+        env:
+          # same explicit-target pattern as the musl build: host units
+          # (build scripts, proc macros) stay at baseline codegen
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C target-cpu=${{ matrix.cpu_target }}"
+          # static codec plugins consumed by libheif-sys's embedded build
+          PKG_CONFIG_PATH: ${{ github.workspace }}/heif-deps-glibc/dist/lib/pkgconfig
+        run: |
+          cargo build --release --target x86_64-unknown-linux-gnu \
+            -p byteshaver-gui --no-default-features --features wayland,x11,heif
+          BIN="target/x86_64-unknown-linux-gnu/release/byteshaver-gui"
+          file "$BIN" | grep -q "dynamically linked" \
+            || (echo "ERROR: byteshaver-gui is not a dynamic glibc build" && file "$BIN" && exit 1)
+          # windowing/GL libraries stay dlopen'd at runtime, but libheif and
+          # the codecs must be embedded — a dynamic libheif.so dependency
+          # would make the bare binary un-launchable on systems without it
+          if ldd "$BIN" | grep -qiE 'libheif|de265|dav1d'; then
+            echo "ERROR: libheif must be embedded statically, found dynamic codec libraries"
+            ldd "$BIN"; exit 1
+          fi
+          # every DT_NEEDED library must resolve on this ubuntu runner
+          # (dlopened ones are proven by the launch smoke test below)
+          ldd "$BIN"
+
+      # launch smoke test under xvfb (software GL): the window must
+      # actually come up — v0.7.1 shipped a GUI that linked fine and
+      # died at the first event loop. exit 124 from timeout(1) = the
+      # app was still alive when the budget expired = pass.
+      - name: Smoke-test the linux GUI (xvfb launch)
+        shell: bash
+        run: |
+          sudo apt-get install --yes --no-install-recommends \
+            xvfb libgl1 libgl1-mesa-dri libegl1 \
+            libx11-6 libxkbcommon-x11-0 libxcursor1 libxrandr2 libxi6 \
+            libwayland-client0 >/dev/null
+          set +e
+          timeout 20s xvfb-run -a -s "-screen 0 1280x720x24" \
+            env LIBGL_ALWAYS_SOFTWARE=1 \
+            ./target/x86_64-unknown-linux-gnu/release/byteshaver-gui \
+            >/dev/null 2>gui-smoke.log
+          rc=$?
+          set -e
+          if [ "$rc" -ne 124 ]; then
+            echo "ERROR: GUI did not stay up under xvfb (exit $rc, expected 124 = still running)"
+            cat gui-smoke.log
+            exit 1
+          fi
+          # benign mesa/driver warnings are fine; aborts are not
+          if grep -qE "panicked at|^Error" gui-smoke.log; then
+            echo "ERROR: GUI logged a panic/error during the smoke run"
+            cat gui-smoke.log
+            exit 1
+          fi
+          echo "GUI smoke test passed (window up for the full 20s budget)"
+          if [ "${{ matrix.cpu_target }}" == "${{ env.BASE_CPU }}" ]; then SUFFIX=""; else SUFFIX="-${{ matrix.cpu_target }}"; fi
+          cp target/x86_64-unknown-linux-gnu/release/byteshaver-gui "current_release/byteshaver-gui-${{ env.VERSION }}${SUFFIX}"
+          ( cd current_release && sha256sum "byteshaver-gui-${{ env.VERSION }}${SUFFIX}" > "byteshaver-gui-${{ env.VERSION }}${SUFFIX}.sha256" )
 
       # ---------------------------------------------------------------
       # Windows (gnullvm/ucrt cross from ubuntu) — CLI and GUI
