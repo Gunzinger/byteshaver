@@ -14,18 +14,25 @@ env:
   WIN_CXX: x86_64-w64-mingw32-g++
   WIN_AR: x86_64-w64-mingw32-ar
 
+# least privilege by default (audit M-38): every job gets read-only repo
+# access unless it explicitly needs more (release uploads, publishing)
+permissions:
+  contents: read
+
 jobs:
   create_release:
     if: ${{ startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write        # creates the release object
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # Create GitHub Release
       - name: Create GitHub Release
         id: gh_release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           name: Release ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
@@ -51,11 +58,25 @@ jobs:
       cpu_targets: ${{ steps.targets.outputs.cpu_targets }}
     steps:
       - id: targets
+        env:
+          # env-mapped instead of direct ${{ }} shell interpolation; the
+          # value feeds compiler flags below, so it is whitelist-validated
+          # before use
+          CPU_TARGETS_EXTRA: ${{ vars.CPU_TARGETS_EXTRA }}
         run: |
           TARGETS='"x86-64-v3"'
-          EXTRA="${{ vars.CPU_TARGETS_EXTRA }}"
-          if [ -n "$EXTRA" ]; then
-            EXTRA_JSON=$(echo "$EXTRA" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | sed 's/^/"/;s/$/"/' | paste -sd, -)
+          if [ -n "$CPU_TARGETS_EXTRA" ]; then
+            EXTRA_JSON=""
+            for tok in $(printf '%s' "$CPU_TARGETS_EXTRA" | tr ',' ' '); do
+              if [ -z "$tok" ]; then continue; fi
+              case "$tok" in
+                *[!A-Za-z0-9-]*)
+                  echo "FATAL: invalid CPU_TARGETS_EXTRA token: $tok" >&2
+                  exit 1
+                  ;;
+              esac
+              EXTRA_JSON="${EXTRA_JSON:+$EXTRA_JSON,}\"$tok\""
+            done
             TARGETS="$TARGETS,$EXTRA_JSON"
           fi
           echo "cpu_targets=[$TARGETS]" >> "$GITHUB_OUTPUT"
@@ -63,6 +84,8 @@ jobs:
   build_binaries:
     needs: matrix_prep
     runs-on: ubuntu-latest
+    permissions:
+      contents: write        # uploads artifacts to the GitHub Release (tag runs)
     strategy:
       matrix:
         cpu_target: ${{ fromJSON(needs.matrix_prep.outputs.cpu_targets) }}
@@ -71,7 +94,7 @@ jobs:
       # recursive: the patched jpegxl-src (tools/jpegxl-src) is a submodule
       # whose libjxl is its own nested submodule
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
 
@@ -107,7 +130,7 @@ jobs:
       # Cached on the pinned toolchain version; the cached tree already has
       # the dynamic libc++/libunwind import libs removed (self-containment).
       - name: Cache llvm-mingw toolchain
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.tools/llvm-mingw-20260922
           key: llvm-mingw-20260922-ucrt-ubuntu-22.04-x86_64
@@ -117,11 +140,21 @@ jobs:
           set -euo pipefail
           sudo apt-get install --yes --no-install-recommends nasm ninja-build meson pkg-config patch
           LLVM_MINGW_VERSION=20260922
+          # checksum pins the toolchain that compiles every shipped Windows
+          # binary (audit H-8); empty = unverified download (loud warning)
+          LLVM_MINGW_SHA256="${LLVM_MINGW_SHA256:-bb7bb7654b33d5aa8712acb837c963b2e0c56352560c76105270a3268c665c21}"
           TC="$HOME/.tools/llvm-mingw-$LLVM_MINGW_VERSION"
           if [ ! -x "$TC/bin/x86_64-w64-mingw32-clang" ]; then
             mkdir -p "$HOME/.tools"
-            curl -sL "https://github.com/mstorsjo/llvm-mingw/releases/download/$LLVM_MINGW_VERSION/llvm-mingw-$LLVM_MINGW_VERSION-ucrt-ubuntu-22.04-x86_64.tar.xz" \
-              | tar -xJ -C "$HOME/.tools"
+            curl -sL --fail -o "$HOME/.tools/llvm-mingw.tar.xz" \
+              "https://github.com/mstorsjo/llvm-mingw/releases/download/$LLVM_MINGW_VERSION/llvm-mingw-$LLVM_MINGW_VERSION-ucrt-ubuntu-22.04-x86_64.tar.xz"
+            if [ -n "$LLVM_MINGW_SHA256" ]; then
+              echo "$LLVM_MINGW_SHA256  $HOME/.tools/llvm-mingw.tar.xz" | sha256sum -c -
+            else
+              echo "WARNING: llvm-mingw downloaded WITHOUT checksum verification (LLVM_MINGW_SHA256 is empty)" >&2
+            fi
+            tar -xJ -C "$HOME/.tools" -f "$HOME/.tools/llvm-mingw.tar.xz"
+            rm -f "$HOME/.tools/llvm-mingw.tar.xz"
             rm -rf "$TC"
             mv "$HOME/.tools/llvm-mingw-$LLVM_MINGW_VERSION-ucrt-ubuntu-22.04-x86_64" "$TC"
             # self-contained exes: drop the libc++/libunwind import libs so the
@@ -135,42 +168,7 @@ jobs:
         run: rustup target add x86_64-pc-windows-gnullvm
 
       # rust package / target cache
-      - uses: Swatinem/rust-cache@v2
-
-      # crates.io publish verify build: `dec-heif` is a default feature, so
-      # the verification build of the packaged crate needs pkg-config plus
-      # the libde265/dav1d decode libraries discoverable via pkg-config
-      # (dynamic system libs are fine here — this build only proves the
-      # crate compiles; it is not an artifact we ship)
-      - name: Install dec-heif verify deps (crates.io publish)
-        # note: the Debian/Ubuntu package is libdav1d-dev (NOT dav1d-dev —
-        # that's the alpine/apk name used in the Dockerfile)
-        run: sudo apt-get install --yes --no-install-recommends pkg-config libde265-dev libdav1d-dev
-
-      # Cargo publish (once!) — publishing an already-published version
-      # (e.g. re-tagging a release after a pipeline fix) is a no-op, not an
-      # error: crates.io versions are immutable and the API is unreliable
-      # from CI (rate limits/UA gating), so we act on cargo's own error
-      # instead of pre-checking the API
-      - name: Cargo publish crate
-        if: ${{ matrix.cpu_target == env.BASE_CPU && startsWith(github.ref, 'refs/tags/v') }}
-        run: |
-          set +e
-          out="$(cargo publish --allow-dirty 2>&1)"
-          rc=$?
-          set -e
-          echo "$out"
-          if [ $rc -ne 0 ]; then
-            if echo "$out" | grep -q "already exists"; then
-              echo "byteshaver ${VERSION} is already published on crates.io — skipping"
-              exit 0
-            fi
-            exit $rc
-          fi
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
-          # host (gnu) build for verification; v3 is safe on all runner CPUs
-          RUSTFLAGS: "-C target-cpu=${{ env.BASE_CPU }}"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       # ---------------------------------------------------------------
       # Linux (musl, static-pie) — CLI and GUI
@@ -212,7 +210,7 @@ jobs:
       # cargo rebuild stale units inside the restored tree (correct, just
       # slower once per toolchain update).
       - name: Cache linux build tree
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: target-linux
           key: byteshaver-linux-target-${{ matrix.cpu_target }}-${{ hashFiles('Cargo.lock') }}
@@ -226,10 +224,15 @@ jobs:
       # (vendored 1.23.1, plugins baked in, x265/aom absent => license-clean,
       # see docs/plans/17-static-libheif-and-jxl-avx512.md).
       - name: Cache static heif codec deps
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: heif-deps
           key: heif-deps-decodeonly-${{ hashFiles('tools/libheif-static/**') }}
+          # NOTE(audit LOW): the prefix restore-key can restore a tree built
+          # by an older recipe — safe because the recipe itself version-
+          # stamps its artifacts (.stamp-* files carry codec versions and
+          # the cross toolchain) and rebuilds on any mismatch, so a stale
+          # restore only ever costs a rebuild, never stale codecs.
           restore-keys: heif-deps-decodeonly-
 
       - name: Build linux binaries (musl, in alpine container)
@@ -341,7 +344,7 @@ jobs:
 
       - name: Upload binaries to GitHub Release
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           name: Release ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
@@ -351,7 +354,7 @@ jobs:
       # runs the pack_binaries job consumes them to build the packed variants;
       # on manual workflow_dispatch runs they ARE the deliverable.
       - name: Upload binaries as workflow artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: byteshaver-binaries-${{ matrix.cpu_target }}
           path: current_release/*
@@ -369,13 +372,15 @@ jobs:
   pack_binaries:
     needs: build_binaries
     runs-on: ubuntu-latest
+    permissions:
+      contents: write        # uploads packed artifacts to the GitHub Release (tag runs)
     name: Pack binaries (zpack)
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download all built binaries
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: byteshaver-binaries-*
           merge-multiple: true
@@ -453,7 +458,7 @@ jobs:
 
       - name: Upload packed binaries to GitHub Release
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           name: Release ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
@@ -461,7 +466,7 @@ jobs:
 
       - name: Upload packed binaries as workflow artifact
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: byteshaver-binaries-packed
           path: current_release/*
@@ -483,10 +488,10 @@ jobs:
     name: Validate docker images (libheif)
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download prebuilt binary
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: byteshaver-binaries-${{ env.BASE_CPU }}
           path: artifact
@@ -506,14 +511,14 @@ jobs:
 
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       # Short-circuit the unified Dockerfile's source-build stage: the
       # prebuilt binary sits in the context, so only the tiny prebuilt
       # stage runs. (The default SOURCE=build reproduces the full pipeline
       # from source — see the Dockerfile header.)
       - name: Build alpine image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           file: Dockerfile
@@ -547,15 +552,90 @@ jobs:
               || { echo "FATAL: real HEIC decode failed"; exit 1; }'
 
 
+  # ---------------------------------------------------------------
+  # crates.io publish (audit M-40): moved out of build_binaries into a
+  # late job gated on the artifact build AND docker validation —
+  # publishing is irreversible, so it must never run before the release
+  # artifacts it corresponds to have been built and tested. Semantics
+  # preserved from the old in-matrix step: tag runs only, tolerates
+  # "already published" (re-tag after a pipeline fix), verify-builds with
+  # the default feature set (dec-heif needs system libde265/dav1d via
+  # pkg-config; dynamic system libs are fine — the verify build only
+  # proves the crate compiles).
+  # ---------------------------------------------------------------
+  publish_crate:
+    needs: [build_binaries, validate_docker]
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          submodules: recursive
+
+      - name: Set version from tag
+        run: |
+          if [[ "$GITHUB_REF_NAME" == v* ]]; then
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
+          else
+            echo "VERSION=0.0.0-dispatch" >> $GITHUB_ENV
+          fi
+
+      - name: Set Cargo.toml version
+        shell: bash
+        run: |
+          # Patch BOTH workspace crates (core + gui): the gui crate is
+          # versioned in lockstep with byteshaver and the GUI binary displays
+          # its own CARGO_PKG_VERSION (header + About panel) — missing
+          # gui/Cargo.toml here is what shipped 0.0.0-git GUI releases.
+          # Anchored so only the package `version` lines are touched
+          # (Cargo.lock has one matching `version = "..."` line per crate).
+          sed -i "s/^version = \"0\.0\.0-git\"/version = \"${VERSION}\"/" Cargo.toml gui/Cargo.toml Cargo.lock
+          grep -n '^version' Cargo.toml gui/Cargo.toml
+          grep -n -A1 '^name = "byteshaver' Cargo.lock
+
+      - name: Install dec-heif verify deps (crates.io publish)
+        # note: the Debian/Ubuntu package is libdav1d-dev (NOT dav1d-dev —
+        # that's the alpine/apk name used in the Dockerfile)
+        run: sudo apt-get install --yes --no-install-recommends pkg-config libde265-dev libdav1d-dev nasm ninja-build
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      # Cargo publish (once!) — publishing an already-published version
+      # (e.g. re-tagging a release after a pipeline fix) is a no-op, not an
+      # error: crates.io versions are immutable and the API is unreliable
+      # from CI (rate limits/UA gating), so we act on cargo's own error
+      # instead of pre-checking the API
+      - name: Cargo publish crate
+        run: |
+          set +e
+          out="$(cargo publish --allow-dirty 2>&1)"
+          rc=$?
+          set -e
+          echo "$out"
+          if [ $rc -ne 0 ]; then
+            if echo "$out" | grep -q "already exists"; then
+              echo "byteshaver ${VERSION} is already published on crates.io — skipping"
+              exit 0
+            fi
+            exit $rc
+          fi
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
+          # host (gnu) build for verification; v3 is safe on all runner CPUs
+          RUSTFLAGS: "-C target-cpu=${{ env.BASE_CPU }}"
+
   publish_docker:
     needs: [validate_docker]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download prebuilt binary
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: byteshaver-binaries-${{ env.BASE_CPU }}
           path: artifact
@@ -567,24 +647,24 @@ jobs:
           cp "$BIN" byteshaver
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Generate Docker metadata
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ${{ env.IMAGE_NAME }}
         env:
           DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
 
       - name: Build and Push Docker image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           file: Dockerfile
@@ -595,7 +675,7 @@ jobs:
             SOURCE=prebuilt
 
       - name: Push README.md to Dockerhub
-        uses: peter-evans/dockerhub-description@v5
+        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
         with:
           username: ${{ secrets.DOCKER_USERNAME }}

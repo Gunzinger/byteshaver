@@ -45,6 +45,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <zstd.h>
@@ -61,13 +62,13 @@ static void logline(const char *msg) {
 }
 /* milestone with ms offset from process start */
 static void phase(const char *msg) {
-    char buf[MAX_PATH + 32];
+    char buf[2 * MAX_PATH + 64];
     LARGE_INTEGER now;
     if (!g_log) return;
     QueryPerformanceCounter(&now);
-    wsprintfA(buf, "zpe: +%lu ms %s",
-              (unsigned long)((now.QuadPart - g_qpcstart.QuadPart) * 1000 / g_qpcfreq.QuadPart),
-              msg);
+    snprintf(buf, sizeof buf, "zpe: +%lu ms %s",
+             (unsigned long)((now.QuadPart - g_qpcstart.QuadPart) * 1000 / g_qpcfreq.QuadPart),
+             msg);
     logline(buf);
 }
 static void debug_init(void) {
@@ -165,7 +166,7 @@ static void cache_paths(const char *keyname, int tmp, char *out) {
     append_bounded(out, MAX_PATH, &n, base);
     if (tmp) {
         char pid[16];
-        wsprintfA(pid, ".%lu.tmp", (unsigned long)GetCurrentProcessId());
+        snprintf(pid, sizeof pid, ".%lu.tmp", (unsigned long)GetCurrentProcessId());
         append_bounded(out, MAX_PATH, &n, pid);
     }
 }
@@ -211,10 +212,16 @@ static void decompress_payload(uint64_t nframes, const uint64_t *tbl, uint64_t p
     frame_job *jobs = (frame_job *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)(nframes * sizeof(frame_job)));
     if (!jobs) die("zpe: OOM (jobs)\n");
 
-    /* frames must tile [payload_off, trailer) — unvalidated comp lens used to
+    /* frames must tile [payload_off, frames_end) — unvalidated comp lens used to
      * hand the decoder pointers past the self buffer (wild read; crash or
-     * garbage depending on what happened to be mapped there) */
+     * garbage depending on what happened to be mapped there). Order matters
+     * (audit CR-5): prove the table fits and payload_off <= frames_end
+     * BEFORE any subtraction; nframes <= 4096 keeps 24 + nframes*24 from
+     * wrapping, so frames_end - src can never wrap below zero afterwards. */
+    if (nframes == 0 || nframes > 4096 || g_self_len < 24 + nframes * 24)
+        die("zpe: bad frame count\n");
     uint64_t frames_end = g_self_len - 24 - nframes * 24;
+    if (payload_off > frames_end) die("zpe: bad payload offset\n");
     uint64_t src = payload_off;
     for (uint64_t i = 0; i < nframes; i++) {
         size_t dest = (size_t)tbl[3*i + 2], uncomp = (size_t)tbl[3*i + 1];
@@ -264,6 +271,180 @@ static void decompress_payload(uint64_t nframes, const uint64_t *tbl, uint64_t p
     phase("decompressed\n");
 }
 
+/* ---------- SHA-256 (FIPS 180-4), compact public-domain-style ----------
+ * Cache integrity (audit M-33): the steady-state launch path used to trust a
+ * size-only check, so any same-size replacement of the cached exe executed
+ * with the invoking user's privileges. The first cache write now also stores
+ * a <name>.sha256 sidecar holding the hash of the reconstructed payload;
+ * every later launch re-hashes the cached file and re-extracts on mismatch
+ * (or when a pre-sidecar cache generation is found). This raises the bar a
+ * lot but is not a signature: an attacker able to rewrite both files still
+ * passes. */
+typedef struct {
+    uint32_t h[8];
+    uint64_t bits;               /* total message length in bits */
+    unsigned char buf[64];
+    size_t buflen;
+} sha256_ctx;
+
+static uint32_t ror32(uint32_t x, int r) { return (x >> r) | (x << (32 - r)); }
+
+static void sha256_block(uint32_t h[8], const unsigned char p[64]) {
+    static const uint32_t K[64] = {
+        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,
+        0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,
+        0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,
+        0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,
+        0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,
+        0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,
+        0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,
+        0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,
+        0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+    };
+    uint32_t w[64];
+    for (int i = 0; i < 16; i++)
+        w[i] = ((uint32_t)p[4*i] << 24) | ((uint32_t)p[4*i+1] << 16) |
+               ((uint32_t)p[4*i+2] << 8) | (uint32_t)p[4*i+3];
+    for (int i = 16; i < 64; i++) {
+        uint32_t s0 = ror32(w[i-15], 7) ^ ror32(w[i-15], 18) ^ (w[i-15] >> 3);
+        uint32_t s1 = ror32(w[i-2], 17) ^ ror32(w[i-2], 19) ^ (w[i-2] >> 10);
+        w[i] = w[i-16] + s0 + w[i-7] + s1;
+    }
+    uint32_t a = h[0], b = h[1], c = h[2], d = h[3];
+    uint32_t e = h[4], f = h[5], g = h[6], hh = h[7];
+    for (int i = 0; i < 64; i++) {
+        uint32_t S1 = ror32(e, 6) ^ ror32(e, 11) ^ ror32(e, 25);
+        uint32_t ch = (e & f) ^ (~e & g);
+        uint32_t t1 = hh + S1 + ch + K[i] + w[i];
+        uint32_t S0 = ror32(a, 2) ^ ror32(a, 13) ^ ror32(a, 22);
+        uint32_t mj = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t t2 = S0 + mj;
+        hh = g; g = f; f = e; e = d + t1;
+        d = c; c = b; b = a; a = t1 + t2;
+    }
+    h[0] += a; h[1] += b; h[2] += c; h[3] += d;
+    h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
+}
+
+static void sha256_init(sha256_ctx *c) {
+    c->h[0] = 0x6a09e667; c->h[1] = 0xbb67ae85; c->h[2] = 0x3c6ef372; c->h[3] = 0xa54ff53a;
+    c->h[4] = 0x510e527f; c->h[5] = 0x9b05688c; c->h[6] = 0x1f83d9ab; c->h[7] = 0x5be0cd19;
+    c->bits = 0; c->buflen = 0;
+}
+
+static void sha256_update(sha256_ctx *c, const void *data, size_t n) {
+    const unsigned char *q = (const unsigned char *)data;
+    c->bits += (uint64_t)n << 3;
+    while (n) {
+        size_t take = 64 - c->buflen;
+        if (take > n) take = n;
+        memcpy(c->buf + c->buflen, q, take);
+        c->buflen += take; q += take; n -= take;
+        if (c->buflen == 64) { sha256_block(c->h, c->buf); c->buflen = 0; }
+    }
+}
+
+static void sha256_final(sha256_ctx *c, unsigned char out[32]) {
+    uint64_t bits = c->bits;               /* length before padding */
+    c->buf[c->buflen++] = 0x80;
+    if (c->buflen > 56) {
+        memset(c->buf + c->buflen, 0, 64 - c->buflen);
+        sha256_block(c->h, c->buf);
+        c->buflen = 0;
+    }
+    memset(c->buf + c->buflen, 0, 56 - c->buflen);
+    for (int i = 0; i < 8; i++)
+        c->buf[56 + i] = (unsigned char)(bits >> (56 - 8 * i));
+    sha256_block(c->h, c->buf);
+    for (int i = 0; i < 8; i++) {
+        out[4*i]   = (unsigned char)(c->h[i] >> 24);
+        out[4*i+1] = (unsigned char)(c->h[i] >> 16);
+        out[4*i+2] = (unsigned char)(c->h[i] >> 8);
+        out[4*i+3] = (unsigned char)(c->h[i]);
+    }
+}
+
+static void sha256_hex(const unsigned char d[32], char out[65]) {
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        out[2*i]   = hex[d[i] >> 4];
+        out[2*i+1] = hex[d[i] & 0xF];
+    }
+    out[64] = 0;
+}
+
+/* hash a file in chunks (cache entries are ~10s of MB); 0 = failure */
+static int sha256_file(const char *path, char out[65]) {
+    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    sha256_ctx c;
+    sha256_init(&c);
+    unsigned char buf[16 * 1024];
+    DWORD got;
+    int ok = 1;
+    for (;;) {
+        if (!ReadFile(h, buf, sizeof buf, &got, NULL)) { ok = 0; break; }
+        if (got == 0) break;
+        sha256_update(&c, buf, got);
+    }
+    CloseHandle(h);
+    if (!ok) return 0;
+    unsigned char d[32];
+    sha256_final(&c, d);
+    sha256_hex(d, out);
+    return 1;
+}
+
+static void sidecar_path(const char *exe, char *out, size_t cap) {
+    snprintf(out, cap, "%s.sha256", exe);
+}
+
+/* read the "<64 hex>\n" sidecar; 0 = missing/malformed */
+static int read_sidecar(const char *exe, char out[65]) {
+    char path[2 * MAX_PATH + 64];
+    sidecar_path(exe, path, sizeof path);
+    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    char buf[80];
+    DWORD got = 0;
+    BOOL r = ReadFile(h, buf, sizeof buf - 1, &got, NULL);
+    CloseHandle(h);
+    if (!r) return 0;
+    buf[got] = 0;
+    for (int i = 0; i < 64; i++) {
+        char ch = buf[i];
+        if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')))
+            return 0;
+        out[i] = ch;
+    }
+    out[64] = 0;
+    return 1;
+}
+
+/* best-effort sidecar write; a missing sidecar just costs one re-extract */
+static void write_sidecar(const char *exe) {
+    char path[2 * MAX_PATH + 64];
+    sidecar_path(exe, path, sizeof path);
+    sha256_ctx c;
+    sha256_init(&c);
+    sha256_update(&c, g_payload, g_payload_len);
+    unsigned char d[32];
+    sha256_final(&c, d);
+    char hex[65];
+    sha256_hex(d, hex);
+    HANDLE h = CreateFileA(path, GENERIC_WRITE, 0, NULL,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return;
+    DWORD n;
+    WriteFile(h, hex, 64, &n, NULL);
+    WriteFile(h, "\n", 1, &n, NULL);
+    CloseHandle(h);
+}
+
 /* write the flat buffer into the cache: <key>.tmp + MoveFileEx, so a crash
  * mid-write never leaves a runnable-looking half payload */
 static void write_cache_exe(const char *keyname) {
@@ -279,37 +460,46 @@ static void write_cache_exe(const char *keyname) {
     if (total != g_payload_len) die("zpe: short write\n");
     if (!MoveFileExA(g_fallback_tmp, g_child, MOVEFILE_REPLACE_EXISTING))
         lstrcpyA(g_child, g_fallback_tmp); /* volatile: launched, never cached */
+    else
+        write_sidecar(g_child);            /* integrity sidecar (M-33) */
     if (g_log) {
-        char msg[MAX_PATH + 16];
-        wsprintfA(msg, "payload written %s\n", g_child);
+        char msg[2 * MAX_PATH + 64];
+        snprintf(msg, sizeof msg, "payload written %s\n", g_child);
         phase(msg);
     }
 }
 
+/* case-insensitive ".tmp" suffix match (staging-file sweep) */
+static int tmp_suffix(const char *name) {
+    size_t n = lstrlenA(name);
+    return n >= 4 && lstrcmpiA(name + n - 4, ".tmp") == 0;
+}
+
 /* keep the cache at one generation: drop entries other than keyname, and
- * sweep crash-leftover staging files (*.tmp) from the current generation */
+ * sweep crash-leftover staging files (*.tmp, any case) from the current
+ * generation */
 static void cache_evict_others(const char *keyname) {
-    char srch[MAX_PATH], path[MAX_PATH], inner[MAX_PATH];
-    wsprintfA(srch, "%s\\*", g_cache_dir);
+    char srch[2 * MAX_PATH + 64], path[2 * MAX_PATH + 64], inner[2 * MAX_PATH + 64];
+    snprintf(srch, sizeof srch, "%s\\*", g_cache_dir);
     WIN32_FIND_DATAA fd;
     HANDLE f = FindFirstFileA(srch, &fd);
     if (f == INVALID_HANDLE_VALUE) return;
     do {
         if (!lstrcmpiA(fd.cFileName, ".") || !lstrcmpiA(fd.cFileName, "..")) continue;
-        wsprintfA(path, "%s\\%s", g_cache_dir, fd.cFileName);
+        snprintf(path, sizeof path, "%s\\%s", g_cache_dir, fd.cFileName);
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
             int keep = lstrcmpiA(fd.cFileName, keyname) == 0;
             /* wipe the generation's files (everything when evicting, only
              * *.tmp when it is the live generation), then remove the
              * directory (RemoveDirectory may fail while an old gen runs) */
-            wsprintfA(srch, "%s\\*", path);
+            snprintf(srch, sizeof srch, "%s\\*", path);
             WIN32_FIND_DATAA fd2;
             HANDLE f2 = FindFirstFileA(srch, &fd2);
             if (f2 != INVALID_HANDLE_VALUE) {
                 do {
                     if (fd2.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-                    if (keep && !strstr(fd2.cFileName, ".tmp")) continue;
-                    wsprintfA(inner, "%s\\%s", path, fd2.cFileName);
+                    if (keep && !tmp_suffix(fd2.cFileName)) continue;
+                    snprintf(inner, sizeof inner, "%s\\%s", path, fd2.cFileName);
                     DeleteFileA(inner);
                 } while (FindNextFileA(f2, &fd2));
                 FindClose(f2);
@@ -402,8 +592,16 @@ int main(void) {
     uint64_t nframes, payload_off;
     memcpy(&nframes, tail + tail_len - 24, 8);
     memcpy(&payload_off, tail + tail_len - 16, 8);
-    if (nframes == 0 || nframes > 4096 || payload_off + 24 + nframes * 24 > self_size)
-        die("zpe: bad frame count\n");
+    /* non-wrapping validation (audit CR-5): self_size >= 64 is proven above
+     * and nframes <= 4096 keeps 24 + nframes*24 from wrapping, so proving
+     * the table fits FIRST makes every later subtraction (frames_end,
+     * frames_end - src in decompress_payload) provably in range. The old
+     * single expression "payload_off + 24 + nframes*24 > self_size" wrapped
+     * on hostile payload_off values and let garbage through to the decoder. */
+    if (nframes == 0 || nframes > 4096) die("zpe: bad frame count\n");
+    if (self_size < 24 + nframes * 24) die("zpe: bad frame count\n");
+    uint64_t frames_end = self_size - 24 - nframes * 24;   /* table start */
+    if (payload_off > frames_end) die("zpe: bad payload offset\n");
 
     /* expected payload size + per-frame dest/uncomp sanity, straight from the
      * tail copy of the table — also lets the cache-hit path detect a torn or
@@ -457,9 +655,23 @@ int main(void) {
         WIN32_FILE_ATTRIBUTE_DATA fa;
         if (GetFileAttributesExA(entry, GetFileExInfoStandard, &fa) &&
             ((uint64_t)fa.nFileSizeHigh << 32 | fa.nFileSizeLow) == expect_len) {
-            lstrcpyA(g_child, entry);
-            phase("cache hit\n");
-            have_cached = 1;
+            /* size is necessary but not sufficient (audit M-33): re-hash the
+             * cached bytes and compare against the sidecar stored on first
+             * write; mismatch (or a pre-sidecar cache generation) deletes
+             * the entry and falls through to a full re-extract */
+            char want[65], got[65];
+            if (read_sidecar(entry, want) && sha256_file(entry, got) &&
+                lstrcmpA(want, got) == 0) {
+                lstrcpyA(g_child, entry);
+                phase("cache hit\n");
+                have_cached = 1;
+            } else {
+                char sc[2 * MAX_PATH + 64];
+                sidecar_path(entry, sc, sizeof sc);
+                DeleteFileA(entry);
+                DeleteFileA(sc);
+                phase("cache entry failed integrity check\n");
+            }
         } else {
             phase("cache entry wrong size\n");  /* torn entry: re-extract */
         }
@@ -481,7 +693,7 @@ int main(void) {
             /* legacy temp path */
             char dir[MAX_PATH]; UINT n = GetTempPathA(MAX_PATH, dir);
             if (n == 0 || n >= MAX_PATH - 48) die("zpe: GetTempPath failed\n");
-            wsprintfA(g_child, "%szpe-%lu.exe", dir, (unsigned long)GetCurrentProcessId());
+            snprintf(g_child, MAX_PATH, "%szpe-%lu.exe", dir, (unsigned long)GetCurrentProcessId());
             HANDLE f2 = CreateFileA(g_child, GENERIC_WRITE, 0, NULL,
                                     CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
             if (f2 == INVALID_HANDLE_VALUE) die("zpe: CreateFile(temp) failed\n");
@@ -491,8 +703,8 @@ int main(void) {
             CloseHandle(f2);
             if (total != g_payload_len) die("zpe: short write\n");
             if (g_log) {
-                char msg[MAX_PATH + 16];
-                wsprintfA(msg, "payload written %s\n", g_child);
+                char msg[2 * MAX_PATH + 64];
+                snprintf(msg, sizeof msg, "payload written %s\n", g_child);
                 phase(msg);
             }
         }

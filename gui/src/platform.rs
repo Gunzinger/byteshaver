@@ -78,7 +78,7 @@ fn reveal_linux(path: &Path) -> Result<(), String> {
                 match child.try_wait() {
                     Ok(Some(status)) => {
                         if !status.success()
-                            && let Err(error) = Command::new("xdg-open").arg(&parent).spawn()
+                            && let Err(error) = spawn_detached("xdg-open", &[parent])
                         {
                             eprintln!("xdg-open reveal fallback failed: {error}");
                         }
@@ -87,7 +87,13 @@ fn reveal_linux(path: &Path) -> Result<(), String> {
                     Ok(None) if std::time::Instant::now() < deadline => {
                         std::thread::sleep(WATCH_POLL);
                     }
-                    Ok(None) | Err(_) => return,
+                    // still running past the window (or a polling hiccup):
+                    // count as success — never double-open — but block
+                    // until it exits so the child is reaped (M-24)
+                    Ok(None) | Err(_) => {
+                        let _ = child.wait();
+                        return;
+                    }
                 }
             }
         })
@@ -248,14 +254,23 @@ pub(crate) fn reveal_argv(path: &Path) -> (String, Vec<String>) {
 }
 
 /// Spawns `program args` detached from the GUI process; only the spawn
-/// itself is waited for (the child outlives the row click). Errors
+/// itself is synchronous (the child outlives the row click). Errors
 /// (missing helper binary, …) become the caller's tooltip string.
+///
+/// The child is reaped by a tiny watcher thread: dropping a [`std::
+/// process::Child`] never waits, so without this every open/reveal
+/// click would leave a zombie for the app's lifetime on Unix (M-24).
 fn spawn_detached(program: &str, args: &[String]) -> Result<(), String> {
-    Command::new(program)
+    let mut child = Command::new(program)
         .args(args)
         .spawn()
-        .map(|_child| ())
-        .map_err(|error| format!("{} could not be launched: {error}", program))
+        .map_err(|error| format!("{} could not be launched: {error}", program))?;
+    let _ = std::thread::Builder::new()
+        .name("byteshaver-child-reap".to_string())
+        .spawn(move || {
+            let _ = child.wait();
+        });
+    Ok(())
 }
 
 /// Percent-encoded `file://` URI of an absolute path (RFC 3986 unreserved
@@ -316,7 +331,10 @@ mod tests {
         // the extended-length prefix canonicalize() adds defeats /select,
         assert_eq!(select(r"\\?\C:\x\a.png"), r"C:\x\a.png");
         // …and its UNC form maps back onto a share path
-        assert_eq!(select(r"\\?\UNC\server\share\a.png"), r"\\server\share\a.png");
+        assert_eq!(
+            select(r"\\?\UNC\server\share\a.png"),
+            r"\\server\share\a.png"
+        );
     }
 
     #[cfg(unix)]

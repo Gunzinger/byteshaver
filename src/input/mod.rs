@@ -5,14 +5,19 @@
 //! animated GIF inputs are decoded into [`AnimationData`].
 
 pub mod animation;
-#[cfg(all(feature = "dec-heif", any(not(target_os = "windows"), target_abi = "llvm")))]
+#[cfg(all(
+    feature = "dec-heif",
+    any(not(target_os = "windows"), target_abi = "llvm")
+))]
 mod heif;
 /// JPEG XL source decoding via jxl-oxide (WS2).
 #[cfg(feature = "jxl")]
 pub mod jxl;
 
+use std::any::Any;
 use std::fs;
 use std::io::BufReader;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 
 use image::metadata::Orientation;
@@ -131,13 +136,31 @@ pub fn load_source_with_index(
     }
 
     // HEIC/HEIF/HIF/AVIF containers are decoded by libheif, not the image
-    // crate; without the `dec-heif` feature they report a per-file error and
-    // the batch continues
-    #[cfg(all(feature = "dec-heif", any(not(target_os = "windows"), target_abi = "llvm")))]
+    // crate; without the `dec-heif` feature (or on non-llvm Windows) the
+    // stub below reports a per-file error and the batch continues. The two
+    // `load_heif_source` definitions are exact cfg complements, so this
+    // routing must stay unconditional — gating it on `dec-heif` lets
+    // `.heic` files fall through to the generic image-crate path.
     if ImageFormat::from(path) == ImageFormat::Heif {
         return load_heif_source(path, image_index);
     }
 
+    // the image-crate decoders are third-party panic surfaces on hostile
+    // input: contain a decode panic as a per-file error instead of losing
+    // the whole batch (audit M-20, mirroring the HEIF module)
+    let result = panic::catch_unwind(AssertUnwindSafe(|| load_source_image_crate(path)));
+    match result {
+        Ok(inner) => inner,
+        Err(payload) => Err(Error::from_string(format!(
+            "image decoding panicked: {}",
+            panic_message(&payload)
+        ))),
+    }
+}
+
+/// Generic image-crate decode path (still formats plus the GIF/WebP/APNG
+/// animation containers); invoked inside `catch_unwind`.
+fn load_source_image_crate(path: &Path) -> Result<SourceImage, Error> {
     let reader = open_reader(path)?;
     // detect the format once from the file header; keep the reader pinned to it
     let reader = match reader.with_guessed_format() {
@@ -191,7 +214,10 @@ pub fn load_source_with_index(
 }
 
 /// Decodes a HEIC/HEIF/AVIF container via libheif (feature `dec-heif`).
-#[cfg(all(feature = "dec-heif", any(not(target_os = "windows"), target_abi = "llvm")))]
+#[cfg(all(
+    feature = "dec-heif",
+    any(not(target_os = "windows"), target_abi = "llvm")
+))]
 fn load_heif_source(path: &Path, image_index: Option<usize>) -> Result<SourceImage, Error> {
     heif::load_source(path, image_index)
 }
@@ -199,7 +225,10 @@ fn load_heif_source(path: &Path, image_index: Option<usize>) -> Result<SourceIma
 /// Counts the decodable master images of a HEIC/HEIF container without
 /// decoding pixels (feature `dec-heif`); used by the pipeline's
 /// `--heif-image-policy all` expansion.
-#[cfg(all(feature = "dec-heif", any(not(target_os = "windows"), target_abi = "llvm")))]
+#[cfg(all(
+    feature = "dec-heif",
+    any(not(target_os = "windows"), target_abi = "llvm")
+))]
 pub(crate) fn heif_probe(path: &Path) -> Result<usize, Error> {
     heif::probe(path)
 }
@@ -207,7 +236,10 @@ pub(crate) fn heif_probe(path: &Path) -> Result<usize, Error> {
 /// Feature-off stub: HEIC/HEIF/AVIF input needs the native libheif, so these
 /// files fail per-file (surfacing as `Outcome::Error` in the pipeline) while
 /// the rest of the batch keeps converting.
-#[cfg(any(not(feature = "dec-heif"), all(target_os = "windows", not(target_abi = "llvm"))))]
+#[cfg(any(
+    not(feature = "dec-heif"),
+    all(target_os = "windows", not(target_abi = "llvm"))
+))]
 fn load_heif_source(_path: &Path, _image_index: Option<usize>) -> Result<SourceImage, Error> {
     // io::Error::other keeps the displayed message clean (no error-type prefix)
     Err(Error::new(std::io::Error::other(
@@ -355,10 +387,26 @@ fn load_source_animated_if_container_is(
     }))
 }
 
+/// Decompression-bomb protection (audit CR-3): per-axis pixel cap and a
+/// 2 GiB decoder allocation budget. A legitimate 100 MP RGBA photo needs
+/// ~400 MB and still passes; a hostile header declaring ~40 GB of pixels
+/// fails as a normal per-file decoder error instead of aborting the
+/// process on the allocation.
+const MAX_IMAGE_DIMENSION: u32 = 100_000;
+const MAX_DECODER_ALLOC_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+fn decoder_limits() -> Limits {
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
+    limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
+    limits.max_alloc = Some(MAX_DECODER_ALLOC_BYTES);
+    limits
+}
+
 fn open_reader(path: &Path) -> Result<ImageReader<BufReader<fs::File>>, Error> {
     let mut reader = ImageReader::new(BufReader::new(fs::File::open(path)?));
-    // disable image-rs decoding limits
-    reader.no_limits();
+    // decode with real resource limits (bomb protection, audit CR-3)
+    reader.limits(decoder_limits());
     Ok(reader)
 }
 
@@ -380,6 +428,17 @@ fn collect_metadata(decoder: &mut impl ImageDecoder) -> Result<ImageMetadata, Er
         xmp: None,
         exif_applied_orientation,
     })
+}
+
+/// Best-effort extraction of a panic message (mirrors the HEIF module).
+fn panic_message(payload: &Box<dyn Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic".to_string()
+    }
 }
 
 /// Retry decoding with the jpeg-decoder crate (progressive jpegs) and
@@ -413,8 +472,8 @@ fn fallback_retry_read_image(input_path: &Path, input_error: Error) -> Result<Dy
     }
 
     let mut reader = ImageReader::open(input_path)?;
-    // disable image-rs decoding limits
-    reader.limits(Limits::no_limits());
+    // decode with real resource limits (bomb protection, audit CR-3)
+    reader.limits(decoder_limits());
     match ext.as_str() {
         "pjpeg" | "jpg" | "jpeg" => reader.set_format(ImageCrateFormat::Jpeg),
         "x-png" | "png" => reader.set_format(ImageCrateFormat::Png),

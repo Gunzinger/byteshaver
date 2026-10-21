@@ -388,9 +388,7 @@ impl From<SettingsDe> for Settings {
             thumbnails: de.thumbnails.unwrap_or_default(),
             quality_metric: de.quality_metric.unwrap_or_default(),
             metric_engine: de.metric_engine.unwrap_or_default(),
-            metric_max_edge: de
-                .metric_max_edge
-                .unwrap_or_else(default_metric_max_edge),
+            metric_max_edge: de.metric_max_edge.unwrap_or_else(default_metric_max_edge),
         }
     }
 }
@@ -451,7 +449,9 @@ impl Settings {
     }
 
     /// Writes the settings to disk (creating the directory when needed);
-    /// failures are reported on stderr but never fatal.
+    /// atomic (tmp + rename — a crash or full disk mid-write can never
+    /// leave a torn settings file behind, M-27); failures are reported
+    /// on stderr but never fatal.
     pub fn save(&self) {
         let Some(path) = Self::path() else {
             return;
@@ -460,10 +460,9 @@ impl Settings {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(
-                &path,
-                serde_json::to_string_pretty(self).unwrap_or_default(),
-            )?;
+            let tmp = path.with_extension("json.tmp");
+            std::fs::write(&tmp, serde_json::to_string_pretty(self).unwrap_or_default())?;
+            std::fs::rename(&tmp, &path)?;
             Ok(())
         };
         if let Err(err) = write() {
@@ -546,11 +545,11 @@ mod tests {
         assert_eq!(parsed.policies.output_dir, "/tmp/legacy-out");
         assert_eq!(parsed.policies.exif.mode, ExifMode::FilterExcept);
         assert_eq!(parsed.policies.exif.except_tags, "gps");
-        assert_eq!(parsed.policies.collision, CollisionChoice::OverwriteIfSmaller);
         assert_eq!(
-            parsed.policies.animated_input,
-            AnimatedInputPolicy::Error
+            parsed.policies.collision,
+            CollisionChoice::OverwriteIfSmaller
         );
+        assert_eq!(parsed.policies.animated_input, AnimatedInputPolicy::Error);
         assert_eq!(parsed.policies.heif_image_policy, HeifImagePolicy::All);
         assert!(parsed.policies.discard_if_larger_than_input);
         assert!(parsed.policies.discard_input_alpha_channel);
@@ -739,10 +738,7 @@ mod tests {
         assert_eq!(policies.output_dir, "");
         assert!(!policies.has_output_directory());
         assert_eq!(policies.collision, CollisionChoice::KeepExisting);
-        assert_eq!(
-            policies.animated_input,
-            AnimatedInputPolicy::FirstFrame
-        );
+        assert_eq!(policies.animated_input, AnimatedInputPolicy::FirstFrame);
         assert_eq!(policies.heif_image_policy, HeifImagePolicy::Primary);
         assert!(!policies.discard_if_larger_than_input);
         assert!(!policies.discard_input_alpha_channel);
@@ -798,7 +794,8 @@ mod tests {
     }
 
     #[test]
-    fn collapse_tree_states_default_open_when_absent_and_round_trip() {        let mut settings = Settings::default();
+    fn collapse_tree_states_default_open_when_absent_and_round_trip() {
+        let mut settings = Settings::default();
         assert!(settings.options_tree_open);
         assert!(settings.policies_tree_open);
         settings.options_tree_open = false;
@@ -870,7 +867,11 @@ mod tests {
     #[test]
     fn metric_settings_default_to_manual_dssim_4096_and_round_trip() {
         let settings = Settings::default();
-        assert_eq!(settings.quality_metric, crate::metrics::MetricMode::Manual, "decision D2");
+        assert_eq!(
+            settings.quality_metric,
+            crate::metrics::MetricMode::Manual,
+            "decision D2"
+        );
         assert_eq!(
             settings.metric_engine,
             crate::metrics::MetricEngineChoice::Dssim,
@@ -904,15 +905,17 @@ mod tests {
             serde_json::from_value(value).expect("deserialize without the new fields");
         assert_eq!(parsed, Settings::default());
         assert_eq!(parsed.quality_metric, crate::metrics::MetricMode::Manual);
-        assert_eq!(parsed.metric_engine, crate::metrics::MetricEngineChoice::Dssim);
+        assert_eq!(
+            parsed.metric_engine,
+            crate::metrics::MetricEngineChoice::Dssim
+        );
         assert_eq!(parsed.metric_max_edge, 4096);
     }
 
     #[test]
     fn hand_edited_metric_edge_is_clamped() {
         // a huge value in the file stays stored but is clamped at use
-        let mut value =
-            serde_json::to_value(Settings::default()).expect("serialize defaults");
+        let mut value = serde_json::to_value(Settings::default()).expect("serialize defaults");
         value["metric_max_edge"] = serde_json::json!(1_000_000);
         let parsed: Settings = serde_json::from_value(value).expect("deserialize");
         assert_eq!(parsed.metric_max_edge, 1_000_000, "stored verbatim");

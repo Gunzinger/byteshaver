@@ -93,12 +93,24 @@ pub fn resolve(_policy: &policy::ExifPolicy, _meta: &ImageMetadata) -> Option<Ve
     None
 }
 
+/// Cap for whole-file metadata reads (audit M-19): larger inputs skip the
+/// EXIF fallback/summary scans instead of loading the entire file into
+/// memory (a 10 GB TIFF must not become a 10 GB heap buffer).
+const MAX_METADATA_READ_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Cap for promoting the whole TIFF file bytes to the EXIF payload when
+/// re-serialization fails (audit M-22): anything larger is dropped with a
+/// warning instead of embedding the whole input as the "EXIF payload".
+const MAX_TIFF_EXIF_FALLBACK_BYTES: usize = 64 * 1024;
+
 /// Extraction fallback for formats whose decoder does not surface the raw
 /// EXIF payload:
 /// - WebP: RIFF scan for the `EXIF` chunk (decode-side fallback),
 /// - TIFF: container scan via `kamadak-exif`, re-serialized into a compact
-///   raw TIFF payload (falling back to the whole file bytes, whose offsets
-///   stay valid, if the writer refuses).
+///   raw TIFF payload (falling back to the whole file bytes — capped at
+///   64 KiB — whose offsets stay valid, if the writer refuses).
+///
+/// Files larger than 512 MiB skip the scan entirely (audit M-19).
 ///
 /// TODO(WS1 HEIF/HEIC): extraction is wired through
 /// `handle.metadata_block_ids(b"Exif")` + `handle.metadata(id)` once the
@@ -116,6 +128,20 @@ pub fn extract_exif_fallback(
     source_format: &crate::format::ImageFormat,
 ) -> Option<Vec<u8>> {
     use crate::format::ImageFormat;
+    // bound the whole-file read (audit M-19)
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.len() <= MAX_METADATA_READ_BYTES => {}
+        Ok(meta) => {
+            eprintln!(
+                "Warning: skipping the EXIF fallback scan of {} ({} bytes exceeds the 512 MiB \
+                 metadata read cap)",
+                path.display(),
+                meta.len()
+            );
+            return None;
+        }
+        Err(_) => return None,
+    }
     let bytes = std::fs::read(path).ok()?;
     match source_format {
         ImageFormat::Webp => riff::extract_exif_payload(&bytes),
@@ -123,7 +149,17 @@ pub fn extract_exif_fallback(
             let parsed = exif::parse_with_container(&bytes)?;
             match exif::serialize_all(&parsed) {
                 Ok(payload) if !payload.is_empty() => Some(payload),
-                _ => normalize_exif_payload(bytes),
+                // whole-file fallback, capped at 64 KiB (audit M-22)
+                _ if bytes.len() <= MAX_TIFF_EXIF_FALLBACK_BYTES => normalize_exif_payload(bytes),
+                _ => {
+                    eprintln!(
+                        "Warning: dropping the EXIF payload of {} (re-serialization failed and \
+                         the {} byte file exceeds the 64 KiB fallback embed cap)",
+                        path.display(),
+                        bytes.len()
+                    );
+                    None
+                }
             }
         }
         _ => None,

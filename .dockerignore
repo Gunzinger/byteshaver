@@ -10,3 +10,13 @@ heif-deps/
 current_release/
 to_pack/
 .git/
+# local build/pack scratch trees and secrets (audit M-41 LOW): never let
+# these leak into the image context
+packer-out/
+selftest-out/
+zstd-1.5.7/
+heif-deps-win/
+target-fb-b/
+env-win.sh
+.env
+*.env

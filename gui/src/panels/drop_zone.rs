@@ -10,6 +10,10 @@
 //! immediately after a drop.
 
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::path::PathBuf;
+use std::pin::Pin;
+use std::task::{Context, Poll, Waker};
 
 use byteshaver::format::ImageFormat;
 
@@ -127,12 +131,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             }
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                if ui.button("Add files…").clicked() {
-                    browse_files(app);
-                }
-                if ui.button("Add folder…").clicked() {
-                    browse_folder(app);
-                }
+                // one native dialog at a time (a second click while one is
+                // open would silently cancel the first, M-25)
+                ui.add_enabled_ui(app.file_dialog.is_none(), |ui| {
+                    if ui.button("Add files…").clicked() {
+                        app.file_dialog = Some(PendingFileDialog::pick_files());
+                    }
+                    if ui.button("Add folder…").clicked() {
+                        app.file_dialog = Some(PendingFileDialog::pick_folder());
+                    }
+                });
                 ui.add_enabled_ui(!app.queue.is_empty() && app.running.is_none(), |ui| {
                     if ui.button("Clear queue").clicked() {
                         app.queue.clear();
@@ -144,19 +152,72 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     ui.add_space(4.0);
 }
 
-/// Opens the native multi-file picker (extension filter mirrors the core's
-/// `ImageFormat::from_extension` table) and enqueues the selection.
-fn browse_files(app: &mut App) {
-    let dialog = rfd::FileDialog::new().add_filter("Images", INPUT_EXTENSIONS);
-    if let Some(paths) = dialog.pick_files() {
-        app.queue.add_paths(paths);
+/// A pending native file/folder picker (M-25): `rfd::AsyncFileDialog`
+/// runs the portal round-trip on its own thread; the stored future is
+/// polled (noop waker — rfd 0.17 exposes a `Future`, not a pollable
+/// `Promise`) once per frame from [`poll_dialog`], so opening a dialog
+/// never blocks painting or the job-progress UI.
+pub struct PendingFileDialog {
+    future: Pin<Box<dyn Future<Output = Option<Vec<PathBuf>>> + Send>>,
+}
+
+impl PendingFileDialog {
+    /// Starts the multi-file picker (extension filter mirrors the core's
+    /// `ImageFormat::from_extension` table).
+    #[must_use]
+    pub fn pick_files() -> Self {
+        let dialog = rfd::AsyncFileDialog::new().add_filter("Images", INPUT_EXTENSIONS);
+        PendingFileDialog {
+            future: Box::pin(async move {
+                dialog.pick_files().await.map(|handles| {
+                    handles
+                        .into_iter()
+                        .map(|handle| handle.path().to_path_buf())
+                        .collect()
+                })
+            }),
+        }
+    }
+
+    /// Starts the folder picker (folders are enqueued as-is; the core
+    /// expands them recursively with the same format filter).
+    #[must_use]
+    pub fn pick_folder() -> Self {
+        let dialog = rfd::AsyncFileDialog::new();
+        PendingFileDialog {
+            future: Box::pin(async move {
+                dialog
+                    .pick_folder()
+                    .await
+                    .map(|handle| vec![handle.path().to_path_buf()])
+            }),
+        }
+    }
+
+    /// One non-blocking poll: `Some(result)` once the dialog closed
+    /// (its inner `None` means canceled), `None` while it is still open.
+    fn poll(&mut self) -> Option<Option<Vec<PathBuf>>> {
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        match self.future.as_mut().poll(&mut cx) {
+            Poll::Ready(paths) => Some(paths),
+            Poll::Pending => None,
+        }
     }
 }
 
-/// Opens the native folder picker; folders are enqueued as-is (the core
-/// expands them recursively with the same supported-format filter).
-fn browse_folder(app: &mut App) {
-    if let Some(path) = rfd::FileDialog::new().pick_folder() {
-        app.queue.add_paths(vec![path]);
+/// Resolves the pending native dialog (if any) — called once per frame
+/// from the app's `logic` pass. A completed selection routes through the
+/// same [`crate::queue::Queue::add_paths`] logic as drag-and-drop.
+pub fn poll_dialog(app: &mut App) {
+    let Some(mut dialog) = app.file_dialog.take() else {
+        return;
+    };
+    match dialog.poll() {
+        Some(Some(paths)) => {
+            app.queue.add_paths(paths);
+        }
+        Some(None) => {}                        // canceled
+        None => app.file_dialog = Some(dialog), // still open
     }
 }

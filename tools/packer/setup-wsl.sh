@@ -15,11 +15,25 @@ rustup target add x86_64-pc-windows-gnullvm
 
 echo "==> [3/5] llvm-mingw toolchain"
 LLVM_MINGW_VERSION=20260922
+# checksum for the pinned toolchain above; override or empty it via the
+# environment (empty = download unverified, with a loud warning)
+: "${LLVM_MINGW_SHA256:=bb7bb7654b33d5aa8712acb837c963b2e0c56352560c76105270a3268c665c21}"
+LLVM_MINGW_URL="https://github.com/mstorsjo/llvm-mingw/releases/download/$LLVM_MINGW_VERSION/llvm-mingw-$LLVM_MINGW_VERSION-ucrt-ubuntu-22.04-x86_64.tar.xz"
 TC="$HOME/.tools/llvm-mingw-$LLVM_MINGW_VERSION"
 if [ ! -x "$TC/bin/x86_64-w64-mingw32-clang" ]; then
     mkdir -p "$HOME/.tools"
-    curl -sL "https://github.com/mstorsjo/llvm-mingw/releases/download/$LLVM_MINGW_VERSION/llvm-mingw-$LLVM_MINGW_VERSION-ucrt-ubuntu-22.04-x86_64.tar.xz" |
-        tar -xJ -C "$HOME/.tools"
+    curl -sL --fail -o "$HOME/.tools/llvm-mingw.tar.xz" "$LLVM_MINGW_URL"
+    if [ -n "$LLVM_MINGW_SHA256" ]; then
+        echo "==> verifying llvm-mingw checksum"
+        echo "$LLVM_MINGW_SHA256  $HOME/.tools/llvm-mingw.tar.xz" | sha256sum -c - || {
+            echo "ERROR: llvm-mingw checksum mismatch (stale download or changed upstream — delete the file and retry, or update LLVM_MINGW_SHA256)" >&2
+            exit 1
+        }
+    else
+        echo "WARNING: llvm-mingw downloaded WITHOUT checksum verification (LLVM_MINGW_SHA256 is empty)" >&2
+    fi
+    tar -xJ -C "$HOME/.tools" -f "$HOME/.tools/llvm-mingw.tar.xz"
+    rm -f "$HOME/.tools/llvm-mingw.tar.xz"
     rm -rf "$TC"
     mv "$HOME/.tools/llvm-mingw-$LLVM_MINGW_VERSION-ucrt-ubuntu-22.04-x86_64" "$TC"
     # self-contained exes: drop the dynamic libc++/libunwind import libs so

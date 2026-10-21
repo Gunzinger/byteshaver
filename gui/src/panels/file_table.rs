@@ -46,6 +46,43 @@ const THUMB_PX: f32 = 48.0;
 /// Header row height.
 const HEADER_HEIGHT: f32 = 24.0;
 
+/// Cached sorted row permutation of the queue table (M-30): rebuilt only
+/// when the queue mutated (its version counter) or the sort key/length
+/// changed — not every frame.
+#[derive(Clone, Debug)]
+pub struct SortCache {
+    /// Queue version the permutation was built for.
+    version: u64,
+    /// Sort key it was built with.
+    sort: SortKey,
+    /// Row count it was built for (defensive length check).
+    len: usize,
+    /// `order[view_row] = queue_index`.
+    order: Vec<usize>,
+}
+
+/// The sorted view permutation, via the app's cache (M-30): returns a
+/// clone — the render closures borrow the app while reading the order,
+/// and one `usize` per row beats a full allocating re-sort.
+fn sorted_order(app: &mut App, sort: SortKey) -> Vec<usize> {
+    let stale = app.sort_cache.as_ref().is_none_or(|cache| {
+        cache.version != app.queue.version() || cache.sort != sort || cache.len != app.queue.len()
+    });
+    if stale {
+        let base: Vec<usize> = (0..app.queue.len()).collect();
+        let order = table::sort_indices(app.queue.items(), sort, &base);
+        app.sort_cache = Some(SortCache {
+            version: app.queue.version(),
+            sort,
+            len: app.queue.len(),
+            order,
+        });
+    }
+    app.sort_cache
+        .as_ref()
+        .map_or_else(Vec::new, |cache| cache.order.clone())
+}
+
 /// Thumbnail state of one visible row for this frame.
 enum ThumbCell<'a> {
     /// Decoded texture.
@@ -347,8 +384,7 @@ fn render_table(app: &mut App, ui: &mut egui::Ui, columns: &[Column]) {
     } else {
         THUMB_ROW_HEIGHT
     };
-    let base: Vec<usize> = (0..app.queue.len()).collect();
-    let order = table::sort_indices(app.queue.items(), sort, &base);
+    let order = sorted_order(app, sort);
     // pointer position of the frame (read once up front: the body closure
     // must not re-borrow the table's `Ui`)
     let pointer_y = ui

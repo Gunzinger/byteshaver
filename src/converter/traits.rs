@@ -2,6 +2,7 @@
 //! selector and the [`EncoderRegistry`] that materializes encoders.
 
 use image::DynamicImage;
+use std::io::Write;
 
 use crate::Error;
 use crate::config::EncoderConfig;
@@ -114,7 +115,8 @@ pub trait ImageEncoder: Send + Sync {
                 let first = animation.first_frame().ok_or_else(|| {
                     Error::from_string("Animation does not contain any frames".to_string())
                 })?;
-                println!(
+                let _ = writeln!(
+                    std::io::stderr(),
                     "Warning: {} cannot encode animated input; encoding the first frame only (use --animated-input error to reject such files)",
                     self.describe()
                 );

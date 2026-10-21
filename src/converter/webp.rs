@@ -1,8 +1,8 @@
 //! This module provides webp conversion via the webp crate
 
 use crate::Error;
-use crate::converter::DEPENDENCIES;
 use crate::format::ImageFormat;
+use image::ColorType;
 use image::DynamicImage;
 use webp::Encoder;
 
@@ -78,20 +78,11 @@ impl super::ImageEncoder for WebpEncoder {
 
 /// Provides encoder information
 fn encoder_info(lossless: bool, qualify: f32) -> String {
-    // we might have multiple versions of the package, use rfind to find the newest one
-    let mut webp_version = "";
-    match DEPENDENCIES.iter().rfind(|&&(name, _)| name == "webp") {
-        Some((_name, version)) => {
-            webp_version = version;
-        }
-        None => {
-            println!("Package 'webp' not found");
-        }
-    };
-
     format!(
         "Using \"webp\" ({}) with options (lossless: {}, qualify: {})",
-        webp_version, lossless, qualify
+        super::dependency_version("webp"),
+        lossless,
+        qualify
     )
 }
 
@@ -103,17 +94,20 @@ fn encode_webp(
     quality: f32,
     exif_payload: Option<&[u8]>,
 ) -> Result<Vec<u8>, Error> {
-    let converted_image: Option<DynamicImage> = match image {
-        DynamicImage::ImageLuma8(_) => Some(DynamicImage::ImageRgb8(image.to_rgb8())),
-        DynamicImage::ImageLumaA8(_) => Some(DynamicImage::ImageRgba8(image.to_rgba8())),
-        _ => None,
+    // M-14: the webp crate only accepts 8-bit RGB(A) buffers (its
+    // `Encoder::from_image` returns "Unimplemented" for everything else);
+    // luma and deep-pixel inputs are downconverted first, matching the
+    // other encoders instead of hard-failing.
+    let converted_image: Option<DynamicImage> = match image.color() {
+        ColorType::Rgb8 | ColorType::Rgba8 => None,
+        color if color.has_alpha() => Some(DynamicImage::ImageRgba8(image.to_rgba8())),
+        _ => Some(DynamicImage::ImageRgb8(image.to_rgb8())),
     };
 
     let encoder = if let Some(ref img) = converted_image {
-        // Use the converted image (Luma[A]8 paths are unimplemented in the webp lib :D
         Encoder::from_image(img).map_err(|e| {
             Error::from_string(format!(
-                "Failed to create webp encoder for luma input: {:?}",
+                "Failed to create webp encoder for converted input: {:?}",
                 e
             ))
         })?

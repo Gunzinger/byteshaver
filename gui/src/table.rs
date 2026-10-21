@@ -252,15 +252,46 @@ pub fn sort_indicator(sort: SortKey, column: Column) -> Option<&'static str> {
 /// `base_order` seeds the sort (the queue's own indices in display-first
 /// position); ties fall back to that base order (stable sort). Columns
 /// with missing values sort to the end.
+///
+/// Text-keyed columns (name, format, EXIF texts) precompute one key per
+/// row (M-30) — the old comparator allocated two fresh lowercase
+/// strings per comparison, ~n·log n allocations per frame.
 #[must_use]
 pub fn sort_indices(items: &[QueueItem], sort: SortKey, base_order: &[usize]) -> Vec<usize> {
     let Some(column) = sort.column() else {
         return base_order.to_vec();
     };
     let descending = matches!(sort, SortKey::Desc(_));
+    let text_keys: Vec<TextKey> = match column {
+        Column::Name => items
+            .iter()
+            .map(|item| TextKey::Text(name_of(item)))
+            .collect(),
+        Column::SourceFormat => items
+            .iter()
+            .map(|item| TextKey::Text(source_format_text(item)))
+            .collect(),
+        Column::ExifCamera => items
+            .iter()
+            .map(|item| exif_key(item, |summary| &summary.camera))
+            .collect(),
+        Column::ExifTaken => items
+            .iter()
+            .map(|item| exif_key(item, |summary| &summary.date_time_original))
+            .collect(),
+        _ => Vec::new(),
+    };
     let mut order = base_order.to_vec();
     order.sort_by(|&a, &b| {
-        let ordering = compare(&items[a], &items[b], column);
+        let ordering = match column {
+            Column::Name => text_keys[a]
+                .cmp(&text_keys[b])
+                .then_with(|| items[a].path.cmp(&items[b].path)),
+            Column::SourceFormat | Column::ExifCamera | Column::ExifTaken => {
+                text_keys[a].cmp(&text_keys[b])
+            }
+            _ => compare(&items[a], &items[b], column),
+        };
         if descending {
             ordering.reverse()
         } else {
@@ -268,6 +299,28 @@ pub fn sort_indices(items: &[QueueItem], sort: SortKey, base_order: &[usize]) ->
         }
     });
     order
+}
+
+/// A precomputed text sort key: `Missing` orders after every text
+/// (derived variant order), reproducing [`cmp_option`]'s missing-last
+/// semantics without per-comparison allocations (M-30).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum TextKey {
+    /// The row's (lowercased / sniffed) text.
+    Text(String),
+    /// No value on the row.
+    Missing,
+}
+
+/// Reads an `Option<String>` EXIF field into a [`TextKey`].
+fn exif_key(
+    item: &QueueItem,
+    field: impl FnOnce(&byteshaver::metadata::exif::ExifSummary) -> &Option<String>,
+) -> TextKey {
+    match exif_text(item, field) {
+        Some(text) => TextKey::Text(text),
+        None => TextKey::Missing,
+    }
 }
 
 /// Column comparison of two rows (missing values last, ties equal so the

@@ -157,13 +157,19 @@ impl ConversionConfig {
 ///
 /// The flag only exists in builds with the `dec-heif` feature; other builds
 /// always use the default (primary image only).
-#[cfg(all(feature = "dec-heif", any(not(target_os = "windows"), target_abi = "llvm")))]
+#[cfg(all(
+    feature = "dec-heif",
+    any(not(target_os = "windows"), target_abi = "llvm")
+))]
 fn heif_image_policy_from_args(args: &crate::cli::CliArgs) -> HeifImagePolicy {
     args.heif_image_policy.unwrap_or_default()
 }
 
 /// Feature-less fallback of [`heif_image_policy_from_args`].
-#[cfg(any(not(feature = "dec-heif"), all(target_os = "windows", not(target_abi = "llvm"))))]
+#[cfg(any(
+    not(feature = "dec-heif"),
+    all(target_os = "windows", not(target_abi = "llvm"))
+))]
 fn heif_image_policy_from_args(_args: &crate::cli::CliArgs) -> HeifImagePolicy {
     HeifImagePolicy::default()
 }
@@ -171,11 +177,13 @@ fn heif_image_policy_from_args(_args: &crate::cli::CliArgs) -> HeifImagePolicy {
 /// Resolves the EXIF policy from the CLI flags.
 ///
 /// `--exif-except` and `--exif-only` are mutually exclusive (also enforced
-/// by clap) and both require `--exif filter`.
+/// by clap) and both require `--exif filter`. Hand-constructed `CliArgs`
+/// bypassing clap are rejected the same way instead of panicking
+/// (`from_args` is a public API).
 fn exif_policy_from_args(args: &crate::cli::CliArgs) -> ExifPolicy {
     use crate::cli::ExifPolicyArg;
     if args.exif_except.is_some() && args.exif_only.is_some() {
-        unreachable!("clap enforces mutual exclusion");
+        exit_with_exif_error("--exif-except and --exif-only are mutually exclusive");
     }
     let selector_lists_used = args.exif_except.is_some() || args.exif_only.is_some();
     match args.exif {
@@ -254,10 +262,20 @@ impl EncoderConfig {
     #[must_use]
     pub fn from_args(command: &Command) -> Option<Self> {
         match command {
-            Command::Webp { lossless, quality } => Some(EncoderConfig::Webp(WebpOptions {
-                lossless: lossless.unwrap_or_default(),
-                quality: quality.unwrap_or(90.),
-            })),
+            Command::Webp { lossless, quality } => {
+                // defense in depth (CR-1/M-3): clap's range parser already
+                // rejects these for the CLI; this guards public-API callers
+                // constructing `CliArgs` by hand (NaN fails `contains`)
+                if let Some(quality) = quality
+                    && !(0.0..=100.0).contains(quality)
+                {
+                    config_error("--quality must be a finite number between 0 and 100");
+                }
+                Some(EncoderConfig::Webp(WebpOptions {
+                    lossless: lossless.unwrap_or_default(),
+                    quality: quality.unwrap_or(90.),
+                }))
+            }
             Command::WebpImage {} => Some(EncoderConfig::WebpImage),
             Command::Avif {
                 quality,
@@ -266,14 +284,35 @@ impl EncoderConfig {
                 color_model,
                 alpha_color_mode,
                 alpha_quality,
-            } => Some(EncoderConfig::Avif(AvifOptions {
-                quality: quality.unwrap_or(90.),
-                speed: speed.unwrap_or(3),
-                bit_depth: *bit_depth,
-                color_model: *color_model,
-                alpha_color_mode: *alpha_color_mode,
-                alpha_quality: alpha_quality.unwrap_or(90.),
-            })),
+            } => {
+                // defense in depth (CR-1): clap's range parsers already
+                // reject these for the CLI; this guards public-API callers
+                // constructing `CliArgs` by hand (ravif asserts on bad
+                // values, which would abort the whole batch)
+                if let Some(quality) = quality
+                    && !(1.0..=100.0).contains(quality)
+                {
+                    config_error("--quality must be a finite number between 1 and 100");
+                }
+                if let Some(alpha_quality) = alpha_quality
+                    && !(1.0..=100.0).contains(alpha_quality)
+                {
+                    config_error("--alpha-quality must be a finite number between 1 and 100");
+                }
+                if let Some(speed) = speed
+                    && !(1..=10).contains(speed)
+                {
+                    config_error("--speed must be between 1 and 10");
+                }
+                Some(EncoderConfig::Avif(AvifOptions {
+                    quality: quality.unwrap_or(90.),
+                    speed: speed.unwrap_or(3),
+                    bit_depth: *bit_depth,
+                    color_model: *color_model,
+                    alpha_color_mode: *alpha_color_mode,
+                    alpha_quality: alpha_quality.unwrap_or(90.),
+                }))
+            }
             Command::Png {
                 compression_type,
                 filter_type,
@@ -299,18 +338,18 @@ impl EncoderConfig {
                 if let Some(quality) = quality
                     && !(0.0..=100.0).contains(quality)
                 {
-                    jxl_config_error("--quality must be between 0 and 100");
+                    config_error("--quality must be between 0 and 100");
                 }
                 if let Some(distance) = distance
                     && !(0.0..=25.0).contains(distance)
                 {
-                    jxl_config_error("--distance must be between 0.0 and 25.0");
+                    config_error("--distance must be between 0.0 and 25.0");
                 }
                 let bit_depth = bit_depth.map(|depth| match depth {
                     8 => JxlBitDepthChoice::Eight,
                     16 => JxlBitDepthChoice::Sixteen,
                     other => {
-                        jxl_config_error(&format!("--bit-depth must be 8 or 16 (got {other})"));
+                        config_error(&format!("--bit-depth must be 8 or 16 (got {other})"));
                     }
                 });
                 let advanced = parse_jxl_settings(settings);
@@ -326,8 +365,6 @@ impl EncoderConfig {
                     bit_depth,
                     color_encoding: *color_encoding,
                     advanced,
-                    #[cfg(feature = "exif")]
-                    exif_policy: Default::default(),
                 }))
             }
             #[cfg(feature = "opt-oxipng")]
@@ -350,8 +387,6 @@ impl EncoderConfig {
                 interlace: interlace.unwrap_or_default(),
                 strip: strip.unwrap_or_default(),
                 strip_explicit: strip.is_some(),
-                #[cfg(feature = "exif")]
-                exif_policy: Default::default(),
                 filters: filters.clone(),
                 optimize_alpha: optimize_alpha.unwrap_or_default(),
                 no_reduction: no_reduction.clone(),
@@ -368,15 +403,24 @@ impl EncoderConfig {
                 minimize_size,
                 allow_mixed,
                 method,
-            } => Some(EncoderConfig::WebpAnim(WebpAnimOptions {
-                lossless: lossless.unwrap_or_default(),
-                quality: quality.unwrap_or(90.),
-                kmin: *kmin,
-                kmax: *kmax,
-                minimize_size: minimize_size.unwrap_or_default(),
-                allow_mixed: allow_mixed.unwrap_or_default(),
-                method: *method,
-            })),
+            } => {
+                // M-3: kmin/kmax are range-checked by clap; the pair
+                // relation is validated here at config resolution
+                if let (Some(kmin), Some(kmax)) = (kmin, kmax)
+                    && kmin > kmax
+                {
+                    config_error("--kmin must be less than or equal to --kmax");
+                }
+                Some(EncoderConfig::WebpAnim(WebpAnimOptions {
+                    lossless: lossless.unwrap_or_default(),
+                    quality: quality.unwrap_or(90.),
+                    kmin: *kmin,
+                    kmax: *kmax,
+                    minimize_size: minimize_size.unwrap_or_default(),
+                    allow_mixed: allow_mixed.unwrap_or_default(),
+                    method: *method,
+                }))
+            }
             #[cfg(feature = "anim-apng")]
             Command::Apng {
                 compression_type,
@@ -391,9 +435,8 @@ impl EncoderConfig {
     }
 }
 
-/// Prints a jxl configuration error and terminates with exit code 2.
-#[cfg(feature = "jxl")]
-fn jxl_config_error(message: &str) -> ! {
+/// Prints an encoder configuration error and terminates with exit code 2.
+fn config_error(message: &str) -> ! {
     eprintln!("Error: {message}");
     std::process::exit(2);
 }
@@ -407,13 +450,13 @@ fn parse_jxl_settings(settings: &[String]) -> Vec<(String, i64)> {
     let mut parsed = Vec::with_capacity(settings.len());
     for setting in settings {
         let Some((id, value)) = setting.split_once('=') else {
-            jxl_config_error(&format!(
+            config_error(&format!(
                 "invalid --setting {setting:?}; expected ID=VALUE (e.g. --setting brotli_effort=9)"
             ));
         };
         let value = match value.trim().parse::<i64>() {
             Ok(value) => value,
-            Err(_) => jxl_config_error(&format!(
+            Err(_) => config_error(&format!(
                 "invalid --setting value {value:?} for id {id:?}; expected an integer"
             )),
         };

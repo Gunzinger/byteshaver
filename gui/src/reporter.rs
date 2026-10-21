@@ -28,11 +28,12 @@ impl ChannelReporter {
 
 impl Reporter for ChannelReporter {
     fn on_event(&self, ev: JobEvent) {
-        // a broken pipe only means the window closed mid-run
+        // a broken pipe only means the window closed mid-run; a poisoned
+        // guard carries no invariant here — recover the sender from it
         let _ = self
             .tx
             .lock()
-            .expect("channel reporter mutex poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .send(ev);
     }
 }

@@ -10,13 +10,14 @@
 pub mod capabilities;
 pub mod reporter;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use crate::config::{ConversionConfig, EncoderConfig};
 use crate::converter::ThreadBudget;
+use crate::format::ImageFormat;
 use crate::pipeline::{self, FileResult, RunStats};
 
 pub use capabilities::{Capabilities, EncoderInfo, capabilities};
@@ -124,6 +125,70 @@ impl Session {
             thread_budget: ThreadBudget::global(),
         }
     }
+}
+
+/// Refines the session budget for one job: with more than one work item
+/// each in-flight encoder is capped to its share of the machine
+/// ([`ThreadBudget::per_files`]), so concurrent encoders cannot
+/// oversubscribe the cores; single-item jobs keep the session budget so
+/// one big encode can use every core. Budgets with an explicitly
+/// configured per-encoder cap are left untouched.
+///
+/// The count mirrors the pipeline's discovery (glob matches and recursive
+/// directory expansion, supported formats only; HEIF sub-image expansion
+/// is not mirrored — the budget only needs an approximate item count).
+fn refine_budget(spec: &JobSpec, base: ThreadBudget) -> ThreadBudget {
+    if base.threads_per_encoder.is_some() {
+        return base;
+    }
+    let count = match &spec.inputs {
+        InputSelection::Pattern(pattern) => glob::glob(pattern)
+            .map(|paths| {
+                paths
+                    .filter_map(|entry| entry.ok())
+                    .filter(|path| ImageFormat::from(path.as_path()) != ImageFormat::Unknown)
+                    .count()
+            })
+            .unwrap_or(0),
+        InputSelection::Files(files) => files.iter().map(|entry| count_input_entry(entry)).sum(),
+    };
+    if count > 1 {
+        ThreadBudget::per_files(count)
+    } else {
+        base
+    }
+}
+
+/// Work-item estimate of one [`InputSelection::Files`] entry: directories
+/// are walked recursively (supported formats only), everything else
+/// counts as one item.
+fn count_input_entry(entry: &Path) -> usize {
+    if entry.is_dir() {
+        count_directory(entry)
+    } else {
+        1
+    }
+}
+
+/// Number of supported image files below `dir`, recursively (mirrors the
+/// pipeline's discovery filter; unreadable directories count as empty).
+fn count_directory(dir: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| {
+            let path = entry.path();
+            if path.is_dir() {
+                count_directory(&path)
+            } else if ImageFormat::from(path.as_path()) != ImageFormat::Unknown {
+                1
+            } else {
+                0
+            }
+        })
+        .sum()
 }
 
 /// Aggregated counters of a finished run (same math as the printed
@@ -253,7 +318,13 @@ impl JobHandle {
     ) -> JobHandle {
         let reporter: Arc<dyn Reporter> = Arc::from(reporter);
         let budget = session.thread_budget;
-        let thread = std::thread::spawn(move || pipeline::execute(&spec, reporter, &stop, budget));
+        let thread = std::thread::spawn(move || {
+            // the budget is refined from the job's work-item count before
+            // the pipeline builds its encoder (counting runs here, off
+            // the caller's thread)
+            let budget = refine_budget(&spec, budget);
+            pipeline::execute(&spec, reporter, &stop, budget)
+        });
         JobHandle {
             thread: Some(thread),
         }

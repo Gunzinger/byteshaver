@@ -606,8 +606,6 @@ fn serde_round_trip_every_encoder_config_variant() {
             bit_depth: Some(JxlBitDepthChoice::Sixteen),
             color_encoding: Some(JxlColorEncodingChoice::IccPassthrough),
             advanced: vec![("brotli_effort".to_string(), 9)],
-            #[cfg(feature = "exif")]
-            exif_policy: ExifPolicy::Keep,
         }),
         #[cfg(feature = "opt-oxipng")]
         EncoderConfig::Oxipng(OxipngOptions {
@@ -617,8 +615,6 @@ fn serde_round_trip_every_encoder_config_variant() {
             interlace: OxipngInterlace::Adam7,
             strip: OxipngStrip::Safe,
             strip_explicit: true,
-            #[cfg(feature = "exif")]
-            exif_policy: ExifPolicy::Keep,
             filters: vec![OxipngFilter::Brute, OxipngFilter::MinSum],
             optimize_alpha: true,
             no_reduction: vec![OxipngReduction::Palette],

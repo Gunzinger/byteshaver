@@ -11,7 +11,6 @@ use byteshaver::config::{EncoderConfig, JxlBitDepthChoice, JxlColorEncodingChoic
 use byteshaver::converter::traits::{EncoderRegistry, ImageEncoder, ThreadBudget};
 use byteshaver::input::{AnimationData, FrameData, ImageContent, SourceImage, load_source};
 use byteshaver::metadata::ImageMetadata;
-use byteshaver::metadata::policy::ExifPolicy;
 use image::metadata::LoopCount;
 use image::{ExtendedColorType, RgbaImage};
 
@@ -264,8 +263,11 @@ fn infinite_loop_count_round_trips() {
 
 #[test]
 fn exif_policy_keep_embeds_box_round_trip() {
-    // minimal valid little-endian TIFF: header + zero IFD entries
-    let tiff = b"II*\0\x08\0\0\0\0\0".to_vec();
+    // minimal valid little-endian TIFF with one ASCII field (Software =
+    // "b"): the jxl input decoder parses and re-serializes the payload to
+    // drop the Orientation tag, so the fixture must be parseable and
+    // non-empty and stay byte-identical through the round trip
+    let tiff = b"II*\0\x08\0\0\0\x01\0\x31\x01\x02\0\x02\0\0\0b\0\0\0\0\0\0\0".to_vec();
     let source = still_source(
         pattern_rgba(8, 3),
         ImageMetadata {
@@ -276,7 +278,6 @@ fn exif_policy_keep_embeds_box_round_trip() {
     let encoder = jxl_encoder(JxlOptions {
         lossless: true,
         effort: 1,
-        exif_policy: ExifPolicy::Keep,
         ..JxlOptions::default()
     });
     let encoded = encoder.encode(&source).expect("encode with exif box");
@@ -294,14 +295,11 @@ fn exif_policy_keep_embeds_box_round_trip() {
 
 #[test]
 fn exif_policy_strip_drops_metadata() {
-    let tiff = b"II*\0\x08\0\0\0\0\0".to_vec();
-    let source = still_source(
-        pattern_rgba(8, 4),
-        ImageMetadata {
-            exif: Some(tiff),
-            ..ImageMetadata::default()
-        },
-    );
+    // H-4 single-owner policy: stripping is resolved by the pipeline into
+    // `metadata.exif = None` before the encoder runs; the encoder embeds
+    // exactly the payload that survives, so a stripped source encodes
+    // without an Exif box.
+    let source = still_source(pattern_rgba(8, 4), ImageMetadata::default());
     let encoded = jxl_encoder(JxlOptions::default())
         .encode(&source)
         .expect("encode");

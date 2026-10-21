@@ -40,8 +40,9 @@ static const char MAGIC[8] = {'Z','P','K','2','z','s','t','d'};
 
 static int memfd_exec(void) {
     int fd = memfd_create("zpk", MFD_CLOEXEC | MFD_EXEC);
-    if (fd < 0 && errno == EINVAL)
-        fd = memfd_create("zpk", MFD_CLOEXEC);   /* kernels < 6.3 */
+    if (fd < 0 && (errno == EINVAL || errno == EPERM))
+        /* EINVAL: kernels < 6.3 (no MFD_EXEC); EPERM: vm.memfd_noexec=1 */
+        fd = memfd_create("zpk", MFD_CLOEXEC);
     return fd;
 }
 

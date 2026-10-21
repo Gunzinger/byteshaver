@@ -190,7 +190,13 @@ fn decode_image(handle: &ImageHandle) -> Result<DynamicImage, Error> {
         _ => 3usize,
     };
     let row_len = width as usize * bytes_per_pixel;
-    let mut pixels = Vec::with_capacity(row_len * height as usize);
+    // audit LOW: the capacity math can overflow usize on huge dimensions
+    let buffer_len = row_len.checked_mul(height as usize).ok_or_else(|| {
+        Error::from_string(format!(
+            "libheif image dimensions {width}x{height} exceed the buffer size"
+        ))
+    })?;
+    let mut pixels = Vec::with_capacity(buffer_len);
     for row in 0..height as usize {
         let start = row * plane.stride;
         let end = start + row_len;
@@ -320,16 +326,16 @@ fn strip_orientation_tag(payload: Vec<u8>) -> (Option<Vec<u8>>, bool) {
     // re-serialize all fields except the (primary) Orientation tag,
     // mirroring `metadata::exif::serialize_all`
     let mut writer = Writer::new();
-    let mut seen: Vec<(exif::In, exif::Tag)> = Vec::new();
+    let mut seen: std::collections::HashSet<(exif::In, exif::Tag)> =
+        std::collections::HashSet::new();
     for field in parsed.fields() {
         if field.tag == exif::Tag::Orientation && field.ifd_num == exif::In::PRIMARY {
             continue;
         }
-        let key = (field.ifd_num, field.tag);
-        if seen.contains(&key) {
+        // the writer rejects duplicate fields; keep the first occurrence
+        if !seen.insert((field.ifd_num, field.tag)) {
             continue;
         }
-        seen.push(key);
         writer.push_field(field);
     }
     let mut serialized = std::io::Cursor::new(Vec::new());

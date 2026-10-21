@@ -44,9 +44,15 @@ COPY byteshaver /
 FROM ${SOURCE} AS byteshaver-bin
 
 # --- runtime -----------------------------------------------------------------
-FROM alpine
+# TODO(audit M-41): digest-pin at release time (FROM alpine:3.22@sha256:...)
+# so published images cannot silently re-base
+FROM alpine:3.22
 COPY --from=byteshaver-bin /byteshaver /usr/local/bin/byteshaver
 COPY THIRD-PARTY-NOTICES.md docs/dependency-licenses.md /usr/share/doc/byteshaver/
-RUN chmod +x /usr/local/bin/byteshaver
+RUN chmod +x /usr/local/bin/byteshaver \
+ && adduser -D -u 10001 byteshaver
+# run unprivileged: a root container writing into user bind mounts
+# (-v ...:/targets) leaves root-owned outputs the host user cannot manage
+USER byteshaver
 WORKDIR /targets
 CMD ["byteshaver"]

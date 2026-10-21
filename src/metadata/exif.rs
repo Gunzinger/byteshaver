@@ -9,6 +9,8 @@
 //! `b"Exif\0\0"` prefix (see [`crate::metadata::normalize_exif_payload`]).
 //! Nothing here accepts or produces the `Exif\0\0` marker prefix.
 
+use std::collections::HashSet;
+
 use exif::experimental::Writer;
 use exif::{Context, In, Reader, Tag};
 
@@ -39,6 +41,19 @@ pub struct ExifSummary {
 /// carries no EXIF at all; never panics.
 #[must_use]
 pub fn read_summary(path: &std::path::Path) -> Option<ExifSummary> {
+    // audit M-19: cap the whole-file read; a >512 MiB input is skipped
+    // instead of loading gigabytes for the summary (called per file)
+    let Ok(meta) = std::fs::metadata(path) else {
+        return None;
+    };
+    if meta.len() > super::MAX_METADATA_READ_BYTES {
+        eprintln!(
+            "Warning: skipping the EXIF summary of {} (file exceeds the 512 MiB metadata read \
+             cap)",
+            path.display()
+        );
+        return None;
+    }
     let bytes = std::fs::read(path).ok()?;
     let parsed = parse_with_container(&bytes)?;
     let text = |tag: Tag| -> Option<String> {
@@ -128,9 +143,10 @@ pub fn orientation_from_payload(payload: &[u8]) -> Option<u8> {
 /// 2. [`ExifPolicy::Strip`] → `None`.
 /// 3. [`ExifPolicy::Keep`] → the original payload, verbatim.
 /// 4. [`ExifPolicy::FilterExcept`]/[`ExifPolicy::KeepOnly`] → a re-serialized
-///    payload holding the surviving fields; on writer failure a per-file
-///    warning is printed and the original payload is kept verbatim (never
-///    silently lose everything).
+///    payload holding the surviving fields; if the payload cannot be parsed
+///    or re-serialized it is dropped entirely with a loud warning — fail
+///    closed (audit H-2): an unverifiable payload must never bypass the
+///    filter and leak the very fields the user asked to remove.
 #[must_use]
 pub fn resolve(policy: &ExifPolicy, meta: &ImageMetadata) -> Option<Vec<u8>> {
     let payload = meta.exif.as_ref()?;
@@ -144,10 +160,12 @@ pub fn resolve(policy: &ExifPolicy, meta: &ImageMetadata) -> Option<Vec<u8>> {
             {
                 Ok(filtered) => Some(filtered),
                 Err(message) => {
-                    println!(
-                        "Warning: could not re-serialize EXIF ({message}); keeping metadata verbatim"
+                    eprintln!(
+                        "Warning: EXIF could not be parsed for filtering; dropping ALL metadata \
+                         for safety (policy: {}): {message}",
+                        policy.describe()
                     );
-                    Some(payload.clone())
+                    None
                 }
             }
         }
@@ -184,7 +202,7 @@ pub fn transform(exif: &exif::Exif, policy: &ExifPolicy) -> Result<Vec<u8>, Tran
         ));
     };
 
-    let mut seen: Vec<(In, Tag)> = Vec::new();
+    let mut seen: HashSet<(In, Tag)> = HashSet::new();
     let mut writer = Writer::new();
     let mut kept = 0u64;
     let mut dropped = 0u64;
@@ -197,7 +215,7 @@ pub fn transform(exif: &exif::Exif, policy: &ExifPolicy) -> Result<Vec<u8>, Tran
         if field_is_dropped(field, policy) {
             dropped += 1;
         } else {
-            seen.push(key);
+            seen.insert(key);
             writer.push_field(field);
             kept += 1;
         }
@@ -221,13 +239,12 @@ pub fn transform(exif: &exif::Exif, policy: &ExifPolicy) -> Result<Vec<u8>, Tran
 /// instead of the whole original file.
 pub fn serialize_all(exif: &exif::Exif) -> Result<Vec<u8>, TransformError> {
     let mut writer = Writer::new();
-    let mut seen: Vec<(In, Tag)> = Vec::new();
+    let mut seen: HashSet<(In, Tag)> = HashSet::new();
     for field in exif.fields() {
-        let key = (field.ifd_num, field.tag);
-        if seen.contains(&key) {
+        // the writer rejects duplicate fields; keep the first occurrence
+        if !seen.insert((field.ifd_num, field.tag)) {
             continue;
         }
-        seen.push(key);
         writer.push_field(field);
     }
     let mut serialized = std::io::Cursor::new(Vec::new());
@@ -415,5 +432,30 @@ mod tests {
         assert_eq!(format_exposure(rational(3, 10)), "3/10");
         assert_eq!(format_exposure(rational(0, 100)), "0");
         assert_eq!(format_exposure(rational(5, 0)), "5?");
+    }
+
+    /// Audit H-2: filter policies fail closed — an unparseable payload is
+    /// dropped, never kept verbatim; `Keep` still passes it through.
+    #[test]
+    fn filter_policies_fail_closed_on_unparseable_payloads() {
+        let garbage = b"definitely not a tiff payload".to_vec();
+        let meta = ImageMetadata {
+            exif: Some(garbage.clone()),
+            ..ImageMetadata::default()
+        };
+        let filter = ExifPolicy::FilterExcept(vec![TagSelector::Ifd(Ifd::Gps)]);
+        assert_eq!(
+            resolve(&filter, &meta),
+            None,
+            "fail closed: no verbatim keep under a filtering policy"
+        );
+        let only = ExifPolicy::KeepOnly(vec![TagSelector::Name("DateTimeOriginal".to_string())]);
+        assert_eq!(resolve(&only, &meta), None);
+
+        // Keep is exempt: the verbatim payload is the contract
+        assert_eq!(
+            resolve(&ExifPolicy::Keep, &meta).as_deref(),
+            Some(&garbage[..])
+        );
     }
 }

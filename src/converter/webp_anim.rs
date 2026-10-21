@@ -193,7 +193,8 @@ impl WebpAnimEncoder {
                     Error::from_string(format!("Animated webp frame encoding failed: {e:?}"))
                 })?;
             previous = frame_ts;
-            timestamp += frame.delay.as_millis() as i64;
+            timestamp = timestamp
+                .saturating_add(i64::try_from(frame.delay.as_millis()).unwrap_or(i64::MAX));
         }
         let finalize_ts = timestamp.min(i32::MAX as i64) as i32;
         let webp_data = encoder

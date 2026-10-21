@@ -1,10 +1,10 @@
 //! This module provides optimized jpeg conversion via the mozjpeg crate
 
 use crate::Error;
-use crate::converter::DEPENDENCIES;
 use crate::format::ImageFormat;
 use crate::metadata::sink;
 use image::{DynamicImage, EncodableLayout};
+use std::io::Write;
 use std::panic;
 
 /// Encoder for optimized jpeg format using the mozjpeg crate.
@@ -54,7 +54,8 @@ impl super::ImageEncoder for MozjpegEncoder {
             .and_then(|payload| match sink::exif_app1_marker(payload) {
                 Some(marker) => Some(marker),
                 None => {
-                    println!(
+                    let _ = writeln!(
+                        std::io::stderr(),
                         "Warning: EXIF payload too large for a single JPEG APP1 segment; metadata skipped"
                     );
                     None
@@ -66,18 +67,12 @@ impl super::ImageEncoder for MozjpegEncoder {
 
 /// Provides encoder information
 fn encoder_info() -> String {
-    // we might have multiple versions of the package, use rfind to find the newest one
-    let mut mozjpeg_version = "";
-    match DEPENDENCIES.iter().rfind(|&&(name, _)| name == "mozjpeg") {
-        Some((_name, version)) => {
-            mozjpeg_version = version;
-        }
-        None => {
-            println!("Package 'mozjpeg' not found");
-        }
-    };
-
-    format!("Using \"mozjpeg\" ({})", mozjpeg_version)
+    // we might have multiple versions of the package;
+    // dependency_version picks the newest entry
+    format!(
+        "Using \"mozjpeg\" ({})",
+        super::dependency_version("mozjpeg")
+    )
 }
 
 /// Encodes a `DynamicImage` to bytes of jpeg format; an optional EXIF APP1

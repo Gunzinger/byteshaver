@@ -5,10 +5,11 @@ use byteshaver::job::{JobHandle, JobSpec, Reporter, Session, StdoutReporter, Sto
 use byteshaver::metadata::policy;
 use byteshaver::utils::remove_files;
 use clap::Parser;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::io::Write;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Number of Ctrl+C presses, feeding the repeated-press notice.
-static CTRLC_PRESSES: AtomicU64 = AtomicU64::new(0);
+/// Number of Ctrl+C presses; the second press escalates to a hard exit.
+static CTRLC_PRESSES: AtomicUsize = AtomicUsize::new(0);
 /// Installs the process-wide Ctrl+C handler exactly once (only one handler
 /// can exist per process, even across multiple runs).
 static CTRL_C_INSTALL: std::sync::Once = std::sync::Once::new();
@@ -19,15 +20,17 @@ fn install_ctrlc_handler(stop: StopFlag) {
     CTRL_C_INSTALL.call_once(|| {
         ctrlc::set_handler(move || {
             let presses = CTRLC_PRESSES.fetch_add(1, Ordering::Relaxed);
-            if !stop.raised() {
-                println!("received Ctrl+C, stopping further queue processing!");
-                stop.raise();
-            } else {
-                println!(
-                    "an encoding task is still active!{} processing will end afterwards.",
-                    str::repeat("!", presses as usize)
-                );
+            if presses > 0 {
+                // M-9: a running encode may take a long time to notice the
+                // stop flag; the second press forces an immediate exit.
+                eprintln!("Forcing immediate exit (unsaved progress lost)");
+                std::process::exit(130);
             }
+            let _ = writeln!(
+                std::io::stderr(),
+                "received Ctrl+C, stopping further queue processing!"
+            );
+            stop.raise();
         })
         .expect("Error setting Ctrl-C handler");
     });
@@ -52,9 +55,18 @@ fn build_reporter(args: &CliArgs) -> Result<Box<dyn Reporter>, Error> {
 }
 
 fn main() -> Result<(), Error> {
-    // --exif-list-tags must work without the required glob pattern, so it is
-    // checked before argument parsing and prints the tag table, then exits.
-    if std::env::args().any(|arg| arg == "--exif-list-tags") {
+    // Runtime CPU guard (audit M-43): this build targets x86-64-v3
+    // (global `target-cpu` in .cargo/config.toml); pre-Haswell CPUs would
+    // die with SIGILL — fail with a readable message and a distinct exit
+    // code instead. Runs before anything else.
+    if cfg!(target_arch = "x86_64") && !is_x86_feature_detected!("avx2") {
+        eprintln!(
+            "Error: this build targets x86-64-v3 (AVX2); your CPU lacks AVX2 — use a generic build"
+        );
+        std::process::exit(86);
+    }
+
+    if exif_list_tags_requested() {
         print!("{}", policy::format_recognized_tags());
         return Ok(());
     }
@@ -66,18 +78,8 @@ fn main() -> Result<(), Error> {
     }
     warn_if_exif_feature_missing(&args);
     let conf = ConversionConfig::from_args(&args);
-    // `mut` is only used when an encoder consumes the EXIF policy (oxipng/jxl)
-    #[allow(unused_mut)]
-    let mut enc = EncoderConfig::from_args(&args.command)
+    let enc = EncoderConfig::from_args(&args.command)
         .expect("conversion subcommand expected, clean is handled separately");
-    #[cfg(all(feature = "opt-oxipng", feature = "exif"))]
-    if let byteshaver::config::EncoderConfig::Oxipng(oxipng_options) = &mut enc {
-        oxipng_options.exif_policy = conf.exif.clone();
-    }
-    #[cfg(all(feature = "jxl", feature = "exif"))]
-    if let byteshaver::config::EncoderConfig::Jxl(jxl_options) = &mut enc {
-        jxl_options.exif_policy = conf.exif.clone();
-    }
 
     // conversions run through the headless job API; the binary contributes
     // the Ctrl+C handler and the stdout/JSON reporters
@@ -90,6 +92,14 @@ fn main() -> Result<(), Error> {
         .join()
         .into_stats()?;
     Ok(())
+}
+
+/// `--exif-list-tags` must work without the required glob pattern, so it
+/// is checked before argument parsing (deliberate, documented clap bypass:
+/// the required positional `pattern` would otherwise reject the call) and
+/// prints the tag table.
+fn exif_list_tags_requested() -> bool {
+    std::env::args().any(|arg| arg == "--exif-list-tags")
 }
 
 /// Without the `exif` feature, metadata is always stripped; warn when the

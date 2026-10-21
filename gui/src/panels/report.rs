@@ -91,15 +91,16 @@ fn persist_geometry(app: &mut App, ctx: &egui::Context) {
 
 /// The report body shared by the viewport and the embedded fallback:
 /// totals block, export row, height-bounded file table, notices block.
+/// Borrows the report (M-31) — it used to be cloned every frame.
 fn report_body(app: &mut App, ui: &mut egui::Ui) {
-    let Some(report) = app.report.clone() else {
+    let Some(report) = app.report.as_ref() else {
         ui.label("No finished run yet.");
         return;
     };
     // plan 10 §phase 2: aggregated quality metrics over the measured
     // files (mean per engine), if any were measured
     let metric_line = app.metrics.aggregate();
-    totals_block(ui, &report, metric_line.as_deref());
+    totals_block(ui, report, metric_line.as_deref());
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         if ui.button("Export JSONL…").clicked() {

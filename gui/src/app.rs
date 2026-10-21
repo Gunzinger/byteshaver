@@ -29,7 +29,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Instant;
 
-use byteshaver::config::{ConversionConfig, EncoderConfig};
+use byteshaver::config::ConversionConfig;
 use byteshaver::job::{
     Capabilities, InputSelection, JobEvent, JobHandle, JobSpec, Reporter, RunReport, Session,
     StopFlag,
@@ -234,6 +234,9 @@ pub fn ratio_tone(ratio: f32) -> SegTone {
 pub struct App {
     /// The conversion queue.
     pub queue: Queue,
+    /// Cached sort permutation of the queue table (M-30): rebuilt only
+    /// when the queue's version counter or the sort key changed.
+    pub sort_cache: Option<crate::panels::file_table::SortCache>,
     /// Persisted configuration (encoder options, policies, output dir).
     pub settings: Settings,
     /// Compile-time capabilities of the linked core (encoder list, HEIF
@@ -259,6 +262,10 @@ pub struct App {
     pub start_error: Option<String>,
     /// Whether a drag is currently over the window (drop-zone highlight).
     pub drag_hovered: bool,
+    /// Pending native file/folder picker (M-25): started by the drop-zone
+    /// buttons, polled once per frame in `logic` — never a blocking
+    /// round-trip inside the frame.
+    pub file_dialog: Option<crate::panels::drop_zone::PendingFileDialog>,
     /// Draft state of the JXL advanced settings editor.
     pub jxl_draft: JxlAdvancedDraft,
     /// Confetti burst of the last finished run (`None` = no party /
@@ -312,6 +319,10 @@ pub struct App {
     /// *derived* state) — see `crate::chips::chip_selection`.
     pub custom_chip_explicit: bool,
     settings_dirty: bool,
+    /// When the current dirty stretch began (M-27 debounce anchor); the
+    /// save fires once ≥ 500 ms elapsed since this first mark, `on_exit`
+    /// flushes whatever is still pending.
+    settings_dirty_since: Option<Instant>,
 }
 
 /// Draft state of the "save current as preset" modal (plan 14 §4): the
@@ -363,6 +374,7 @@ impl App {
         };
         App {
             queue: Queue::new(),
+            sort_cache: None,
             settings,
             capabilities: byteshaver::job::capabilities(),
             session: Session::new(),
@@ -374,6 +386,7 @@ impl App {
             show_about: false,
             start_error: None,
             drag_hovered: false,
+            file_dialog: None,
             jxl_draft: JxlAdvancedDraft::default(),
             confetti: None,
             flourish: None,
@@ -396,13 +409,15 @@ impl App {
             preset_status: None,
             custom_chip_explicit: false,
             settings_dirty: false,
+            settings_dirty_since: None,
         }
     }
 
     /// Marks the settings as changed (panels call this after edits); the
-    /// next `update` saves them to disk.
+    /// next `update` saves them to disk (debounced, see `logic`).
     pub fn mark_settings_dirty(&mut self) {
         self.settings_dirty = true;
+        self.settings_dirty_since.get_or_insert_with(Instant::now);
     }
 
     /// Whether the settings changed since the last save.
@@ -415,6 +430,7 @@ impl App {
     pub fn save_settings(&mut self) {
         self.settings.save();
         self.settings_dirty = false;
+        self.settings_dirty_since = None;
     }
 
     /// Whether the selected encoder is compiled into this build.
@@ -525,8 +541,7 @@ impl App {
             &self.user_presets,
             self.active_preset.as_ref()?,
         )?;
-        if crate::presets::preset_matches(preset, &self.settings.encoder, &self.settings.policies)
-        {
+        if crate::presets::preset_matches(preset, &self.settings.encoder, &self.settings.policies) {
             Some(preset.title.clone())
         } else {
             Some(format!("{} ·modified", preset.title))
@@ -713,9 +728,10 @@ impl App {
         let mut imported = 0;
         let mut errors = Vec::new();
         for path in paths {
-            let file_name = path
-                .file_name()
-                .map_or_else(|| "?".to_string(), |name| name.to_string_lossy().into_owned());
+            let file_name = path.file_name().map_or_else(
+                || "?".to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
             let outcome = std::fs::read_to_string(path)
                 .map_err(|err| err.to_string())
                 .and_then(|text| crate::presets::parse_preset_text(&text));
@@ -801,10 +817,7 @@ impl App {
             reverse_processing_order: self.settings.policies.reverse_processing_order,
             overwrite_if_smaller,
             overwrite_existing,
-            discard_if_larger_than_input: self
-                .settings
-                .policies
-                .discard_if_larger_than_input,
+            discard_if_larger_than_input: self.settings.policies.discard_if_larger_than_input,
             discard_input_alpha_channel: self.settings.policies.discard_input_alpha_channel,
             exif: self.exif_policy()?,
             heif_image_policy: self.settings.policies.heif_image_policy,
@@ -827,8 +840,7 @@ impl App {
             return Err(message);
         }
         let common = self.build_conversion_config()?;
-        let mut encoder = self.settings.encoder.clone();
-        inject_exif_policy(&mut encoder, &common.exif);
+        let encoder = self.settings.encoder.clone();
         Ok(JobSpec {
             inputs: InputSelection::Files(self.queue.selection()),
             output: match self.settings.policies.output_mode {
@@ -983,7 +995,28 @@ impl App {
                 };
                 match rx.try_recv() {
                     Ok(event) => event,
-                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => return,
+                    Err(TryRecvError::Empty) => return,
+                    // the worker dropped the reporter without emitting
+                    // `Finished` (a panicked pipeline thread): run the
+                    // same finish path a Finished event would, so the
+                    // app stays operable instead of "running" forever
+                    // (M-23). `join` maps a panicked worker onto a
+                    // report error already; the synthesized message is
+                    // the fallback for a clean-but-silent exit.
+                    Err(TryRecvError::Disconnected) => {
+                        if self.running.is_some() {
+                            self.finish_job();
+                            let message =
+                                "the job ended unexpectedly (worker exited without finishing)";
+                            if let Some(report) = &mut self.report
+                                && report.error.is_none()
+                            {
+                                report.error = Some(message.to_string());
+                                self.start_error = Some(message.to_string());
+                            }
+                        }
+                        return;
+                    }
                 }
             };
             self.apply_event(event);
@@ -1070,9 +1103,8 @@ impl App {
     fn queue_note(&mut self, path: &std::path::Path, message: String) {
         let Some(item) = self
             .queue
-            .items_mut()
-            .iter_mut()
-            .find(|item| item.path == path)
+            .index_of(path)
+            .and_then(|i| self.queue.items_mut().get_mut(i))
         else {
             return;
         };
@@ -1133,8 +1165,7 @@ impl App {
         self.celebrate_run(&report);
         // plan 10 §phase 2 AutoAfterRun: enqueue measurements for every
         // successfully encoded file (the metric worker just un-paused)
-        let auto_pairs =
-            crate::metrics::auto_measure_pairs(&report, self.settings.quality_metric);
+        let auto_pairs = crate::metrics::auto_measure_pairs(&report, self.settings.quality_metric);
         self.report = Some(report);
         for (input, output) in auto_pairs {
             self.metrics.request_measure(
@@ -1207,22 +1238,6 @@ impl App {
     }
 }
 
-/// Injects the global EXIF policy into the encoder options that consume it
-/// (oxipng, jxl) — byte-for-byte the CLI's logic in `main.rs`.
-///
-/// Deliberately **not** `#[cfg(feature = …)]`-gated: the cfg switches
-/// belong to the `byteshaver` dependency (whose default features this
-/// crate always enables), not to `byteshaver-gui` — gating on gui-local
-/// features would silently compile the injection away.
-pub fn inject_exif_policy(encoder: &mut EncoderConfig, policy: &ExifPolicy) {
-    if let EncoderConfig::Oxipng(oxipng_options) = encoder {
-        oxipng_options.exif_policy = policy.clone();
-    }
-    if let EncoderConfig::Jxl(jxl_options) = encoder {
-        jxl_options.exif_policy = policy.clone();
-    }
-}
-
 impl eframe::App for App {
     /// Runs the headless per-frame work (eframe 0.36 split of the old
     /// `update`): reads drag-and-drop input, drains job events, polls the
@@ -1251,6 +1266,10 @@ impl eframe::App for App {
         if self.running.is_some() {
             self.drain_events();
         }
+
+        // 2.1 pending native file dialog (M-25): resolve the off-thread
+        // picker result, if any — never a blocking round-trip in the frame
+        crate::panels::drop_zone::poll_dialog(self);
 
         // 2.5 thumbnail/EXIF worker results: textures land in the LRU
         // cache, summaries onto their queue rows (plan 11 §6); the worker
@@ -1299,12 +1318,26 @@ impl eframe::App for App {
             && self.settings.window_size != Some([width, height])
         {
             self.settings.window_size = Some([width, height]);
-            self.settings_dirty = true;
+            self.mark_settings_dirty();
         }
 
-        // 5. persist changed settings (cheap JSON write, at most per change);
-        // the per-frame window-size capture above keeps the persisted size
-        // current without a separate on_exit hook
+        // 5. persist changed settings — atomic write, debounced (M-27):
+        // interactive edits (drags, column resizes, window sizing) mark
+        // dirty at frame rate; the JSON serialize + fs write runs at
+        // most ~2/s, once 500 ms after the first change. `on_exit`
+        // flushes a still-pending save so quick edit → quit never
+        // loses it.
+        if self.settings_dirty()
+            && self
+                .settings_dirty_since
+                .is_some_and(|since| since.elapsed() >= std::time::Duration::from_millis(500))
+        {
+            self.save_settings();
+        }
+    }
+
+    /// Flushes a still-debounced settings save on shutdown (M-27).
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         if self.settings_dirty() {
             self.save_settings();
         }
@@ -1324,7 +1357,7 @@ mod tests {
     use crate::queue::ItemStatus;
     use crate::settings::{CollisionChoice, ExifMode, ExifSettings, OutputMode, PolicySet};
     use byteshaver::cli::CliArgs;
-    use byteshaver::config::ConversionConfig;
+    use byteshaver::config::{ConversionConfig, EncoderConfig};
     use byteshaver::pipeline::Outcome;
     use clap::Parser;
     use std::path::Path;
@@ -1460,42 +1493,6 @@ mod tests {
         app.start_job();
         assert!(app.running.is_none(), "the blocked start never runs");
         assert_eq!(app.start_error.as_deref(), Some(&*blocker(&app)));
-    }
-
-    #[test]
-    fn exif_policy_is_injected_into_oxipng_and_jxl_options() {
-        let mut app = default_app();
-        app.settings.policies.exif = ExifSettings {
-            mode: ExifMode::FilterExcept,
-            except_tags: "gps,Orientation".to_string(),
-            only_tags: String::new(),
-        };
-
-        app.select_encoder("oxipng");
-        let spec = app.build_job_spec().expect("valid settings");
-        let EncoderConfig::Oxipng(options) = &spec.encoder else {
-            panic!("expected oxipng config");
-        };
-        assert_eq!(
-            options.exif_policy,
-            app.exif_policy().expect("valid selectors"),
-            "oxipng options must carry the global policy (main.rs behavior)"
-        );
-
-        app.select_encoder("jxl");
-        let spec = app.build_job_spec().expect("valid settings");
-        let EncoderConfig::Jxl(options) = &spec.encoder else {
-            panic!("expected jxl config");
-        };
-        assert_eq!(
-            options.exif_policy,
-            app.exif_policy().expect("valid selectors")
-        );
-
-        // unchanged when the encoder ignores metadata policies
-        app.select_encoder("webp");
-        let spec = app.build_job_spec().expect("valid settings");
-        assert!(matches!(spec.encoder, EncoderConfig::Webp(_)));
     }
 
     #[test]
@@ -1986,8 +1983,7 @@ mod tests {
         let mut common = cli_app.build_conversion_config().expect("valid defaults");
         common.pattern = format!("{}/**/*.png", input_dir.display());
         common.output = out_pattern.display().to_string();
-        let mut encoder = EncoderConfig::Webp(Default::default());
-        inject_exif_policy(&mut encoder, &common.exif);
+        let encoder = EncoderConfig::Webp(Default::default());
         let spec_pattern = JobSpec::from_conversion(common, encoder);
         let report_pattern = run(spec_pattern);
         assert!(report_pattern.error.is_none(), "{:?}", report_pattern.error);
@@ -2061,9 +2057,7 @@ mod tests {
             ..PolicySet::default()
         });
         preset.content.include_output_dir = include_output_dir;
-        if include_output_dir
-            && let Some(policies) = &mut preset.content.policies
-        {
+        if include_output_dir && let Some(policies) = &mut preset.content.policies {
             policies.output_mode = OutputMode::Directory;
             policies.output_dir = "/preset/dir".to_string();
         }
@@ -2169,7 +2163,11 @@ mod tests {
         };
         let preset = builtin_preset("JXL · Visually lossless");
         app.apply_preset(&preset).expect("applies");
-        assert_eq!(app.jxl_draft, JxlAdvancedDraft::default(), "draft state reset");
+        assert_eq!(
+            app.jxl_draft,
+            JxlAdvancedDraft::default(),
+            "draft state reset"
+        );
         let index = app
             .builtins
             .iter()
@@ -2241,7 +2239,10 @@ mod tests {
         app.save_preset_from_current(&draft).expect("saved");
         assert_eq!(app.user_presets.len(), 1);
         assert_eq!(app.user_presets[0].file_name, "my-webp.json");
-        assert_eq!(app.active_preset, Some(PresetRef::User("My Webp".to_string())));
+        assert_eq!(
+            app.active_preset,
+            Some(PresetRef::User("My Webp".to_string()))
+        );
 
         // duplicate title rejected
         let err = app
@@ -2253,7 +2254,8 @@ mod tests {
         assert!(err.contains("already exists"));
 
         // rename re-slugs
-        app.preset_rename("My Webp", "Renamed Preset").expect("renamed");
+        app.preset_rename("My Webp", "Renamed Preset")
+            .expect("renamed");
         assert_eq!(app.user_presets[0].file_name, "renamed-preset.json");
         assert_eq!(
             app.active_preset,
@@ -2345,7 +2347,8 @@ mod tests {
             "byteshaver-gui-app-export-{}.json",
             std::process::id()
         ));
-        app.preset_export(&preset, target.clone()).expect("exported");
+        app.preset_export(&preset, target.clone())
+            .expect("exported");
         let text = std::fs::read_to_string(&target).expect("read export");
         assert!(
             !text.contains("/local/secret"),
@@ -2434,7 +2437,10 @@ mod tests {
             "content": { "encoder": { "NotAnEncoder": {} }, "include_output_dir": false }
         }"#;
         let parsed: Result<Preset, _> = serde_json::from_str(json);
-        assert!(parsed.is_err(), "unknown variants fail serde (unreadable list)");
+        assert!(
+            parsed.is_err(),
+            "unknown variants fail serde (unreadable list)"
+        );
         // while the empty-content guard still trips
         let json = r#"{
             "schema": 1, "title": "X", "description": "", "created_unix": 0,
@@ -2448,7 +2454,11 @@ mod tests {
     fn preset_content_carries_the_documented_fields() {
         // a structural smoke test of the plan-§1 shape
         let preset = full_preset(true);
-        let PresetContent { encoder, policies, include_output_dir } = preset.content;
+        let PresetContent {
+            encoder,
+            policies,
+            include_output_dir,
+        } = preset.content;
         assert!(matches!(encoder, EncoderConfig::Webp(_)));
         assert!(policies.is_some());
         assert!(include_output_dir);

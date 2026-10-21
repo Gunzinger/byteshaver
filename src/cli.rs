@@ -1,5 +1,28 @@
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
+/// Parses an `f32` in `min..=max` (clap has no built-in ranged float
+/// parser; NaN/inf fail the bounds check). Float twin of the integer
+/// `clap::value_parser!(u8).range(..)` pattern.
+fn parse_f32_range(value: &str, min: f32, max: f32) -> Result<f32, String> {
+    let parsed: f32 = value
+        .parse()
+        .map_err(|_| format!("{value:?} is not a number"))?;
+    if !(min..=max).contains(&parsed) {
+        return Err(format!("{parsed} is not in {min}..={max}"));
+    }
+    Ok(parsed)
+}
+
+/// Quality value in 0..=100 (webp, webpanim).
+fn parse_quality_0_100(value: &str) -> Result<f32, String> {
+    parse_f32_range(value, 0.0, 100.0)
+}
+
+/// Quality value in 1..=100 (ravif asserts quality >= 1).
+fn parse_quality_1_100(value: &str) -> Result<f32, String> {
+    parse_f32_range(value, 1.0, 100.0)
+}
+
 /// EXIF metadata policy values of the `--exif` flag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum ExifPolicyArg {
@@ -109,7 +132,10 @@ pub struct CliArgs {
     /// (requires a build with the `dec-heif` feature):
     /// primary: decode only the primary image (default).
     /// all: decode every image; outputs are named stem.ext, stem_1.ext, ...
-    #[cfg(all(feature = "dec-heif", any(not(target_os = "windows"), target_abi = "llvm")))]
+    #[cfg(all(
+        feature = "dec-heif",
+        any(not(target_os = "windows"), target_abi = "llvm")
+    ))]
     #[clap(long, value_enum, value_name = "primary|all", global = true)]
     pub heif_image_policy: Option<crate::config::HeifImagePolicy>,
 
@@ -124,8 +150,8 @@ pub struct CliArgs {
     /// Hard cap for decoded animation memory in MiB (frames are RGBA:
     /// width x height x 4 x frames). Files whose projected frame buffers
     /// exceed the cap fail with an error instead of risking an OOM.
-    /// Defaults to 4096.
-    #[clap(long, value_name = "MIB", global = true)]
+    /// Must be at least 1. Defaults to 4096.
+    #[clap(long, value_name = "MIB", global = true, value_parser = clap::value_parser!(u64).range(1..))]
     pub max_animation_memory: Option<u64>,
 
     /// Write one JSON object per progress event to this file (JSON lines)
@@ -147,7 +173,7 @@ pub enum Command {
 
         /// Control target quality (0 - 100, lower is worse but results in smaller files).
         /// Defaults to 90.0.
-        #[clap(short, long)]
+        #[clap(short, long, value_parser = parse_quality_0_100)]
         quality: Option<f32>,
     },
 
@@ -156,14 +182,15 @@ pub enum Command {
 
     /// Convert images to avif format (using ravif crate)
     Avif {
-        /// Control target quality (0 - 100, lower is worse but results in smaller files).
+        /// Control target quality (1 - 100, lower is worse but results in smaller files;
+        /// ravif asserts quality >= 1).
         /// Defaults to 90.0.
-        #[clap(short, long)]
+        #[clap(short, long, value_parser = parse_quality_1_100)]
         quality: Option<f32>,
 
         /// Control encoding speed (1 - 10, lower is much slower but has a better quality and lower filesize).
         /// Defaults to 3.
-        #[clap(short, long)]
+        #[clap(short, long, value_parser = clap::value_parser!(u8).range(1..=10))]
         speed: Option<u8>,
 
         /// Choose internal bit depth. (in the generated avif file, nothing to do with the input file)
@@ -179,9 +206,9 @@ pub enum Command {
         #[clap(long, value_enum)]
         alpha_color_mode: Option<crate::config::AlphaColorMode>,
 
-        /// Control target alpha quality (0 - 100, lower is worse).
+        /// Control target alpha quality (1 - 100, lower is worse).
         /// Defaults to 90.0.
-        #[clap(short, long)]
+        #[clap(short, long, value_parser = parse_quality_1_100)]
         alpha_quality: Option<f32>,
     },
 
@@ -321,15 +348,15 @@ pub enum Command {
 
         /// Control target quality (0 - 100, lower is worse but results in smaller files).
         /// In lossless mode this is the compression effort. Defaults to 90.0.
-        #[clap(short, long)]
+        #[clap(short, long, value_parser = parse_quality_0_100)]
         quality: Option<f32>,
 
         /// Minimum distance between keyframes (0 = libwebp default).
-        #[clap(long)]
+        #[clap(long, value_parser = clap::value_parser!(i32).range(0..))]
         kmin: Option<i32>,
 
         /// Maximum distance between keyframes (0 = disables keyframe insertion).
-        #[clap(long)]
+        #[clap(long, value_parser = clap::value_parser!(i32).range(0..))]
         kmax: Option<i32>,
 
         /// Minimize the output size (much slower; disables keyframe insertion).
@@ -341,7 +368,7 @@ pub enum Command {
         allow_mixed: Option<bool>,
 
         /// Quality/speed trade-off (0 = fast, 6 = slower-better). Defaults to 4.
-        #[clap(long)]
+        #[clap(long, value_parser = clap::value_parser!(u8).range(0..=6))]
         method: Option<u8>,
     },
 
@@ -370,7 +397,7 @@ pub enum Command {
     /// Note: frame delays are rounded to the GIF-standard 10 ms granularity.
     Gif {
         /// Quantization speed (1 = best quality, 30 = fastest). Defaults to 10.
-        #[clap(long)]
+        #[clap(long, value_parser = clap::value_parser!(i32).range(1..=30))]
         speed: Option<i32>,
     },
 
