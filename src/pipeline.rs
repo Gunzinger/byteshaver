@@ -259,28 +259,28 @@ struct StatCounters {
 impl StatCounters {
     fn add(&self, buckets: &StatBuckets) {
         self.successful
-            .fetch_add(buckets.successful, Ordering::SeqCst);
-        self.skipped.fetch_add(buckets.skipped, Ordering::SeqCst);
+            .fetch_add(buckets.successful, Ordering::Relaxed);
+        self.skipped.fetch_add(buckets.skipped, Ordering::Relaxed);
         self.discarded
-            .fetch_add(buckets.discarded, Ordering::SeqCst);
+            .fetch_add(buckets.discarded, Ordering::Relaxed);
         self.collisions
-            .fetch_add(buckets.collisions, Ordering::SeqCst);
-        self.errors.fetch_add(buckets.errors, Ordering::SeqCst);
-        self.aborted.fetch_add(buckets.aborted, Ordering::SeqCst);
+            .fetch_add(buckets.collisions, Ordering::Relaxed);
+        self.errors.fetch_add(buckets.errors, Ordering::Relaxed);
+        self.aborted.fetch_add(buckets.aborted, Ordering::Relaxed);
         self.metadata_dropped
-            .fetch_add(buckets.metadata_dropped, Ordering::SeqCst);
+            .fetch_add(buckets.metadata_dropped, Ordering::Relaxed);
         self.input_size
-            .fetch_add(buckets.input_size, Ordering::SeqCst);
+            .fetch_add(buckets.input_size, Ordering::Relaxed);
         self.output_size
-            .fetch_add(buckets.output_size, Ordering::SeqCst);
+            .fetch_add(buckets.output_size, Ordering::Relaxed);
         self.preexisting_input_size
-            .fetch_add(buckets.preexisting_input_size, Ordering::SeqCst);
+            .fetch_add(buckets.preexisting_input_size, Ordering::Relaxed);
         self.preexisting_output_size
-            .fetch_add(buckets.preexisting_output_size, Ordering::SeqCst);
+            .fetch_add(buckets.preexisting_output_size, Ordering::Relaxed);
         self.discarded_input_size
-            .fetch_add(buckets.discarded_input_size, Ordering::SeqCst);
+            .fetch_add(buckets.discarded_input_size, Ordering::Relaxed);
         self.discarded_output_size
-            .fetch_add(buckets.discarded_output_size, Ordering::SeqCst);
+            .fetch_add(buckets.discarded_output_size, Ordering::Relaxed);
     }
 
     fn get(&self, counter: &AtomicU64) -> u64 {
@@ -336,7 +336,10 @@ impl WorkItem {
 ///
 /// A container that cannot be probed stays a single item so the actual
 /// error surfaces per-file in the conversion worker.
-#[cfg(all(feature = "dec-heif", any(not(target_os = "windows"), target_abi = "llvm")))]
+#[cfg(all(
+    feature = "dec-heif",
+    any(not(target_os = "windows"), target_abi = "llvm")
+))]
 fn expand_work_item(path: PathBuf, heif_policy: crate::config::HeifImagePolicy) -> Vec<WorkItem> {
     if heif_policy == crate::config::HeifImagePolicy::All
         && ImageFormat::from(path.as_path()) == ImageFormat::Heif
@@ -355,7 +358,10 @@ fn expand_work_item(path: PathBuf, heif_policy: crate::config::HeifImagePolicy) 
 
 /// Feature-less fallback of [`expand_work_item`]: every file stays a single
 /// work item (HEIF input fails per-file at load time).
-#[cfg(any(not(feature = "dec-heif"), all(target_os = "windows", not(target_abi = "llvm"))))]
+#[cfg(any(
+    not(feature = "dec-heif"),
+    all(target_os = "windows", not(target_abi = "llvm"))
+))]
 fn expand_work_item(path: PathBuf, _heif_policy: crate::config::HeifImagePolicy) -> Vec<WorkItem> {
     vec![WorkItem::Single(path)]
 }

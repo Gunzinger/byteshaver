@@ -96,7 +96,10 @@ pub fn parse_webp(data: &[u8]) -> Option<Vec<Chunk>> {
 }
 
 /// Serializes chunks back into a WebP container (RIFF header + padding).
-fn write_webp(chunks: &[Chunk]) -> Vec<u8> {
+///
+/// Returns `None` when the RIFF or a chunk size exceeds `u32::MAX`: a
+/// saturating size field would silently produce a corrupt container.
+fn write_webp(chunks: &[Chunk]) -> Option<Vec<u8>> {
     let body_size: usize = chunks
         .iter()
         .map(|chunk| 8 + chunk.payload.len() + (chunk.payload.len() % 2))
@@ -104,25 +107,17 @@ fn write_webp(chunks: &[Chunk]) -> Vec<u8> {
     let mut out = Vec::with_capacity(12 + body_size);
     out.extend_from_slice(&FCC_RIFF);
     // RIFF size: everything after the size field (WEBP fourcc + chunks)
-    out.extend_from_slice(
-        &u32::try_from(4 + body_size)
-            .unwrap_or(u32::MAX)
-            .to_le_bytes(),
-    );
+    out.extend_from_slice(&u32::try_from(4 + body_size).ok()?.to_le_bytes());
     out.extend_from_slice(&FCC_WEBP);
     for chunk in chunks {
         out.extend_from_slice(&chunk.id);
-        out.extend_from_slice(
-            &u32::try_from(chunk.payload.len())
-                .unwrap_or(u32::MAX)
-                .to_le_bytes(),
-        );
+        out.extend_from_slice(&u32::try_from(chunk.payload.len()).ok()?.to_le_bytes());
         out.extend_from_slice(&chunk.payload);
         if chunk.payload.len() % 2 == 1 {
             out.push(0);
         }
     }
-    out
+    Some(out)
 }
 
 /// Categorizes a chunk for the spec-compliant ordering.
@@ -210,7 +205,7 @@ pub fn mux_exif(webp: &[u8], tiff_payload: &[u8]) -> Option<Vec<u8>> {
     ranked.sort_by_key(|(rank, _)| *rank); // sort_by_key is stable
 
     let ordered: Vec<Chunk> = ranked.into_iter().map(|(_, chunk)| chunk).collect();
-    Some(write_webp(&ordered))
+    write_webp(&ordered)
 }
 
 /// Wraps the raw TIFF payload into the WebP EXIF chunk body
@@ -231,14 +226,14 @@ fn build_vp8x(chunks: &[Chunk]) -> Option<Vec<u8>> {
         match &chunk.id {
             b"VP8L" => {
                 if let Some(((width, height), alpha)) = parse_vp8l_header(&chunk.payload) {
-                    return Some(vp8x_payload(
+                    return vp8x_payload(
                         width,
                         height,
                         alpha,
                         has_icc(chunks),
                         has_anim(chunks),
                         true,
-                    ));
+                    );
                 }
             }
             b"VP8 " => {
@@ -247,14 +242,14 @@ fn build_vp8x(chunks: &[Chunk]) -> Option<Vec<u8>> {
                     // implies an extended container (VP8X already present);
                     // bare VP8 key frames have no alpha channel
                     let alpha = false;
-                    return Some(vp8x_payload(
+                    return vp8x_payload(
                         width,
                         height,
                         alpha,
                         has_icc(chunks),
                         has_anim(chunks),
                         true,
-                    ));
+                    );
                 }
             }
             _ => {}
@@ -274,7 +269,8 @@ fn has_anim(chunks: &[Chunk]) -> bool {
 /// Assembles the 10-byte VP8X payload (flags + canvas size minus one).
 ///
 /// The EXIF flag is passed explicitly: `true` when the muxer is about to
-/// embed an EXIF chunk, `false` for hand-built test containers.
+/// embed an EXIF chunk, `false` for hand-built test containers. Returns
+/// `None` for zero dimensions (the stored size is `dimension - 1`).
 fn vp8x_payload(
     width: u32,
     height: u32,
@@ -282,7 +278,11 @@ fn vp8x_payload(
     icc: bool,
     anim: bool,
     exif: bool,
-) -> Vec<u8> {
+) -> Option<Vec<u8>> {
+    // canvas size is stored minus one: a zero dimension would underflow
+    if width == 0 || height == 0 {
+        return None;
+    }
     let mut flags = 0u8;
     if icc {
         flags |= VP8X_FLAG_ICC;
@@ -301,7 +301,7 @@ fn vp8x_payload(
     payload.extend_from_slice(&[0, 0, 0]); // reserved
     payload.extend_from_slice(&(width - 1).to_le_bytes()[..3]);
     payload.extend_from_slice(&(height - 1).to_le_bytes()[..3]);
-    payload
+    Some(payload)
 }
 
 /// Parses canvas dimensions and the alpha flag from a VP8L bitstream header.
@@ -351,10 +351,17 @@ mod tests {
     #[test]
     fn parse_rejects_non_webp_and_accepts_simple_container() {
         assert!(parse_webp(b"not a webp").is_none());
-        let webp = write_webp(&[minimal_vp8l(4, 2, false)]);
+        let webp = write_webp(&[minimal_vp8l(4, 2, false)]).expect("serialize");
         let chunks = parse_webp(&webp).expect("valid container");
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].id, *b"VP8L");
+    }
+
+    #[test]
+    fn vp8x_payload_rejects_zero_dimensions() {
+        assert!(vp8x_payload(0, 2, false, false, false, false).is_none());
+        assert!(vp8x_payload(4, 0, false, false, false, false).is_none());
+        assert!(vp8x_payload(4, 2, false, false, false, false).is_some());
     }
 
     #[test]
@@ -363,10 +370,14 @@ mod tests {
         let mut body = EXIF_HEADER.to_vec();
         body.extend_from_slice(&tiff);
         let webp = write_webp(&[
-            Chunk::new(FCC_VP8X, vp8x_payload(4, 2, false, false, false, false)),
+            Chunk::new(
+                FCC_VP8X,
+                vp8x_payload(4, 2, false, false, false, false).expect("vp8x"),
+            ),
             minimal_vp8l(4, 2, false),
             Chunk::new(FCC_EXIF, body),
-        ]);
+        ])
+        .expect("serialize");
         assert_eq!(
             extract_exif_payload(&webp).as_deref(),
             Some(tiff.as_slice())
@@ -377,22 +388,26 @@ mod tests {
     fn extract_handles_prefixless_bodies_and_missing_chunks() {
         let tiff = b"II*\0\x08\0\0\0\0\0";
         let webp = write_webp(&[
-            Chunk::new(FCC_VP8X, vp8x_payload(4, 2, false, false, false, false)),
+            Chunk::new(
+                FCC_VP8X,
+                vp8x_payload(4, 2, false, false, false, false).expect("vp8x"),
+            ),
             Chunk::new(FCC_EXIF, tiff.to_vec()),
-        ]);
+        ])
+        .expect("serialize");
         assert_eq!(
             extract_exif_payload(&webp).as_deref(),
             Some(tiff.as_slice())
         );
 
-        let plain = write_webp(&[minimal_vp8l(4, 2, false)]);
+        let plain = write_webp(&[minimal_vp8l(4, 2, false)]).expect("serialize");
         assert!(extract_exif_payload(&plain).is_none());
         assert!(extract_exif_payload(b"RIFF").is_none());
     }
 
     #[test]
     fn mux_adds_vp8x_with_exif_flag_for_simple_containers() {
-        let webp = write_webp(&[minimal_vp8l(4, 2, true)]);
+        let webp = write_webp(&[minimal_vp8l(4, 2, true)]).expect("serialize");
         let tiff = b"II*\0\x08\0\0\0\0\0";
         let muxed = mux_exif(&webp, tiff).expect("muxed");
         let chunks = parse_webp(&muxed).expect("parses");
@@ -414,7 +429,11 @@ mod tests {
     #[test]
     fn mux_replaces_existing_exif_and_keeps_order() {
         let tiff_a = b"II*\0\x08\0\0\0\0\0";
-        let container = mux_exif(&write_webp(&[minimal_vp8l(4, 2, false)]), tiff_a).expect("muxed");
+        let container = mux_exif(
+            &write_webp(&[minimal_vp8l(4, 2, false)]).expect("serialize"),
+            tiff_a,
+        )
+        .expect("muxed");
 
         let tiff_b = b"MM\0*\0\0\0\x10\0\0".to_vec();
         let remuxed = mux_exif(&container, &tiff_b).expect("remuxed");
@@ -431,14 +450,14 @@ mod tests {
     #[test]
     fn mux_rejects_malformed_input_and_empty_payloads() {
         assert!(mux_exif(b"garbage data!", b"II*\0").is_none());
-        let webp = write_webp(&[minimal_vp8l(4, 2, false)]);
+        let webp = write_webp(&[minimal_vp8l(4, 2, false)]).expect("serialize");
         assert!(mux_exif(&webp, &[]).is_none());
     }
 
     #[test]
     fn mux_preserves_odd_sized_unknown_chunks() {
         let unknown = Chunk::new(*b"XYZW", vec![0xaa]);
-        let webp = write_webp(&[minimal_vp8l(4, 2, false), unknown]);
+        let webp = write_webp(&[minimal_vp8l(4, 2, false), unknown]).expect("serialize");
         let muxed = mux_exif(&webp, b"II*\0\x08\0\0\0\0\0").expect("muxed");
         let chunks = parse_webp(&muxed).expect("parses");
         let xyzw = chunks

@@ -9,6 +9,8 @@
 //! `b"Exif\0\0"` prefix (see [`crate::metadata::normalize_exif_payload`]).
 //! Nothing here accepts or produces the `Exif\0\0` marker prefix.
 
+use std::collections::HashSet;
+
 use exif::experimental::Writer;
 use exif::{Context, In, Reader, Tag};
 
@@ -200,7 +202,7 @@ pub fn transform(exif: &exif::Exif, policy: &ExifPolicy) -> Result<Vec<u8>, Tran
         ));
     };
 
-    let mut seen: Vec<(In, Tag)> = Vec::new();
+    let mut seen: HashSet<(In, Tag)> = HashSet::new();
     let mut writer = Writer::new();
     let mut kept = 0u64;
     let mut dropped = 0u64;
@@ -213,7 +215,7 @@ pub fn transform(exif: &exif::Exif, policy: &ExifPolicy) -> Result<Vec<u8>, Tran
         if field_is_dropped(field, policy) {
             dropped += 1;
         } else {
-            seen.push(key);
+            seen.insert(key);
             writer.push_field(field);
             kept += 1;
         }
@@ -237,13 +239,12 @@ pub fn transform(exif: &exif::Exif, policy: &ExifPolicy) -> Result<Vec<u8>, Tran
 /// instead of the whole original file.
 pub fn serialize_all(exif: &exif::Exif) -> Result<Vec<u8>, TransformError> {
     let mut writer = Writer::new();
-    let mut seen: Vec<(In, Tag)> = Vec::new();
+    let mut seen: HashSet<(In, Tag)> = HashSet::new();
     for field in exif.fields() {
-        let key = (field.ifd_num, field.tag);
-        if seen.contains(&key) {
+        // the writer rejects duplicate fields; keep the first occurrence
+        if !seen.insert((field.ifd_num, field.tag)) {
             continue;
         }
-        seen.push(key);
         writer.push_field(field);
     }
     let mut serialized = std::io::Cursor::new(Vec::new());

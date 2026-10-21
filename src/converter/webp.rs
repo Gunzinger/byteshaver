@@ -1,7 +1,6 @@
 //! This module provides webp conversion via the webp crate
 
 use crate::Error;
-use crate::converter::DEPENDENCIES;
 use crate::format::ImageFormat;
 use image::ColorType;
 use image::DynamicImage;
@@ -79,20 +78,11 @@ impl super::ImageEncoder for WebpEncoder {
 
 /// Provides encoder information
 fn encoder_info(lossless: bool, qualify: f32) -> String {
-    // we might have multiple versions of the package, use rfind to find the newest one
-    let mut webp_version = "";
-    match DEPENDENCIES.iter().rfind(|&&(name, _)| name == "webp") {
-        Some((_name, version)) => {
-            webp_version = version;
-        }
-        None => {
-            println!("Package 'webp' not found");
-        }
-    };
-
     format!(
         "Using \"webp\" ({}) with options (lossless: {}, qualify: {})",
-        webp_version, lossless, qualify
+        super::dependency_version("webp"),
+        lossless,
+        qualify
     )
 }
 

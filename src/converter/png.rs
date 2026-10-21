@@ -8,7 +8,6 @@
 //! `Fast→Compression::Fast`; filter types map 1:1.
 
 use crate::Error;
-use crate::converter::DEPENDENCIES;
 use crate::format::ImageFormat;
 use clap::ValueEnum;
 use image::DynamicImage;
@@ -134,18 +133,9 @@ impl super::ImageEncoder for PngEncoder {
 
 /// Provides encoder information
 fn encoder_info() -> String {
-    // we might have multiple versions of the package, use rfind to find the newest one
-    let mut png_version = "";
-    match DEPENDENCIES.iter().rfind(|&&(name, _)| name == "png") {
-        Some((_name, version)) => {
-            png_version = version;
-        }
-        None => {
-            println!("Package 'png' not found");
-        }
-    };
-
-    format!("Using \"png\" ({})", png_version)
+    // we might have multiple versions of the package;
+    // dependency_version picks the newest entry
+    format!("Using \"png\" ({})", super::dependency_version("png"))
 }
 
 /// Encodes a `DynamicImage` to bytes of png format, optionally embedding an

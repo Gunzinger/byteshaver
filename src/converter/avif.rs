@@ -1,7 +1,6 @@
 //! This module provides avif conversion via the ravif crate
 
 use crate::Error;
-use crate::converter::DEPENDENCIES;
 use crate::converter::traits::ThreadBudget;
 use crate::format::ImageFormat;
 use clap::ValueEnum;
@@ -168,21 +167,11 @@ fn encoder_info(
     bit_depth: Option<BitDepth>,
     color_model: Option<ColorModel>,
 ) -> String {
-    // we have multiple ravif versions (one through image crate, one direct for the newest encoder version)
-    //  with the implicit ordering through the build.rs generation we can use rfind to find the newest one
-    let mut ravif_version = "";
-    match DEPENDENCIES.iter().rfind(|&&(name, _)| name == "ravif") {
-        Some((_name, version)) => {
-            ravif_version = version;
-        }
-        None => {
-            println!("Package 'ravif' not found");
-        }
-    };
-
+    // we have multiple ravif versions (one through image crate, one direct
+    // for the newest encoder version); dependency_version picks the newest
     format!(
         "Using \"ravif\" ({}) with options (quality: {}, speed: {}, bit depth: {:?}, color model: {:?})",
-        ravif_version,
+        super::dependency_version("ravif"),
         quality,
         speed,
         convert_bit_depth_to_ext(bit_depth),

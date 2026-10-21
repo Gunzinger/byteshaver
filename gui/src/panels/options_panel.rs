@@ -251,8 +251,11 @@ fn custom_disclosure(ui: &mut egui::Ui, app: &mut App) {
     let mut action = LadderAction::None;
     ui.horizontal_wrapped(|ui| {
         for (index, chip) in ladder.iter().enumerate() {
-            if chip_card(ui, chip, selection == crate::chips::ChipSelection::Selected(index))
-                && action == LadderAction::None
+            if chip_card(
+                ui,
+                chip,
+                selection == crate::chips::ChipSelection::Selected(index),
+            ) && action == LadderAction::None
             {
                 action = LadderAction::Apply(index);
             }
@@ -276,11 +279,7 @@ fn custom_disclosure(ui: &mut egui::Ui, app: &mut App) {
                 .find(|preset| preset.title == preset_title)
                 .cloned();
             if let Some(preset) = backing
-                && !presets::preset_matches(
-                    &preset,
-                    &app.settings.encoder,
-                    &app.settings.policies,
-                )
+                && !presets::preset_matches(&preset, &app.settings.encoder, &app.settings.policies)
             {
                 let _ = app.apply_preset(&preset);
             }
@@ -699,7 +698,8 @@ fn animation_ui(ui: &mut egui::Ui, app: &mut App) {
 }
 
 /// Remaining conversion flags of the CLI.
-fn misc_ui(ui: &mut egui::Ui, app: &mut App) {    let mut discard_larger = app.settings.policies.discard_if_larger_than_input;
+fn misc_ui(ui: &mut egui::Ui, app: &mut App) {
+    let mut discard_larger = app.settings.policies.discard_if_larger_than_input;
     if ui
         .checkbox(&mut discard_larger, "discard if larger than input")
         .on_hover_text("CLI: --discard-if-larger-than-input")
@@ -749,26 +749,34 @@ struct PresetMenuEntry {
 /// state drifts ([`App::active_preset_label`]).
 fn preset_dropdown(ui: &mut egui::Ui, app: &mut App) {
     ui.label("Preset:");
-    let label = app
-        .active_preset_label()
-        .unwrap_or_else(|| "—".to_string());
+    let label = app.active_preset_label().unwrap_or_else(|| "—".to_string());
     let button_label = egui::RichText::new(format!("● {label} ▾"));
-    let builtin_entries: Vec<PresetMenuEntry> = app
-        .builtins
-        .iter()
-        .enumerate()
-        .map(|(index, preset)| builtin_menu_entry(app, index, preset))
-        .collect();
-    let user_entries: Vec<PresetMenuEntry> =
-        app.user_presets.iter().map(user_menu_entry).collect();
+    let dropdown_response = ui.button(button_label);
+    let popup = egui::Popup::menu(&dropdown_response);
+    // entries are built only while the popup is actually open (the menu
+    // snapshots used to be rebuilt — and re-allocated — every frame)
+    let menu_open = popup.is_open();
+    let builtin_entries: Vec<PresetMenuEntry> = if menu_open {
+        app.builtins
+            .iter()
+            .enumerate()
+            .map(|(index, preset)| builtin_menu_entry(app, index, preset))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let user_entries: Vec<PresetMenuEntry> = if menu_open {
+        app.user_presets.iter().map(user_menu_entry).collect()
+    } else {
+        Vec::new()
+    };
 
     let mut chosen: Option<PresetRef> = None;
     let mut open_save = false;
     let mut open_manage = false;
     let mut import_clicked = false;
 
-    let dropdown_response = ui.button(button_label);
-    egui::Popup::menu(&dropdown_response).show(|ui| {
+    popup.show(|ui| {
         ui.set_min_width(280.0);
         ui.weak("Built-in");
         for entry in &builtin_entries {
@@ -839,8 +847,8 @@ fn menu_entry_ui(ui: &mut egui::Ui, entry: &PresetMenuEntry, chosen: &mut Option
 /// reason when the encoder is not compiled into this build).
 fn builtin_menu_entry(app: &App, index: usize, preset: &Preset) -> PresetMenuEntry {
     let kind = options::encoder_kind_name(&preset.content.encoder);
-    let enabled = options::encoder_enabled(&app.capabilities, kind)
-        && !presets::is_newer_format(preset);
+    let enabled =
+        options::encoder_enabled(&app.capabilities, kind) && !presets::is_newer_format(preset);
     let reason = if presets::is_newer_format(preset) {
         Some("newer preset format — cannot be applied".to_string())
     } else {
@@ -912,7 +920,9 @@ pub fn show_save_window(app: &mut App, ctx: &egui::Context) {
     egui::Window::new(crate::viewports::PopupKind::PresetSave.title())
         .open(&mut open)
         .default_width(SAVE_WINDOW_WIDTH)
-        .show(ctx, |ui| save_body(app, ui, &mut draft, &mut cancel, &mut save));
+        .show(ctx, |ui| {
+            save_body(app, ui, &mut draft, &mut cancel, &mut save)
+        });
     save_actions(app, save, cancel);
     if !open {
         app.preset_save = None;
@@ -934,8 +944,9 @@ pub fn show_save_viewport_contents(app: &mut App, ui: &mut egui::Ui) {
     }
     let mut cancel = false;
     let mut save: Option<PresetSaveDraft> = None;
-    egui::CentralPanel::default()
-        .show(ui, |ui| save_body(app, ui, &mut draft, &mut cancel, &mut save));
+    egui::CentralPanel::default().show(ui, |ui| {
+        save_body(app, ui, &mut draft, &mut cancel, &mut save)
+    });
     save_actions(app, save, cancel);
 }
 
@@ -966,9 +977,7 @@ fn save_body(
             &mut draft.include_policies,
             format!("also save output & global policies ({policy_changes} changed)"),
         )
-        .on_hover_text(
-            "off = format-only preset: applying it leaves your policies untouched",
-        )
+        .on_hover_text("off = format-only preset: applying it leaves your policies untouched")
         .changed()
         && !draft.include_policies
     {
@@ -1109,8 +1118,7 @@ pub fn show_manage_viewport_contents(app: &mut App, ui: &mut egui::Ui) {
     }
     let rows = manage_rows(app);
     let mut intents = ManageIntents::default();
-    egui::CentralPanel::default()
-        .show(ui, |ui| manage_body(app, ui, &rows, &mut intents));
+    egui::CentralPanel::default().show(ui, |ui| manage_body(app, ui, &rows, &mut intents));
     manage_actions(app, &ctx, intents);
 }
 
@@ -1140,9 +1148,10 @@ fn manage_body(app: &App, ui: &mut egui::Ui, rows: &ManageRows, intents: &mut Ma
         ui.weak(format!(
             "{} user preset(s) in {}",
             rows.user.len(),
-            app.preset_store
-                .as_ref()
-                .map_or_else(|| "?".to_string(), |store| store.dir().display().to_string())
+            app.preset_store.as_ref().map_or_else(
+                || "?".to_string(),
+                |store| store.dir().display().to_string()
+            )
         ));
     });
     ui.separator();
@@ -1208,9 +1217,8 @@ fn manage_body(app: &App, ui: &mut egui::Ui, rows: &ManageRows, intents: &mut Ma
                 .data_mut(|data| data.get_temp::<String>(egui::Id::new(RENAME_DRAFT_ID)))
                 .unwrap_or_else(|| old.clone());
             let response = ui.text_edit_singleline(&mut draft);
-            ui.ctx().data_mut(|data| {
-                data.insert_temp(egui::Id::new(RENAME_DRAFT_ID), draft.clone())
-            });
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(egui::Id::new(RENAME_DRAFT_ID), draft.clone()));
             if ui.button("Rename").clicked() || response.lost_focus() {
                 intents.rename_submit = Some((old.clone(), draft));
                 ui.ctx().data_mut(|data| {
@@ -1237,9 +1245,7 @@ fn manage_body(app: &App, ui: &mut egui::Ui, rows: &ManageRows, intents: &mut Ma
             ui.label(format!("Description of {title:?}:"));
             let mut draft = ui
                 .ctx()
-                .data_mut(|data| {
-                    data.get_temp::<String>(egui::Id::new(DESCRIPTION_DRAFT_ID))
-                })
+                .data_mut(|data| data.get_temp::<String>(egui::Id::new(DESCRIPTION_DRAFT_ID)))
                 .unwrap_or_else(|| app_user_description(&rows.user, &title));
             ui.add(
                 egui::TextEdit::multiline(&mut draft)
@@ -1396,7 +1402,10 @@ fn manage_row_of(preset: &Preset) -> ManageRow {
     let scope = match &preset.content.policies {
         None => "format only".to_string(),
         Some(policies) => {
-            format!("format + {} policies", presets::policy_change_count(policies))
+            format!(
+                "format + {} policies",
+                presets::policy_change_count(policies)
+            )
         }
     };
     ManageRow {
@@ -1435,7 +1444,10 @@ fn manage_row_ui(ui: &mut egui::Ui, row: &ManageRow, intents: &mut ManageIntents
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let reference = manage_reference(row);
-                if ui.add_enabled(!row.newer, egui::Button::new("Apply")).clicked() {
+                if ui
+                    .add_enabled(!row.newer, egui::Button::new("Apply"))
+                    .clicked()
+                {
                     intents.apply = Some(reference);
                 }
                 if ui.button("Duplicate").clicked() {

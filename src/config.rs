@@ -157,13 +157,19 @@ impl ConversionConfig {
 ///
 /// The flag only exists in builds with the `dec-heif` feature; other builds
 /// always use the default (primary image only).
-#[cfg(all(feature = "dec-heif", any(not(target_os = "windows"), target_abi = "llvm")))]
+#[cfg(all(
+    feature = "dec-heif",
+    any(not(target_os = "windows"), target_abi = "llvm")
+))]
 fn heif_image_policy_from_args(args: &crate::cli::CliArgs) -> HeifImagePolicy {
     args.heif_image_policy.unwrap_or_default()
 }
 
 /// Feature-less fallback of [`heif_image_policy_from_args`].
-#[cfg(any(not(feature = "dec-heif"), all(target_os = "windows", not(target_abi = "llvm"))))]
+#[cfg(any(
+    not(feature = "dec-heif"),
+    all(target_os = "windows", not(target_abi = "llvm"))
+))]
 fn heif_image_policy_from_args(_args: &crate::cli::CliArgs) -> HeifImagePolicy {
     HeifImagePolicy::default()
 }
@@ -171,11 +177,13 @@ fn heif_image_policy_from_args(_args: &crate::cli::CliArgs) -> HeifImagePolicy {
 /// Resolves the EXIF policy from the CLI flags.
 ///
 /// `--exif-except` and `--exif-only` are mutually exclusive (also enforced
-/// by clap) and both require `--exif filter`.
+/// by clap) and both require `--exif filter`. Hand-constructed `CliArgs`
+/// bypassing clap are rejected the same way instead of panicking
+/// (`from_args` is a public API).
 fn exif_policy_from_args(args: &crate::cli::CliArgs) -> ExifPolicy {
     use crate::cli::ExifPolicyArg;
     if args.exif_except.is_some() && args.exif_only.is_some() {
-        unreachable!("clap enforces mutual exclusion");
+        exit_with_exif_error("--exif-except and --exif-only are mutually exclusive");
     }
     let selector_lists_used = args.exif_except.is_some() || args.exif_only.is_some();
     match args.exif {

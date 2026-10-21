@@ -250,7 +250,8 @@ pub struct JxlColorEncoding {
 }
 
 unsafe extern "C" {
-    /// `encode.h`: packed libjxl version, `(major << 16) | (minor << 8) | patch`.
+    /// `encode.h`: packed libjxl version,
+    /// `major * 1_000_000 + minor * 1_000 + patch`.
     pub fn JxlEncoderVersion() -> u32;
 
     /// `encode.h`: creates an encoder instance; `memory_manager` may be null.

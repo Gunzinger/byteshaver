@@ -23,6 +23,7 @@
 //! the runner cannot be created, encoding continues single-threaded.
 
 use std::borrow::Cow;
+use std::io::Write;
 use std::time::Duration;
 
 use image::metadata::LoopCount;
@@ -563,7 +564,8 @@ fn encode_jxl(
                 "SetICCProfile",
             )?,
             None => {
-                println!(
+                let _ = writeln!(
+                    std::io::stderr(),
                     "Warning: jxl --color-encoding icc-passthrough requested but the input has no ICC profile; falling back to sRGB"
                 );
                 set_enum_color_encoding(enc, JxlColorEncodingChoice::Srgb, gray)?;

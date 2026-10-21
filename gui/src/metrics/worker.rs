@@ -20,7 +20,7 @@ use image::RgbaImage;
 
 use super::decode;
 use super::{
-    MetricEngineChoice, MetricResult, QualityMetric, DISPLAY_MAX_EDGE, clamp_metric_max_edge,
+    DISPLAY_MAX_EDGE, MetricEngineChoice, MetricResult, QualityMetric, clamp_metric_max_edge,
 };
 
 /// Worker poll interval while paused / idle.
@@ -345,7 +345,12 @@ fn worker_loop(jobs: Receiver<MetricJob>, results: Sender<MetricOutcome>, paused
                             Ok((a, b)) => (Some(a), Some(b)),
                             Err(_) => (None, None),
                         };
-                        MetricOutcome::Inspected { input, output, a, b }
+                        MetricOutcome::Inspected {
+                            input,
+                            output,
+                            a,
+                            b,
+                        }
                     }
                 };
                 if results.send(outcome).is_err() {
@@ -374,9 +379,19 @@ mod tests {
         let output = PathBuf::from("/x/a.webp");
         // missing files: the request is accepted (the worker reports
         // unmeasurable later); a second request is deduped while pending
-        state.request_measure(input.clone(), output.clone(), MetricEngineChoice::Psnr, 4096);
+        state.request_measure(
+            input.clone(),
+            output.clone(),
+            MetricEngineChoice::Psnr,
+            4096,
+        );
         assert!(state.is_pending(&input));
-        state.request_measure(input.clone(), output.clone(), MetricEngineChoice::Psnr, 4096);
+        state.request_measure(
+            input.clone(),
+            output.clone(),
+            MetricEngineChoice::Psnr,
+            4096,
+        );
         assert!(state.is_pending(&input), "in-flight requests are deduped");
         // fresh entry → no re-request (after the pending entry resolved)
         state.measured.insert(
@@ -426,7 +441,12 @@ mod tests {
         let mut state = MetricState::new();
         let input = PathBuf::from("/definitely/missing/input.png");
         let output = PathBuf::from("/definitely/missing/output.webp");
-        state.request_measure(input.clone(), output.clone(), MetricEngineChoice::Psnr, 4096);
+        state.request_measure(
+            input.clone(),
+            output.clone(),
+            MetricEngineChoice::Psnr,
+            4096,
+        );
         state.set_paused(false);
         // poll may need a beat for the worker; bounded wait loop
         for _ in 0..100 {
@@ -447,7 +467,8 @@ mod tests {
     /// (newer mtime) makes it re-measurable.
     #[test]
     fn decode_errors_surface_and_remeasure_on_a_newer_output() {
-        let dir = std::env::temp_dir().join(format!("byteshaver-metric-error-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("byteshaver-metric-error-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let input = dir.join("in.png");
         let output = dir.join("out.png");
@@ -464,7 +485,12 @@ mod tests {
 
         let mut state = MetricState::new();
         state.set_paused(false);
-        state.request_measure(input.clone(), output.clone(), MetricEngineChoice::Psnr, 4096);
+        state.request_measure(
+            input.clone(),
+            output.clone(),
+            MetricEngineChoice::Psnr,
+            4096,
+        );
         for _ in 0..100 {
             state.poll(|_, _, _, _| panic!("no inspection was requested"));
             if !state.is_pending(&input) {
@@ -505,7 +531,10 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(state.error(&input).is_none(), "failure replaced by a result");
+        assert!(
+            state.error(&input).is_none(),
+            "failure replaced by a result"
+        );
         assert!(state.cached(&input).is_some(), "now it measured");
 
         let _ = std::fs::remove_dir_all(&dir);

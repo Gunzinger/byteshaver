@@ -58,11 +58,25 @@ jobs:
       cpu_targets: ${{ steps.targets.outputs.cpu_targets }}
     steps:
       - id: targets
+        env:
+          # env-mapped instead of direct ${{ }} shell interpolation; the
+          # value feeds compiler flags below, so it is whitelist-validated
+          # before use
+          CPU_TARGETS_EXTRA: ${{ vars.CPU_TARGETS_EXTRA }}
         run: |
           TARGETS='"x86-64-v3"'
-          EXTRA="${{ vars.CPU_TARGETS_EXTRA }}"
-          if [ -n "$EXTRA" ]; then
-            EXTRA_JSON=$(echo "$EXTRA" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | sed 's/^/"/;s/$/"/' | paste -sd, -)
+          if [ -n "$CPU_TARGETS_EXTRA" ]; then
+            EXTRA_JSON=""
+            for tok in $(printf '%s' "$CPU_TARGETS_EXTRA" | tr ',' ' '); do
+              if [ -z "$tok" ]; then continue; fi
+              case "$tok" in
+                *[!A-Za-z0-9-]*)
+                  echo "FATAL: invalid CPU_TARGETS_EXTRA token: $tok" >&2
+                  exit 1
+                  ;;
+              esac
+              EXTRA_JSON="${EXTRA_JSON:+$EXTRA_JSON,}\"$tok\""
+            done
             TARGETS="$TARGETS,$EXTRA_JSON"
           fi
           echo "cpu_targets=[$TARGETS]" >> "$GITHUB_OUTPUT"
@@ -214,6 +228,11 @@ jobs:
         with:
           path: heif-deps
           key: heif-deps-decodeonly-${{ hashFiles('tools/libheif-static/**') }}
+          # NOTE(audit LOW): the prefix restore-key can restore a tree built
+          # by an older recipe — safe because the recipe itself version-
+          # stamps its artifacts (.stamp-* files carry codec versions and
+          # the cross toolchain) and rebuilds on any mismatch, so a stale
+          # restore only ever costs a rebuild, never stale codecs.
           restore-keys: heif-deps-decodeonly-
 
       - name: Build linux binaries (musl, in alpine container)

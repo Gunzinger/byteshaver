@@ -331,7 +331,10 @@ mod tests {
         // the extended-length prefix canonicalize() adds defeats /select,
         assert_eq!(select(r"\\?\C:\x\a.png"), r"C:\x\a.png");
         // …and its UNC form maps back onto a share path
-        assert_eq!(select(r"\\?\UNC\server\share\a.png"), r"\\server\share\a.png");
+        assert_eq!(
+            select(r"\\?\UNC\server\share\a.png"),
+            r"\\server\share\a.png"
+        );
     }
 
     #[cfg(unix)]

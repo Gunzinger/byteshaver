@@ -906,8 +906,7 @@ mod tests {
             "the output_dir key is skipped entirely once cleared"
         );
         assert_eq!(
-            value["content"]["policies"]["output_mode"],
-            "Directory",
+            value["content"]["policies"]["output_mode"], "Directory",
             "the mode always rides along (plan 15 F16)"
         );
         preset.content.include_output_dir = true;

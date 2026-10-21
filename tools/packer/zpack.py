@@ -171,10 +171,18 @@ def main():
     with open(args.stub, "rb") as f:
         stub = bytearray(f.read())
     if args.pe:
-        # passthrough the payload's subsystem (GUI payload => no console window)
+        # passthrough the payload's subsystem (GUI payload => no console
+        # window). The stub must be a well-formed PE32+ image — bounds-check
+        # the 0x3C offset like parse_pe64 does, and die instead of silently
+        # shipping a stub with the wrong subsystem.
+        if len(stub) < 0x40 or stub[:2] != b"MZ":
+            die(f"stub {args.stub!r} is not an MZ/PE image (cannot patch subsystem)")
         e = struct.unpack_from("<I", stub, 0x3C)[0]
-        if stub[e:e + 4] == b"PE\0\0" and struct.unpack_from("<H", stub, e + 24)[0] == 0x20B:
-            struct.pack_into("<H", stub, e + 24 + 68, subsystem)
+        if (e < 0x40 or e + 24 + 70 > len(stub)
+                or stub[e:e + 4] != b"PE\0\0"
+                or struct.unpack_from("<H", stub, e + 24)[0] != 0x20B):
+            die(f"stub {args.stub!r} is not a valid PE32+ image (cannot patch subsystem)")
+        struct.pack_into("<H", stub, e + 24 + 68, subsystem)
     pad = (-len(stub)) % args.page
     stub += b"\0" * pad
     payload_off = len(stub)
