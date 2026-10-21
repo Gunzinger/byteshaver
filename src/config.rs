@@ -357,8 +357,6 @@ impl EncoderConfig {
                     bit_depth,
                     color_encoding: *color_encoding,
                     advanced,
-                    #[cfg(feature = "exif")]
-                    exif_policy: Default::default(),
                 }))
             }
             #[cfg(feature = "opt-oxipng")]
@@ -381,8 +379,6 @@ impl EncoderConfig {
                 interlace: interlace.unwrap_or_default(),
                 strip: strip.unwrap_or_default(),
                 strip_explicit: strip.is_some(),
-                #[cfg(feature = "exif")]
-                exif_policy: Default::default(),
                 filters: filters.clone(),
                 optimize_alpha: optimize_alpha.unwrap_or_default(),
                 no_reduction: no_reduction.clone(),

@@ -8,6 +8,7 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 // file/JSON machinery only exists with the `logs` feature
 #[cfg(feature = "logs")]
 use std::fs;
@@ -167,9 +168,17 @@ pub struct StdoutReporter {
     /// Progress bar; created on [`JobEvent::Started`], torn down on
     /// [`JobEvent::Finished`].
     state: Mutex<StdoutState>,
+    /// Mirror of `state.bar.is_some()` readable without locking, so
+    /// notices and the hot per-file events need not take the mutex.
+    bar_active: AtomicBool,
+    /// Tripped by the first failed stdout write (e.g. EPIPE from piping
+    /// into `head`); once set, rendering is skipped instead of panicking
+    /// the worker thread.
+    stdout_broken: AtomicBool,
 }
 
 /// Mutable rendering state of [`StdoutReporter`].
+#[derive(Clone)]
 struct StdoutState {
     /// Active progress bar (`None` before `Started` / after `Finished`).
     bar: Option<ProgressBar>,
@@ -240,18 +249,40 @@ impl StdoutReporter {
     pub fn new() -> Self {
         StdoutReporter {
             state: Mutex::new(StdoutState::new()),
+            bar_active: AtomicBool::new(false),
+            stdout_broken: AtomicBool::new(false),
+        }
+    }
+
+    /// Locks the rendering state, recovering from poisoning: the state is
+    /// plain counters plus an optional bar whose invariants a panicked
+    /// peer cannot break, so poisoning must not kill further events.
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, StdoutState> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Writes one line to stdout, ignoring errors: a closed pipe disables
+    /// rendering instead of panicking the batch.
+    fn print_line(&self, line: &str) {
+        if self.stdout_broken.load(Ordering::Relaxed) {
+            return;
+        }
+        if writeln!(std::io::stdout(), "{line}").is_err() {
+            self.stdout_broken.store(true, Ordering::Relaxed);
         }
     }
 
     /// Prints a notice line; while the progress bar is live the line is
     /// cleared first (matching the pipeline's former inline prints).
-    fn print_notice(message: &str, bar_active: bool) {
+    fn print_notice(&self, message: &str, bar_active: bool) {
         if bar_active {
             // carriage return and clear line contents, mirroring the
             // historical per-file error/collision prints
-            println!("\r\x1b[2K{message}");
+            self.print_line(&format!("\r\x1b[2K{message}"));
         } else {
-            println!("{message}");
+            self.print_line(message);
         }
     }
 
@@ -328,81 +359,81 @@ impl StdoutReporter {
     }
 
     /// Renders the final "Encode statistics" block (historical format).
-    fn print_statistics(state: &StdoutState, elapsed: std::time::Duration) {
+    fn print_statistics(&self, state: &StdoutState, elapsed: std::time::Duration) {
         let fmt = size_format();
-        println!("Encode statistics:");
-        println!("Time taken:  {}", HumanDuration(elapsed));
-        println!("Input files: {}", state.total_files);
-        println!("Successful:  {}", state.ok);
-        println!("Skipped:     {}", state.skipped);
+        self.print_line("Encode statistics:");
+        self.print_line(&format!("Time taken:  {}", HumanDuration(elapsed)));
+        self.print_line(&format!("Input files: {}", state.total_files));
+        self.print_line(&format!("Successful:  {}", state.ok));
+        self.print_line(&format!("Skipped:     {}", state.skipped));
         if state.collisions > 0 {
-            println!(
+            self.print_line(&format!(
                 "Collisions:  {} (skipped, the output path was already produced by another input)",
                 state.collisions
-            );
+            ));
         }
-        println!("Errors:      {}", state.errors);
+        self.print_line(&format!("Errors:      {}", state.errors));
         if state.metadata_dropped > 0 {
-            println!(
+            self.print_line(&format!(
                 "Metadata:    {} outputs could not carry EXIF metadata (target format has no support)",
                 state.metadata_dropped
-            );
+            ));
         }
         if state.discarded > 0 {
-            println!(
+            self.print_line(&format!(
                 "Discarded:   {} (due to the encode being larger than the input; {} ➜ {})",
                 state.discarded,
                 humansize::format_size(state.discarded_input, fmt),
                 humansize::format_size(state.discarded_output, fmt)
-            );
-            println!(
-                "Please note that discarded in- and outputs do not count into the total in-/output statistics below."
+            ));
+            self.print_line(
+                "Please note that discarded in- and outputs do not count into the total in-/output statistics below.",
             );
         }
         if state.input_bytes > 0 && state.output_bytes > 0 {
-            println!(
+            self.print_line(&format!(
                 "Total input size:  {}",
                 humansize::format_size(state.input_bytes, fmt)
-            );
-            println!(
+            ));
+            self.print_line(&format!(
                 "Total output size: {}",
                 humansize::format_size(state.output_bytes, fmt)
-            );
-            println!(
+            ));
+            self.print_line(&format!(
                 "Total comp. ratio: {:.02}%",
                 state.output_bytes as f64 / state.input_bytes as f64 * 100.0
-            );
+            ));
             if state.preexisting_input > 0 && state.preexisting_output > 0 {
                 if state.input_bytes - state.preexisting_input > 0 {
-                    println!(
+                    self.print_line(&format!(
                         "New encodes input size:  {}",
                         humansize::format_size(state.input_bytes - state.preexisting_input, fmt)
-                    );
-                    println!(
+                    ));
+                    self.print_line(&format!(
                         "New encodes output size: {}",
                         humansize::format_size(state.output_bytes - state.preexisting_output, fmt)
-                    );
-                    println!(
+                    ));
+                    self.print_line(&format!(
                         "New encodes comp. ratio: {:.02}%",
                         state.preexisting_output as f64 / state.preexisting_input as f64 * 100.0
-                    );
+                    ));
                 }
-                println!(
+                self.print_line(&format!(
                     "Preexisting input size:  {}",
                     humansize::format_size(state.preexisting_input, fmt)
-                );
-                println!(
+                ));
+                self.print_line(&format!(
                     "Preexisting output size: {}",
                     humansize::format_size(state.preexisting_output, fmt)
-                );
-                println!(
+                ));
+                self.print_line(&format!(
                     "Preexisting comp. ratio: {:.02}%",
                     state.preexisting_output as f64 / state.preexisting_input as f64 * 100.0
-                );
+                ));
             }
         } else if (state.ok + state.skipped + state.errors) > 1 {
-            println!(
-                "Input and output size could not be determined, please try using OS-native binaries."
+            self.print_line(
+                "Input and output size could not be determined, please try using OS-native binaries.",
             );
         }
     }
@@ -416,38 +447,63 @@ impl Default for StdoutReporter {
 
 impl Reporter for StdoutReporter {
     fn on_event(&self, ev: JobEvent) {
-        let mut state = self.state.lock().expect("stdout reporter mutex poisoned");
         match ev {
+            // two of the three per-file events are no-ops for this
+            // rendering (everything derives from FileFinished): they must
+            // not take the state mutex on the hot path
+            JobEvent::FileStarted { .. } | JobEvent::ProgressStats { .. } => {}
             JobEvent::Notice { message, .. } => {
-                Self::print_notice(&message, state.bar.is_some());
+                let bar_active = self.bar_active.load(Ordering::Relaxed);
+                self.print_notice(&message, bar_active);
             }
             JobEvent::Started { total_files } => {
+                let mut state = self.lock_state();
                 state.total_files = total_files;
                 let pb = ProgressBar::new(total_files);
                 let style = ProgressStyle::with_template(
                     "[{elapsed_precise}/~{duration_precise} ({eta_precise} rem.)] {wide_bar:.cyan/blue} {pos:>7}/{len:7} | {msg}",
                 )
-                .unwrap();
+                .unwrap_or_else(|_| ProgressStyle::default_bar());
                 pb.set_style(style);
                 state.bar = Some(pb);
+                drop(state);
+                self.bar_active.store(true, Ordering::Relaxed);
             }
             JobEvent::FileFinished { outcome, .. } => {
-                Self::tally(&mut state, &outcome);
-                if let Some(pb) = &state.bar {
+                // tally under the lock; every rendering step happens after
+                // the guard is released, so no I/O blocks other workers
+                let render = {
+                    let mut state = self.lock_state();
+                    Self::tally(&mut state, &outcome);
+                    match &state.bar {
+                        Some(pb) if !self.stdout_broken.load(Ordering::Relaxed) => {
+                            Some((pb.clone(), Self::bar_message(&state)))
+                        }
+                        _ => None,
+                    }
+                };
+                if let Some((pb, message)) = render {
                     pb.inc(1);
-                    pb.set_message(Self::bar_message(&state));
+                    pb.set_message(message);
                 }
             }
             JobEvent::Finished => {
-                if let Some(pb) = state.bar.take() {
+                // take the bar and snapshot the counters under the lock,
+                // then tear down and print without holding it
+                let (bar, snapshot) = {
+                    let mut state = self.lock_state();
+                    (state.bar.take(), state.clone())
+                };
+                self.bar_active.store(false, Ordering::Relaxed);
+                if let Some(pb) = bar {
                     let elapsed = pb.elapsed();
-                    // clear the remnants of the progress bar off the screen
-                    pb.finish_with_message("finished!");
-                    Self::print_statistics(&state, elapsed);
+                    if !self.stdout_broken.load(Ordering::Relaxed) {
+                        // clear the remnants of the progress bar off the screen
+                        pb.finish_with_message("finished!");
+                        self.print_statistics(&snapshot, elapsed);
+                    }
                 }
             }
-            // the stdout rendering derives everything from FileFinished
-            JobEvent::FileStarted { .. } | JobEvent::ProgressStats { .. } => {}
         }
     }
 }

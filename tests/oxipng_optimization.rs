@@ -301,29 +301,55 @@ fn passthrough_preserves_pixels_and_chunks() {
         }
         #[cfg(feature = "exif")]
         {
-            use byteshaver::metadata::policy::ExifPolicy;
+            // default (strip) EXIF policy: the pipeline resolves no payload
+            // and the encoder bumps stripping to safe, so eXIf chunks do
+            // not survive the re-optimization
             let e_x_if_in = has_chunk(&original_bytes, "eXIf");
             let e_x_if_out = has_chunk(&output_bytes, "eXIf");
             if e_x_if_in {
-                match options.exif_policy {
-                    ExifPolicy::Strip => {
-                        assert!(
-                            !e_x_if_out,
-                            "eXIf should be stripped by default for {}",
-                            input.display()
-                        );
-                    }
-                    _ => {
-                        assert!(
-                            e_x_if_out,
-                            "eXIf must survive under keep policy for {}",
-                            input.display()
-                        );
-                    }
-                }
+                assert!(
+                    !e_x_if_out,
+                    "eXIf should be stripped by default for {}",
+                    input.display()
+                );
             }
         }
     }
+    clean_fixtures(test);
+}
+
+/// H-4 single-owner policy: under `--exif keep` the pipeline resolves the
+/// eXIf payload and the encoder forces stripping off, so the chunk must
+/// survive the passthrough optimization.
+#[cfg(feature = "exif")]
+#[test]
+fn keep_policy_preserves_exif_chunk_in_passthrough() {
+    use byteshaver::metadata::policy::ExifPolicy;
+
+    let test = "exifkeep";
+    let input = fixture_path(test, "exif.png");
+    make_exif_png(&input);
+    let output = output_root(test).join("exif.png");
+    let stats = run(
+        ConversionConfig {
+            pattern: input.display().to_string(),
+            output: output_dir(test).display().to_string(),
+            exif: ExifPolicy::Keep,
+            ..ConversionConfig::default()
+        },
+        EncoderConfig::Oxipng(OxipngOptions::default()),
+    )
+    .expect("run should succeed");
+    assert_eq!(stats.errors, 0);
+    assert_eq!(stats.successful, 1);
+
+    let original_bytes = fs::read(&input).expect("read original");
+    let output_bytes = fs::read(&output).expect("read output");
+    assert!(has_chunk(&original_bytes, "eXIf"));
+    assert!(
+        has_chunk(&output_bytes, "eXIf"),
+        "eXIf must survive under the keep policy"
+    );
     clean_fixtures(test);
 }
 

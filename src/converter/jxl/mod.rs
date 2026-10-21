@@ -20,6 +20,7 @@
 //! Threading: single-threaded libjxl encoder per file (no parallel runner
 //! is registered); rayon already parallelizes across files.
 
+use std::borrow::Cow;
 use std::time::Duration;
 
 use image::metadata::LoopCount;
@@ -120,11 +121,6 @@ pub struct JxlOptions {
     /// Advanced libjxl frame-setting passthrough (`--setting ID=VALUE`),
     /// resolved case-insensitively against [`FrameSettingId::ALL`].
     pub advanced: Vec<(String, i64)>,
-    /// Active EXIF policy of the run; injected from the global config
-    /// (default [`crate::metadata::policy::ExifPolicy::Strip`]). Only
-    /// available with the `exif` feature.
-    #[cfg(feature = "exif")]
-    pub exif_policy: crate::metadata::policy::ExifPolicy,
 }
 
 impl Default for JxlOptions {
@@ -141,8 +137,6 @@ impl Default for JxlOptions {
             bit_depth: None,
             color_encoding: None,
             advanced: Vec::new(),
-            #[cfg(feature = "exif")]
-            exif_policy: crate::metadata::policy::ExifPolicy::Strip,
         }
     }
 }
@@ -196,28 +190,29 @@ impl JxlEncoder {
 
 /// Normalized pixel buffer of one frame: interleaved samples in native
 /// byte order plus the channel count and sample depth actually handed to
-/// libjxl.
-struct FramePixels {
+/// libjxl. The buffer borrows the source image whenever no conversion is
+/// needed (H-5: at most one copy per frame).
+struct FramePixels<'a> {
     channels: u32,
     bits: u32,
     samples_u16: bool,
-    data: Vec<u8>,
+    data: Cow<'a, [u8]>,
 }
 
 /// One prepared frame: pixels plus its presentation delay.
-struct PreparedFrame {
-    pixels: FramePixels,
+struct PreparedFrame<'a> {
+    pixels: FramePixels<'a>,
     delay: Duration,
 }
 
 /// Geometry and frame set of one encode request.
-struct EncodeRequest {
+struct EncodeRequest<'a> {
     /// Canvas width in pixels.
     width: u32,
     /// Canvas height in pixels.
     height: u32,
     /// Frames in presentation order.
-    frames: Vec<PreparedFrame>,
+    frames: Vec<PreparedFrame<'a>>,
     /// Whether the animation basic-info header is emitted (real durations).
     animated: bool,
     /// How often the animation loops (0 = infinite; stills use 0).
@@ -225,7 +220,7 @@ struct EncodeRequest {
 }
 
 /// Prepares the single frame of a still image.
-fn still_request(image: &DynamicImage, bit_depth: Option<JxlBitDepthChoice>) -> EncodeRequest {
+fn still_request(image: &DynamicImage, bit_depth: Option<JxlBitDepthChoice>) -> EncodeRequest<'_> {
     EncodeRequest {
         width: image.width(),
         height: image.height(),
@@ -239,7 +234,10 @@ fn still_request(image: &DynamicImage, bit_depth: Option<JxlBitDepthChoice>) -> 
 }
 
 /// Prepares the full-canvas frames of an animation (real durations).
-fn animated_request(animation: &AnimationData) -> EncodeRequest {
+///
+/// H-5: frames borrow [`AnimationData`]'s RGBA buffers directly — no
+/// `clone()`, no `DynamicImage` round trip, no duplicated pixel buffers.
+fn animated_request(animation: &AnimationData) -> EncodeRequest<'_> {
     EncodeRequest {
         width: animation.width,
         height: animation.height,
@@ -247,7 +245,7 @@ fn animated_request(animation: &AnimationData) -> EncodeRequest {
             .frames
             .iter()
             .map(|frame| PreparedFrame {
-                pixels: normalize_still(&DynamicImage::ImageRgba8(frame.buffer.clone()), None),
+                pixels: normalize_rgba8_frame(&frame.buffer),
                 delay: frame.delay,
             })
             .collect(),
@@ -271,8 +269,10 @@ fn channel_count(color: ColorType) -> u32 {
 
 /// Converts a still image into the normalized pixel buffer, honoring the
 /// `bit_depth` option (`None` follows the input depth). Bit depth
-/// conversions are delegated to the `image` crate (full-range scaling).
-fn normalize_still(image: &DynamicImage, bit_depth: Option<JxlBitDepthChoice>) -> FramePixels {
+/// conversions are delegated to the `image` crate (full-range scaling);
+/// 8-bit RGB(A) input that needs no conversion is borrowed instead of
+/// copied (H-5).
+fn normalize_still(image: &DynamicImage, bit_depth: Option<JxlBitDepthChoice>) -> FramePixels<'_> {
     let input_u16 = matches!(
         image.color(),
         ColorType::L16 | ColorType::La16 | ColorType::Rgb16 | ColorType::Rgba16
@@ -284,20 +284,37 @@ fn normalize_still(image: &DynamicImage, bit_depth: Option<JxlBitDepthChoice>) -
     };
     let channels = channel_count(image.color());
     let data = match (use16, channels) {
-        (false, 1) => image.to_luma8().into_raw(),
-        (false, 2) => image.to_luma_alpha8().into_raw(),
-        (false, 3) => image.to_rgb8().into_raw(),
-        (false, _) => image.to_rgba8().into_raw(),
-        (true, 1) => u16_ne_bytes(&image.to_luma16().into_raw()),
-        (true, 2) => u16_ne_bytes(&image.to_luma_alpha16().into_raw()),
-        (true, 3) => u16_ne_bytes(&image.to_rgb16().into_raw()),
-        (true, _) => u16_ne_bytes(&image.to_rgba16().into_raw()),
+        (false, 1) => Cow::Owned(image.to_luma8().into_raw()),
+        (false, 2) => Cow::Owned(image.to_luma_alpha8().into_raw()),
+        (false, 3) => match image {
+            DynamicImage::ImageRgb8(buffer) => Cow::Borrowed(buffer.as_raw().as_slice()),
+            _ => Cow::Owned(image.to_rgb8().into_raw()),
+        },
+        (false, _) => match image {
+            DynamicImage::ImageRgba8(buffer) => Cow::Borrowed(buffer.as_raw().as_slice()),
+            _ => Cow::Owned(image.to_rgba8().into_raw()),
+        },
+        (true, 1) => Cow::Owned(u16_ne_bytes(&image.to_luma16().into_raw())),
+        (true, 2) => Cow::Owned(u16_ne_bytes(&image.to_luma_alpha16().into_raw())),
+        (true, 3) => Cow::Owned(u16_ne_bytes(&image.to_rgb16().into_raw())),
+        (true, _) => Cow::Owned(u16_ne_bytes(&image.to_rgba16().into_raw())),
     };
     FramePixels {
         channels,
         bits: if use16 { 16 } else { 8 },
         samples_u16: use16,
         data,
+    }
+}
+
+/// Normalizes a full-canvas RGBA8 animation frame, borrowing the source
+/// buffer (animations follow their RGBA8 input; no depth option applies).
+fn normalize_rgba8_frame(buffer: &image::RgbaImage) -> FramePixels<'_> {
+    FramePixels {
+        channels: 4,
+        bits: 8,
+        samples_u16: false,
+        data: Cow::Borrowed(buffer.as_raw().as_slice()),
     }
 }
 
@@ -358,12 +375,10 @@ impl ImageEncoder for JxlEncoder {
     }
 
     fn encode(&self, input: &SourceImage) -> Result<Vec<u8>, Error> {
-        // WS4 contract (oxipng pattern): resolve the EXIF policy carried by
-        // the options; the resolved payload is embedded as an `Exif` box.
-        #[cfg(feature = "exif")]
-        let exif_payload = crate::metadata::resolve(&self.options.exif_policy, &input.metadata);
-        #[cfg(not(feature = "exif"))]
-        let exif_payload: Option<Vec<u8>> = None;
+        // WS4 contract (H-4 single-owner policy): the pipeline has already
+        // resolved the global EXIF policy into `input.metadata.exif`; the
+        // resolved payload is embedded as an `Exif` box.
+        let exif_payload = input.metadata.exif.clone();
         let icc = input.metadata.icc.clone();
 
         let request = match &input.content {
@@ -448,6 +463,19 @@ fn encode_jxl(
     let alpha = matches!(first.pixels.channels, 2 | 4);
     let bits = first.pixels.bits;
 
+    // H-3: the intensity target option was previously ignored (hard-coded
+    // 255); validate it here because libjxl only reports cryptic encode
+    // errors for nonsensical values.
+    let intensity_target = match options.intensity_target {
+        Some(nits) if nits.is_finite() && nits > 0.0 => nits,
+        Some(_) => {
+            return Err(Error::from_string(
+                "jxl --intensity-target must be a finite number greater than 0".to_string(),
+            ));
+        }
+        None => 255.0,
+    };
+
     let encoder = ffi::Encoder::new().ok_or_else(|| {
         Error::from_string("libjxl: could not allocate encoder instance".to_string())
     })?;
@@ -460,7 +488,7 @@ fn encode_jxl(
         ysize: height,
         bits_per_sample: bits,
         exponent_bits_per_sample: 0,
-        intensity_target: 255.0,
+        intensity_target,
         min_nits: 0.0,
         relative_to_max_display: JXL_FALSE,
         linear_below: 0.0,

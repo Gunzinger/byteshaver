@@ -458,10 +458,17 @@ impl Queue {
     }
 
     /// The plain input selection for a job spec (queue paths in order,
-    /// directories included — the core expands them).
+    /// directories included — the core expands them). Transient
+    /// discovered rows are excluded: the core re-expands their parent
+    /// directory, so including them would double-process the previous
+    /// run's expansion (H-6).
     #[must_use]
     pub fn selection(&self) -> Vec<PathBuf> {
-        self.items.iter().map(|item| item.path.clone()).collect()
+        self.items
+            .iter()
+            .filter(|item| !item.discovered)
+            .map(|item| item.path.clone())
+            .collect()
     }
 
     /// Marks every row running (start of a job), stamps the run's target
@@ -807,6 +814,10 @@ mod tests {
         queue.push_discovered(inner.clone(), &Outcome::Aborted);
         assert!(queue.items()[2].discovered);
         assert_eq!(queue.items()[2].status, ItemStatus::Aborted);
+        // discovered rows never enter a job spec (H-6: the core
+        // re-expands their parent directory — including them would
+        // double-process the previous run's expansion)
+        assert_eq!(queue.selection(), vec![dir.clone(), file.clone()]);
 
         // finishing the run reverts the untouched directory row and notes
         // the expansion; the next run drops discovered rows again

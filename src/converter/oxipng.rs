@@ -30,8 +30,6 @@ use crate::Error;
 use crate::converter::png::{CompressionType, FilterType, encode_png};
 use crate::format::ImageFormat;
 use crate::input::{ImageContent, SourceImage};
-#[cfg(feature = "exif")]
-use crate::metadata::policy::ExifPolicy;
 
 /// Optimization level preset, mapped onto `oxipng::Options::from_preset`.
 ///
@@ -186,11 +184,6 @@ pub struct OxipngOptions {
     /// interplay: under the default `Strip` policy an unset `--strip` is
     /// bumped to `safe` so eXIf chunks do not silently survive).
     pub strip_explicit: bool,
-    /// Active EXIF policy of the run; injected from the global config
-    /// (default [`ExifPolicy::Strip`]). Only available with the `exif`
-    /// feature.
-    #[cfg(feature = "exif")]
-    pub exif_policy: ExifPolicy,
 }
 
 impl Default for OxipngOptions {
@@ -208,8 +201,6 @@ impl Default for OxipngOptions {
             fix_errors: false,
             timeout: None,
             strip_explicit: false,
-            #[cfg(feature = "exif")]
-            exif_policy: ExifPolicy::Strip,
         }
     }
 }
@@ -236,20 +227,8 @@ impl OxipngOptions {
             OxipngStrip::Safe => oxipng::StripChunks::Safe,
             OxipngStrip::All => oxipng::StripChunks::All,
         };
-        // EXIF policy interplay (plan WS3 §4 / WS4 §4): when metadata must
-        // survive, stripping is forced off; under the default strip policy an
-        // unset `--strip` is bumped to `safe` so behavior follows the policy.
-        #[cfg(feature = "exif")]
-        match self.exif_policy {
-            ExifPolicy::Strip => {
-                if !self.strip_explicit {
-                    opts.strip = oxipng::StripChunks::Safe;
-                }
-            }
-            ExifPolicy::Keep | ExifPolicy::FilterExcept(_) | ExifPolicy::KeepOnly(_) => {
-                opts.strip = oxipng::StripChunks::None;
-            }
-        }
+        // EXIF policy interplay (H-4): this lives in the encoder's `encode`
+        // path, which sees the pipeline-resolved metadata payload.
         opts.optimize_alpha = self.optimize_alpha;
         for reduction in &self.no_reduction {
             match reduction {
@@ -378,12 +357,13 @@ impl OxipngEncoder {
     /// oxipng re-encodes the IDAT stream regardless (idat_recoding is on
     /// by default), so spending compression effort here would be wasted.
     ///
-    /// When the EXIF policy resolves a payload for the source, it is embedded
-    /// into the baseline PNG (`eXIf` chunk) before optimization; the strip
-    /// interplay in [`OxipngOptions::to_oxipng`] guarantees the chunk
-    /// survives when the policy wants it kept.
+    /// When the pipeline resolved an EXIF payload for the source, it is
+    /// embedded into the baseline PNG (`eXIf` chunk) before optimization;
+    /// the strip adjustment in [`OxipngEncoder::encode`] guarantees the
+    /// chunk survives when the policy wants it kept.
     fn transcode(
         &self,
+        options: &OxipngOptions,
         image: &DynamicImage,
         exif_payload: Option<&[u8]>,
     ) -> Result<Vec<u8>, Error> {
@@ -393,7 +373,7 @@ impl OxipngEncoder {
             Some(FilterType::Adaptive),
             exif_payload,
         )?;
-        optimize_bytes(&baseline, &self.options)
+        optimize_bytes(&baseline, options)
     }
 }
 
@@ -422,10 +402,28 @@ impl super::ImageEncoder for OxipngEncoder {
     }
 
     fn encode_still_image(&self, image: &DynamicImage) -> Result<Vec<u8>, Error> {
-        self.transcode(image, None)
+        self.transcode(&self.options, image, None)
     }
 
     fn encode(&self, input: &SourceImage) -> Result<Vec<u8>, Error> {
+        // H-4 single-owner EXIF policy: the pipeline has already resolved
+        // the global policy into `input.metadata.exif`; the encoder
+        // consumes the resolved payload instead of a second policy copy.
+        //
+        // The strip interplay is derived from the payload (previously from
+        // the removed `exif_policy` option field): when metadata survived,
+        // stripping is forced off so the eXIf chunk survives optimization;
+        // when nothing survived and `--strip` was not passed explicitly,
+        // stripping is bumped to `safe` so stale eXIf chunks do not
+        // silently survive the re-optimization.
+        let mut options = self.options.clone();
+        #[cfg(feature = "exif")]
+        if input.metadata.exif.is_some() {
+            options.strip = OxipngStrip::None;
+        } else if !options.strip_explicit {
+            options.strip = OxipngStrip::Safe;
+        }
+
         // Passthrough mode: PNG input (stills and animated PNGs alike — the
         // input layer decodes APNG as a still first frame, and oxipng
         // preserves APNG chunk structure during optimization). Feeding the
@@ -435,16 +433,11 @@ impl super::ImageEncoder for OxipngEncoder {
         // operation would not be a lossless passthrough anymore).
         if input.source_format == ImageFormat::Png {
             let original = std::fs::read(&input.source_path)?;
-            return optimize_bytes(&original, &self.options);
+            return optimize_bytes(&original, &options);
         }
         match &input.content {
             ImageContent::Still(image) => {
-                #[cfg(feature = "exif")]
-                let payload =
-                    crate::metadata::exif::resolve(&self.options.exif_policy, &input.metadata);
-                #[cfg(not(feature = "exif"))]
-                let payload = None;
-                self.transcode(image, payload.as_deref())
+                self.transcode(&options, image, input.metadata.exif.as_deref())
             }
             ImageContent::Animated(animation) => {
                 let first = animation.first_frame().ok_or_else(|| {
@@ -492,11 +485,9 @@ mod tests {
         assert_eq!(opts.filters, expected.filters);
         assert_eq!(opts.deflater, expected.deflater);
         assert_eq!(opts.interlace, Some(false));
-        // EXIF policy interplay: the default Strip policy with no explicit
-        // `--strip` bumps stripping to `safe` (plan WS3 §4 / WS4 §4)
-        #[cfg(feature = "exif")]
-        assert_eq!(opts.strip, oxipng::StripChunks::Safe);
-        #[cfg(not(feature = "exif"))]
+        // no EXIF policy interplay at the options level (H-4: the strip
+        // adjustment happens in `encode`, driven by the pipeline-resolved
+        // metadata payload)
         assert_eq!(opts.strip, oxipng::StripChunks::None);
         assert!(!opts.optimize_alpha);
         assert!(opts.bit_depth_reduction);
@@ -541,8 +532,6 @@ mod tests {
             fix_errors: true,
             timeout: Some(Duration::from_secs(30)),
             strip_explicit: true,
-            #[cfg(feature = "exif")]
-            exif_policy: ExifPolicy::Strip,
         }
         .to_oxipng();
         assert_eq!(opts.filters.len(), 2);

@@ -29,7 +29,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Instant;
 
-use byteshaver::config::{ConversionConfig, EncoderConfig};
+use byteshaver::config::ConversionConfig;
 use byteshaver::job::{
     Capabilities, InputSelection, JobEvent, JobHandle, JobSpec, Reporter, RunReport, Session,
     StopFlag,
@@ -827,8 +827,7 @@ impl App {
             return Err(message);
         }
         let common = self.build_conversion_config()?;
-        let mut encoder = self.settings.encoder.clone();
-        inject_exif_policy(&mut encoder, &common.exif);
+        let encoder = self.settings.encoder.clone();
         Ok(JobSpec {
             inputs: InputSelection::Files(self.queue.selection()),
             output: match self.settings.policies.output_mode {
@@ -1207,22 +1206,6 @@ impl App {
     }
 }
 
-/// Injects the global EXIF policy into the encoder options that consume it
-/// (oxipng, jxl) — byte-for-byte the CLI's logic in `main.rs`.
-///
-/// Deliberately **not** `#[cfg(feature = …)]`-gated: the cfg switches
-/// belong to the `byteshaver` dependency (whose default features this
-/// crate always enables), not to `byteshaver-gui` — gating on gui-local
-/// features would silently compile the injection away.
-pub fn inject_exif_policy(encoder: &mut EncoderConfig, policy: &ExifPolicy) {
-    if let EncoderConfig::Oxipng(oxipng_options) = encoder {
-        oxipng_options.exif_policy = policy.clone();
-    }
-    if let EncoderConfig::Jxl(jxl_options) = encoder {
-        jxl_options.exif_policy = policy.clone();
-    }
-}
-
 impl eframe::App for App {
     /// Runs the headless per-frame work (eframe 0.36 split of the old
     /// `update`): reads drag-and-drop input, drains job events, polls the
@@ -1324,7 +1307,7 @@ mod tests {
     use crate::queue::ItemStatus;
     use crate::settings::{CollisionChoice, ExifMode, ExifSettings, OutputMode, PolicySet};
     use byteshaver::cli::CliArgs;
-    use byteshaver::config::ConversionConfig;
+    use byteshaver::config::{ConversionConfig, EncoderConfig};
     use byteshaver::pipeline::Outcome;
     use clap::Parser;
     use std::path::Path;
@@ -1460,42 +1443,6 @@ mod tests {
         app.start_job();
         assert!(app.running.is_none(), "the blocked start never runs");
         assert_eq!(app.start_error.as_deref(), Some(&*blocker(&app)));
-    }
-
-    #[test]
-    fn exif_policy_is_injected_into_oxipng_and_jxl_options() {
-        let mut app = default_app();
-        app.settings.policies.exif = ExifSettings {
-            mode: ExifMode::FilterExcept,
-            except_tags: "gps,Orientation".to_string(),
-            only_tags: String::new(),
-        };
-
-        app.select_encoder("oxipng");
-        let spec = app.build_job_spec().expect("valid settings");
-        let EncoderConfig::Oxipng(options) = &spec.encoder else {
-            panic!("expected oxipng config");
-        };
-        assert_eq!(
-            options.exif_policy,
-            app.exif_policy().expect("valid selectors"),
-            "oxipng options must carry the global policy (main.rs behavior)"
-        );
-
-        app.select_encoder("jxl");
-        let spec = app.build_job_spec().expect("valid settings");
-        let EncoderConfig::Jxl(options) = &spec.encoder else {
-            panic!("expected jxl config");
-        };
-        assert_eq!(
-            options.exif_policy,
-            app.exif_policy().expect("valid selectors")
-        );
-
-        // unchanged when the encoder ignores metadata policies
-        app.select_encoder("webp");
-        let spec = app.build_job_spec().expect("valid settings");
-        assert!(matches!(spec.encoder, EncoderConfig::Webp(_)));
     }
 
     #[test]
@@ -1986,8 +1933,7 @@ mod tests {
         let mut common = cli_app.build_conversion_config().expect("valid defaults");
         common.pattern = format!("{}/**/*.png", input_dir.display());
         common.output = out_pattern.display().to_string();
-        let mut encoder = EncoderConfig::Webp(Default::default());
-        inject_exif_policy(&mut encoder, &common.exif);
+        let encoder = EncoderConfig::Webp(Default::default());
         let spec_pattern = JobSpec::from_conversion(common, encoder);
         let report_pattern = run(spec_pattern);
         assert!(report_pattern.error.is_none(), "{:?}", report_pattern.error);

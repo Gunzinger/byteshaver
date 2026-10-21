@@ -66,18 +66,8 @@ fn main() -> Result<(), Error> {
     }
     warn_if_exif_feature_missing(&args);
     let conf = ConversionConfig::from_args(&args);
-    // `mut` is only used when an encoder consumes the EXIF policy (oxipng/jxl)
-    #[allow(unused_mut)]
-    let mut enc = EncoderConfig::from_args(&args.command)
+    let enc = EncoderConfig::from_args(&args.command)
         .expect("conversion subcommand expected, clean is handled separately");
-    #[cfg(all(feature = "opt-oxipng", feature = "exif"))]
-    if let byteshaver::config::EncoderConfig::Oxipng(oxipng_options) = &mut enc {
-        oxipng_options.exif_policy = conf.exif.clone();
-    }
-    #[cfg(all(feature = "jxl", feature = "exif"))]
-    if let byteshaver::config::EncoderConfig::Jxl(jxl_options) = &mut enc {
-        jxl_options.exif_policy = conf.exif.clone();
-    }
 
     // conversions run through the headless job API; the binary contributes
     // the Ctrl+C handler and the stdout/JSON reporters
