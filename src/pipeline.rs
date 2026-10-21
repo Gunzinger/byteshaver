@@ -15,7 +15,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use humansize::{BINARY, FormatSizeOptions, format_size};
@@ -1034,10 +1033,23 @@ pub fn execute(
 
     let (paths, pattern_base) = match &spec.inputs {
         InputSelection::Pattern(pattern) => {
-            let mut paths: Vec<PathBuf> = glob::glob(pattern)?
-                .filter_map(|entry| entry.ok())
-                .filter(|path| ImageFormat::from(path.as_path()) != ImageFormat::Unknown)
-                .collect();
+            let mut paths: Vec<PathBuf> = Vec::new();
+            let mut glob_errors: u32 = 0;
+            for entry in glob::glob(pattern)? {
+                match entry {
+                    Ok(path) => {
+                        if ImageFormat::from(path.as_path()) != ImageFormat::Unknown {
+                            paths.push(path);
+                        }
+                    }
+                    Err(_) => glob_errors += 1,
+                }
+            }
+            if glob_errors > 0 {
+                eprintln!(
+                    "Warning: {glob_errors} matched path(s) could not be read during discovery and were skipped"
+                );
+            }
             sort_paths(&mut paths, conf.reverse_processing_order);
             (paths, base_from_pattern(pattern))
         }
@@ -1089,7 +1101,6 @@ pub fn execute(
         message: encoder.describe_options(),
     });
 
-    let (tx, rx) = mpsc::channel::<(u64, WorkItem)>();
     // multi-image HEIF files are expanded before queueing, so the statistics
     // and the progress bar count images, not files
     let items: Vec<WorkItem> = paths
@@ -1097,16 +1108,6 @@ pub fn execute(
         .flat_map(|path| expand_work_item(path, conf.heif_image_policy))
         .collect();
     let input_file_count = items.len() as u64;
-    // producer thread: feed work items in lexicographic order
-    std::thread::spawn(move || {
-        for (index, item) in items.into_iter().enumerate() {
-            if tx.send((index as u64, item)).is_err() {
-                break; // consumer dropped, exit
-            }
-        }
-        // close the channel
-        drop(tx);
-    });
 
     reporter.on_event(JobEvent::Started {
         total_files: input_file_count,
@@ -1118,13 +1119,13 @@ pub fn execute(
     let results: Mutex<Vec<(u64, FileResult)>> =
         Mutex::new(Vec::with_capacity(input_file_count.try_into().unwrap_or(0)));
 
-    rx.into_iter().par_bridge().for_each(|(index, item)| {
+    items.into_par_iter().enumerate().for_each(|(index, item)| {
         let input_path = item.path().to_path_buf();
         let outcome = if stop.raised() {
             Outcome::Aborted
         } else {
             reporter.on_event(JobEvent::FileStarted {
-                index,
+                index: index as u64,
                 path: input_path.clone(),
             });
             convert_file(
@@ -1150,14 +1151,14 @@ pub fn execute(
         }
         counters.add(&buckets_for(&outcome));
         results.lock().expect("results mutex poisoned").push((
-            index,
+            index as u64,
             FileResult {
                 path: input_path.clone(),
                 outcome: outcome.clone(),
             },
         ));
         reporter.on_event(JobEvent::FileFinished {
-            index,
+            index: index as u64,
             path: input_path,
             outcome: outcome.clone(),
         });

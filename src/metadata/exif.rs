@@ -39,6 +39,19 @@ pub struct ExifSummary {
 /// carries no EXIF at all; never panics.
 #[must_use]
 pub fn read_summary(path: &std::path::Path) -> Option<ExifSummary> {
+    // audit M-19: cap the whole-file read; a >512 MiB input is skipped
+    // instead of loading gigabytes for the summary (called per file)
+    let Ok(meta) = std::fs::metadata(path) else {
+        return None;
+    };
+    if meta.len() > super::MAX_METADATA_READ_BYTES {
+        eprintln!(
+            "Warning: skipping the EXIF summary of {} (file exceeds the 512 MiB metadata read \
+             cap)",
+            path.display()
+        );
+        return None;
+    }
     let bytes = std::fs::read(path).ok()?;
     let parsed = parse_with_container(&bytes)?;
     let text = |tag: Tag| -> Option<String> {

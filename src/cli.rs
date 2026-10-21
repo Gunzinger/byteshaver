@@ -13,6 +13,10 @@ fn parse_f32_range(value: &str, min: f32, max: f32) -> Result<f32, String> {
     Ok(parsed)
 }
 
+/// Quality value in 0..=100 (webp, webpanim).
+fn parse_quality_0_100(value: &str) -> Result<f32, String> {
+    parse_f32_range(value, 0.0, 100.0)
+}
 
 /// Quality value in 1..=100 (ravif asserts quality >= 1).
 fn parse_quality_1_100(value: &str) -> Result<f32, String> {
@@ -143,8 +147,8 @@ pub struct CliArgs {
     /// Hard cap for decoded animation memory in MiB (frames are RGBA:
     /// width x height x 4 x frames). Files whose projected frame buffers
     /// exceed the cap fail with an error instead of risking an OOM.
-    /// Defaults to 4096.
-    #[clap(long, value_name = "MIB", global = true)]
+    /// Must be at least 1. Defaults to 4096.
+    #[clap(long, value_name = "MIB", global = true, value_parser = clap::value_parser!(u64).range(1..))]
     pub max_animation_memory: Option<u64>,
 
     /// Write one JSON object per progress event to this file (JSON lines)
@@ -166,7 +170,7 @@ pub enum Command {
 
         /// Control target quality (0 - 100, lower is worse but results in smaller files).
         /// Defaults to 90.0.
-        #[clap(short, long)]
+        #[clap(short, long, value_parser = parse_quality_0_100)]
         quality: Option<f32>,
     },
 
@@ -341,15 +345,15 @@ pub enum Command {
 
         /// Control target quality (0 - 100, lower is worse but results in smaller files).
         /// In lossless mode this is the compression effort. Defaults to 90.0.
-        #[clap(short, long)]
+        #[clap(short, long, value_parser = parse_quality_0_100)]
         quality: Option<f32>,
 
         /// Minimum distance between keyframes (0 = libwebp default).
-        #[clap(long)]
+        #[clap(long, value_parser = clap::value_parser!(i32).range(0..))]
         kmin: Option<i32>,
 
         /// Maximum distance between keyframes (0 = disables keyframe insertion).
-        #[clap(long)]
+        #[clap(long, value_parser = clap::value_parser!(i32).range(0..))]
         kmax: Option<i32>,
 
         /// Minimize the output size (much slower; disables keyframe insertion).
@@ -361,7 +365,7 @@ pub enum Command {
         allow_mixed: Option<bool>,
 
         /// Quality/speed trade-off (0 = fast, 6 = slower-better). Defaults to 4.
-        #[clap(long)]
+        #[clap(long, value_parser = clap::value_parser!(u8).range(0..=6))]
         method: Option<u8>,
     },
 
@@ -390,7 +394,7 @@ pub enum Command {
     /// Note: frame delays are rounded to the GIF-standard 10 ms granularity.
     Gif {
         /// Quantization speed (1 = best quality, 30 = fastest). Defaults to 10.
-        #[clap(long)]
+        #[clap(long, value_parser = clap::value_parser!(i32).range(1..=30))]
         speed: Option<i32>,
     },
 

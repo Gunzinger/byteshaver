@@ -109,13 +109,13 @@ impl NullReporter {
         Self::default()
     }
 
-    /// The (always empty) capture buffer of this reporter.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal mutex is poisoned.
+    /// The (always empty) capture buffer of this reporter. Poisoning is
+    /// recovered from: the buffer is either empty or untouched, so a
+    /// panicked peer must not take the caller down with it.
     pub fn captured(&self) -> std::sync::MutexGuard<'_, Vec<u8>> {
-        self.captured.lock().expect("null reporter mutex poisoned")
+        self.captured
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -536,7 +536,12 @@ impl JsonlReporter {
 #[cfg(feature = "logs")]
 impl Reporter for JsonlReporter {
     fn on_event(&self, ev: JobEvent) {
-        let mut writer = self.writer.lock().expect("jsonl reporter mutex poisoned");
+        // poisoning recovery: every event is one independent line, so a
+        // partially written line cannot corrupt the writer's state
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Ok(line) = serde_json::to_string(&ev) {
             let _ = writeln!(writer, "{line}");
             let _ = writer.flush();

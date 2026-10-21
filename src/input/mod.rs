@@ -5,14 +5,19 @@
 //! animated GIF inputs are decoded into [`AnimationData`].
 
 pub mod animation;
-#[cfg(all(feature = "dec-heif", any(not(target_os = "windows"), target_abi = "llvm")))]
+#[cfg(all(
+    feature = "dec-heif",
+    any(not(target_os = "windows"), target_abi = "llvm")
+))]
 mod heif;
 /// JPEG XL source decoding via jxl-oxide (WS2).
 #[cfg(feature = "jxl")]
 pub mod jxl;
 
+use std::any::Any;
 use std::fs;
 use std::io::BufReader;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 
 use image::metadata::Orientation;
@@ -131,13 +136,31 @@ pub fn load_source_with_index(
     }
 
     // HEIC/HEIF/HIF/AVIF containers are decoded by libheif, not the image
-    // crate; without the `dec-heif` feature they report a per-file error and
-    // the batch continues
-    #[cfg(all(feature = "dec-heif", any(not(target_os = "windows"), target_abi = "llvm")))]
+    // crate; without the `dec-heif` feature (or on non-llvm Windows) the
+    // stub below reports a per-file error and the batch continues. The two
+    // `load_heif_source` definitions are exact cfg complements, so this
+    // routing must stay unconditional — gating it on `dec-heif` lets
+    // `.heic` files fall through to the generic image-crate path.
     if ImageFormat::from(path) == ImageFormat::Heif {
         return load_heif_source(path, image_index);
     }
 
+    // the image-crate decoders are third-party panic surfaces on hostile
+    // input: contain a decode panic as a per-file error instead of losing
+    // the whole batch (audit M-20, mirroring the HEIF module)
+    let result = panic::catch_unwind(AssertUnwindSafe(|| load_source_image_crate(path)));
+    match result {
+        Ok(inner) => inner,
+        Err(payload) => Err(Error::from_string(format!(
+            "image decoding panicked: {}",
+            panic_message(&payload)
+        ))),
+    }
+}
+
+/// Generic image-crate decode path (still formats plus the GIF/WebP/APNG
+/// animation containers); invoked inside `catch_unwind`.
+fn load_source_image_crate(path: &Path) -> Result<SourceImage, Error> {
     let reader = open_reader(path)?;
     // detect the format once from the file header; keep the reader pinned to it
     let reader = match reader.with_guessed_format() {
@@ -396,6 +419,17 @@ fn collect_metadata(decoder: &mut impl ImageDecoder) -> Result<ImageMetadata, Er
         xmp: None,
         exif_applied_orientation,
     })
+}
+
+/// Best-effort extraction of a panic message (mirrors the HEIF module).
+fn panic_message(payload: &Box<dyn Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic".to_string()
+    }
 }
 
 /// Retry decoding with the jpeg-decoder crate (progressive jpegs) and

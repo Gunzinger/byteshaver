@@ -265,6 +265,14 @@ unsafe extern "C" {
         info: *const JxlBasicInfo,
     ) -> JxlEncoderStatus;
 
+    /// `encode.h`: sets the parallel runner for multithreading; may only be
+    /// called before starting the encoding.
+    pub fn JxlEncoderSetParallelRunner(
+        enc: *mut JxlEncoder,
+        parallel_runner: JxlParallelRunner,
+        parallel_runner_opaque: *mut c_void,
+    ) -> JxlEncoderStatus;
+
     /// `encode.h`: sets the original color encoding (enum-based form).
     pub fn JxlEncoderSetColorEncoding(
         enc: *mut JxlEncoder,
@@ -386,6 +394,30 @@ unsafe extern "C" {
         color_encoding: *mut JxlColorEncoding,
         is_gray: JXL_BOOL,
     );
+
+    /// `resizable_parallel_runner.h`: creates a resizable runner instance;
+    /// `memory_manager` may be null.
+    pub fn JxlResizableParallelRunnerCreate(memory_manager: *const c_void) -> *mut c_void;
+
+    /// `resizable_parallel_runner.h`: sets the number of threads of a
+    /// runner created by [`JxlResizableParallelRunnerCreate`].
+    pub fn JxlResizableParallelRunnerSetThreads(runner_opaque: *mut c_void, num_threads: usize);
+
+    /// `resizable_parallel_runner.h`: the resizable runner itself; pass as
+    /// the `JxlParallelRunner` to `JxlEncoderSetParallelRunner` together
+    /// with the runner pointer as opaque value.
+    pub fn JxlResizableParallelRunner(
+        runner_opaque: *mut c_void,
+        jpegxl_opaque: *mut c_void,
+        init: JxlParallelRunInit,
+        func: JxlParallelRunFunction,
+        start_range: u32,
+        end_range: u32,
+    ) -> JxlParallelRetCode;
+
+    /// `resizable_parallel_runner.h`: destroys a runner created by
+    /// [`JxlResizableParallelRunnerCreate`].
+    pub fn JxlResizableParallelRunnerDestroy(runner_opaque: *mut c_void);
 }
 
 /// Opaque encoder state (`encode.h`).
@@ -402,6 +434,27 @@ pub struct JxlEncoderFrameSettings {
 
 /// `JxlBoxType` (`types.h`): 4-character box type identifier.
 pub type JxlBoxType = [c_char; 4];
+
+/// `parallel_runner.h`: return code of the parallel runner callbacks.
+pub type JxlParallelRetCode = c_int;
+
+/// `parallel_runner.h`: initialization callback of a parallel run.
+pub type JxlParallelRunInit =
+    unsafe extern "C" fn(jpegxl_opaque: *mut c_void, num_threads: usize) -> JxlParallelRetCode;
+
+/// `parallel_runner.h`: per-value processing callback of a parallel run.
+pub type JxlParallelRunFunction =
+    unsafe extern "C" fn(jpegxl_opaque: *mut c_void, value: u32, thread_id: usize);
+
+/// `parallel_runner.h`: the parallel runner function signature.
+pub type JxlParallelRunner = unsafe extern "C" fn(
+    runner_opaque: *mut c_void,
+    jpegxl_opaque: *mut c_void,
+    init: JxlParallelRunInit,
+    func: JxlParallelRunFunction,
+    start_range: u32,
+    end_range: u32,
+) -> JxlParallelRetCode;
 
 /// `JxlBitDepthType` (`types.h`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -598,24 +651,70 @@ pub fn version() -> (u32, u32, u32) {
     (v / 1_000_000, (v / 1_000) % 1_000, v % 1_000)
 }
 
-/// RAII guard owning a `JxlEncoder` instance.
-pub(crate) struct Encoder(*mut JxlEncoder);
+/// RAII guard owning a `JxlResizableParallelRunner` instance.
+pub(crate) struct ParallelRunner(*mut c_void);
+
+impl ParallelRunner {
+    /// Creates a resizable runner with `num_threads` worker threads, or
+    /// `None` on allocation failure (encoding then continues
+    /// single-threaded).
+    pub(crate) fn new(num_threads: usize) -> Option<Self> {
+        // SAFETY: a null memory manager selects libjxl's default allocator.
+        let raw = unsafe { JxlResizableParallelRunnerCreate(core::ptr::null()) };
+        if raw.is_null() {
+            return None;
+        }
+        // SAFETY: `raw` is a live runner created above.
+        unsafe { JxlResizableParallelRunnerSetThreads(raw, num_threads) };
+        Some(Self(raw))
+    }
+
+    /// Raw pointer for the FFI calls (used as the runner's opaque value).
+    pub(crate) fn raw(&self) -> *mut c_void {
+        self.0
+    }
+}
+
+impl Drop for ParallelRunner {
+    fn drop(&mut self) {
+        // SAFETY: `self.0` is a live runner owned exclusively by this guard.
+        unsafe { JxlResizableParallelRunnerDestroy(self.0) };
+    }
+}
+
+/// RAII guard owning a `JxlEncoder` instance and, when attached, its
+/// parallel runner.
+///
+/// Drop order matters: `Drop::drop` destroys the encoder first and the
+/// `runner` field is released afterwards, so the runner outlives the
+/// encoder's use of it as libjxl requires.
+pub(crate) struct Encoder {
+    raw: *mut JxlEncoder,
+    runner: Option<ParallelRunner>,
+}
 
 impl Encoder {
     /// Creates an encoder with the default memory manager, or `None` on OOM.
     pub(crate) fn new() -> Option<Self> {
+        // SAFETY: a null memory manager selects libjxl's default allocator.
         let raw = unsafe { JxlEncoderCreate(core::ptr::null()) };
-        (!raw.is_null()).then(|| Self(raw))
+        (!raw.is_null()).then(|| Self { raw, runner: None })
     }
 
     /// Raw pointer for the FFI calls.
     pub(crate) fn raw(&self) -> *mut JxlEncoder {
-        self.0
+        self.raw
+    }
+
+    /// Stores the runner in the guard so it is destroyed after the encoder.
+    pub(crate) fn set_runner(&mut self, runner: Option<ParallelRunner>) {
+        self.runner = runner;
     }
 }
 
 impl Drop for Encoder {
     fn drop(&mut self) {
-        unsafe { JxlEncoderDestroy(self.0) };
+        // SAFETY: `self.raw` is a live encoder owned exclusively by this guard.
+        unsafe { JxlEncoderDestroy(self.raw) };
     }
 }

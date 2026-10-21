@@ -17,8 +17,10 @@
 //! they cannot map exactly (documented rounding); libjxl itself limits
 //! durations to `uint32_t` ticks.
 //!
-//! Threading: single-threaded libjxl encoder per file (no parallel runner
-//! is registered); rayon already parallelizes across files.
+//! Threading: libjxl's resizable parallel runner spreads each file's
+//! encode over the threads granted by the [`ThreadBudget`](crate::converter::ThreadBudget)
+//! (all cores for single-file jobs); rayon parallelizes across files. If
+//! the runner cannot be created, encoding continues single-threaded.
 
 use std::borrow::Cow;
 use std::time::Duration;
@@ -36,6 +38,7 @@ use self::ffi::{
     JxlFrameHeader, JxlPixelFormat,
 };
 use crate::converter::ImageEncoder;
+use crate::converter::traits::ThreadBudget;
 use crate::format::ImageFormat;
 use crate::input::{AnimationData, ImageContent, SourceImage};
 use crate::metadata::exif_for_jxl;
@@ -179,12 +182,25 @@ impl std::fmt::Display for JxlOptions {
 pub struct JxlEncoder {
     /// Encoding options.
     pub options: JxlOptions,
+    /// Explicit thread cap for libjxl's parallel runner; `None` uses all
+    /// available cores (mirrors the ravif `threads = None` semantics).
+    num_threads: Option<usize>,
 }
 
 impl JxlEncoder {
     /// Creates an encoder with the given options.
     pub fn new(options: JxlOptions) -> Self {
-        JxlEncoder { options }
+        JxlEncoder {
+            options,
+            num_threads: None,
+        }
+    }
+
+    /// Worker threads of libjxl's parallel runner for this encoder.
+    fn runner_threads(&self) -> usize {
+        self.num_threads
+            .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
+            .max(1)
     }
 }
 
@@ -357,7 +373,7 @@ impl ImageEncoder for JxlEncoder {
 
     fn encode_still_image(&self, image: &DynamicImage) -> Result<Vec<u8>, Error> {
         let request = still_request(image, self.options.bit_depth);
-        encode_jxl(&self.options, &request, None, None)
+        encode_jxl(&self.options, self.runner_threads(), &request, None, None)
     }
 
     fn encode_still_image_with_metadata(
@@ -368,10 +384,15 @@ impl ImageEncoder for JxlEncoder {
         let request = still_request(image, self.options.bit_depth);
         encode_jxl(
             &self.options,
+            self.runner_threads(),
             &request,
             metadata.icc.as_deref(),
             metadata.exif.as_deref(),
         )
+    }
+
+    fn adjust_threading(&mut self, budget: ThreadBudget) {
+        self.num_threads = budget.threads_per_encoder;
     }
 
     fn encode(&self, input: &SourceImage) -> Result<Vec<u8>, Error> {
@@ -394,6 +415,7 @@ impl ImageEncoder for JxlEncoder {
         };
         encode_jxl(
             &self.options,
+            self.runner_threads(),
             &request,
             icc.as_deref(),
             exif_payload.as_deref(),
@@ -443,7 +465,8 @@ fn delay_to_ticks(delay: Duration) -> u32 {
 /// Core encoding routine shared by the still and animated paths.
 fn encode_jxl(
     options: &JxlOptions,
-    request: &EncodeRequest,
+    num_threads: usize,
+    request: &EncodeRequest<'_>,
     icc: Option<&[u8]>,
     exif_payload: Option<&[u8]>,
 ) -> Result<Vec<u8>, Error> {
@@ -476,10 +499,24 @@ fn encode_jxl(
         None => 255.0,
     };
 
-    let encoder = ffi::Encoder::new().ok_or_else(|| {
+    let mut encoder = ffi::Encoder::new().ok_or_else(|| {
         Error::from_string("libjxl: could not allocate encoder instance".to_string())
     })?;
     let enc = encoder.raw();
+
+    // M-13: the resizable parallel runner spreads the encode work over
+    // `num_threads` workers. If it cannot be created (or registered),
+    // continue single-threaded instead of failing the file.
+    let runner = ffi::ParallelRunner::new(num_threads);
+    if let Some(runner) = &runner {
+        check(
+            unsafe {
+                ffi::JxlEncoderSetParallelRunner(enc, ffi::JxlResizableParallelRunner, runner.raw())
+            },
+            "SetParallelRunner",
+        )?;
+    }
+    encoder.set_runner(runner);
 
     // -- basic info --------------------------------------------------------
     let info = JxlBasicInfo {
@@ -619,17 +656,21 @@ fn encode_jxl(
                 )?;
             }
             if *animated {
+                // M-15: every field of the literal below is overwritten by
+                // `JxlEncoderInitFrameHeader` (verified against the
+                // vendored encode.cc) — it only materializes the struct;
+                // the duration is the sole field set explicitly afterwards.
                 let mut header = JxlFrameHeader {
-                    duration: delay_to_ticks(frame.delay),
+                    duration: 0,
                     timecode: 0,
                     name_length: 0,
-                    is_last: JXL_FALSE, // ignored by the encoder; CloseInput marks the last frame
+                    is_last: JXL_FALSE, // CloseInput marks the last frame
                     layer_info: ffi::JxlLayerInfo {
                         have_crop: JXL_FALSE,
                         crop_x0: 0,
                         crop_y0: 0,
-                        xsize: width,
-                        ysize: height,
+                        xsize: 0,
+                        ysize: 0,
                         blend_info: ffi::JxlBlendInfo {
                             blendmode: 0, // JXL_BLEND_REPLACE: full-canvas frames
                             source: 0,

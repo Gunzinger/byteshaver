@@ -395,15 +395,24 @@ impl EncoderConfig {
                 minimize_size,
                 allow_mixed,
                 method,
-            } => Some(EncoderConfig::WebpAnim(WebpAnimOptions {
-                lossless: lossless.unwrap_or_default(),
-                quality: quality.unwrap_or(90.),
-                kmin: *kmin,
-                kmax: *kmax,
-                minimize_size: minimize_size.unwrap_or_default(),
-                allow_mixed: allow_mixed.unwrap_or_default(),
-                method: *method,
-            })),
+            } => {
+                // M-3: kmin/kmax are range-checked by clap; the pair
+                // relation is validated here at config resolution
+                if let (Some(kmin), Some(kmax)) = (kmin, kmax)
+                    && kmin > kmax
+                {
+                    config_error("--kmin must be less than or equal to --kmax");
+                }
+                Some(EncoderConfig::WebpAnim(WebpAnimOptions {
+                    lossless: lossless.unwrap_or_default(),
+                    quality: quality.unwrap_or(90.),
+                    kmin: *kmin,
+                    kmax: *kmax,
+                    minimize_size: minimize_size.unwrap_or_default(),
+                    allow_mixed: allow_mixed.unwrap_or_default(),
+                    method: *method,
+                }))
+            }
             #[cfg(feature = "anim-apng")]
             Command::Apng {
                 compression_type,

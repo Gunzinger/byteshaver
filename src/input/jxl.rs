@@ -14,7 +14,9 @@
 //! images are converted to sRGB via `moxcms` (with a notice); if the
 //! conversion fails the error is propagated.
 
+use std::any::Any;
 use std::num::NonZeroU32;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
 use std::time::Duration;
 
@@ -27,8 +29,29 @@ use crate::format::ImageFormat;
 use crate::input::{AnimationData, FrameData, ImageContent, SourceImage};
 use crate::metadata::ImageMetadata;
 
+/// Per-axis dimension cap for the interleaved sample buffer (audit M-21),
+/// consistent with the image-crate decoder limits (audit CR-3): a crafted
+/// small file with huge declared dimensions must fail as a per-file error
+/// instead of aborting the process on the allocation.
+const MAX_SAMPLE_DIMENSION: u32 = 100_000;
+/// Total sample budget of one frame buffer (~2 GiB at 2 bytes/sample).
+const MAX_SAMPLES: usize = 1 << 30;
+
 /// Decodes a JPEG XL file into a [`SourceImage`].
 pub fn load_source_jxl(path: &Path) -> Result<SourceImage, Error> {
+    // jxl-oxide is a complex decoder: contain panics so a crafted file
+    // cannot kill the whole batch (mirrors the HEIF input module).
+    let result = panic::catch_unwind(AssertUnwindSafe(|| load_source_jxl_inner(path)));
+    match result {
+        Ok(inner) => inner,
+        Err(payload) => Err(Error::from_string(format!(
+            "jxl-oxide decoding panicked: {}",
+            panic_message(&payload)
+        ))),
+    }
+}
+
+fn load_source_jxl_inner(path: &Path) -> Result<SourceImage, Error> {
     let mut image = JxlImage::builder()
         .open(path)
         .map_err(|err| Error::from_string(format!("jxl decode failed: {err}")))?;
@@ -124,7 +147,29 @@ fn render_to_dynamic(
             "jxl {context}: unsupported channel count {channels}"
         )));
     }
-    let sample_count = width as usize * height as usize * channels as usize;
+    // guard the interleaved sample allocation (audit M-21): dimension caps
+    // plus checked multiplication, so oversized headers error per file
+    // instead of aborting on a huge `vec!` allocation
+    if width == 0 || height == 0 || width > MAX_SAMPLE_DIMENSION || height > MAX_SAMPLE_DIMENSION {
+        return Err(Error::from_string(format!(
+            "jxl {context}: dimensions {width}x{height} exceed the per-axis decode limit {}",
+            MAX_SAMPLE_DIMENSION
+        )));
+    }
+    let sample_count = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|samples| samples.checked_mul(u64::from(channels)))
+        .and_then(|samples| usize::try_from(samples).ok())
+        .ok_or_else(|| {
+            Error::from_string(format!(
+                "jxl {context}: sample count {width}x{height}x{channels} overflows"
+            ))
+        })?;
+    if sample_count > MAX_SAMPLES {
+        return Err(Error::from_string(format!(
+            "jxl {context}: {width}x{height}x{channels} needs {sample_count} samples, above the decode budget"
+        )));
+    }
     if use16 {
         let mut samples = vec![0u16; sample_count];
         let written = stream.write_to_buffer(&mut samples);
@@ -245,13 +290,16 @@ fn ticks_to_duration(ticks: u32, tps_numerator: u64, tps_denominator: u64) -> Du
 /// Box convention (libjxl/JXL spec): the payload starts with a 4-byte
 /// offset field (big-endian as read by jxl-oxide); the TIFF header follows
 /// at that offset. The Orientation tag is dropped because the renderer has
-/// already applied the transform.
+/// already applied the transform; a payload that cannot be parsed or
+/// re-serialized is dropped entirely (audit M-18) — the pixels are
+/// already upright, so a surviving Orientation tag would double-rotate
+/// the output.
 fn extract_exif(image: &JxlImage) -> Option<Vec<u8>> {
     match image.aux_boxes().first_exif() {
         Ok(AuxBoxData::Data(exif)) => {
             let offset = exif.tiff_header_offset() as usize;
             let payload = exif.payload().get(offset..).map(<[u8]>::to_vec)?;
-            Some(drop_orientation_tag(payload))
+            drop_orientation_tag(payload)
         }
         Ok(_) => None,
         Err(err) => {
@@ -262,43 +310,64 @@ fn extract_exif(image: &JxlImage) -> Option<Vec<u8>> {
 }
 
 /// Removes the Orientation tag from a raw TIFF payload (the pixels are
-/// already upright). Falls back to the original payload when it cannot be
-/// re-serialized.
+/// already upright). Returns `None` when the payload cannot be parsed or
+/// re-serialized: the EXIF payload is then dropped entirely rather than
+/// kept verbatim, because a surviving Orientation tag would rotate the
+/// already-upright output a second time (audit M-18).
 #[cfg(feature = "exif")]
-fn drop_orientation_tag(payload: Vec<u8>) -> Vec<u8> {
+fn drop_orientation_tag(payload: Vec<u8>) -> Option<Vec<u8>> {
     use exif::Tag;
     use exif::experimental::Writer;
+    use std::collections::HashSet;
 
-    let Ok(parsed) = crate::metadata::exif::parse(&payload) else {
-        return payload;
+    let parsed = match crate::metadata::exif::parse(&payload) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            eprintln!(
+                "Warning: could not parse the EXIF payload of the JXL image to remove its \
+                 Orientation tag ({err}); the rotation was already applied to the pixels, so \
+                 the whole EXIF payload is dropped to prevent a double rotation"
+            );
+            return None;
+        }
     };
+
     let mut writer = Writer::new();
-    let mut seen: Vec<(exif::In, Tag)> = Vec::new();
+    let mut seen: HashSet<(exif::In, Tag)> = HashSet::new();
     let mut kept = 0usize;
     for field in parsed.fields() {
         if field.tag == Tag::Orientation {
             continue;
         }
         // the writer rejects duplicate fields; keep the first occurrence
-        let key = (field.ifd_num, field.tag);
-        if seen.contains(&key) {
+        if !seen.insert((field.ifd_num, field.tag)) {
             continue;
         }
-        seen.push(key);
         writer.push_field(field);
         kept += 1;
     }
     let mut cursor = std::io::Cursor::new(Vec::new());
     match writer.write(&mut cursor, parsed.little_endian()) {
-        Ok(()) if kept > 0 => cursor.into_inner(),
-        // everything but Orientation vanished: keep the original payload
-        _ => payload,
+        Ok(()) if kept > 0 => Some(cursor.into_inner()),
+        // everything but Orientation vanished, or re-serialization failed:
+        // drop the payload instead of keeping a possibly-still-tagged one
+        Ok(()) => None,
+        Err(err) => {
+            eprintln!(
+                "Warning: could not re-serialize the EXIF payload of the JXL image without its \
+                 Orientation tag ({err}); the rotation was already applied to the pixels, so \
+                 the whole EXIF payload is dropped to prevent a double rotation"
+            );
+            None
+        }
     }
 }
 
 #[cfg(not(feature = "exif"))]
-fn drop_orientation_tag(payload: Vec<u8>) -> Vec<u8> {
-    payload
+fn drop_orientation_tag(payload: Vec<u8>) -> Option<Vec<u8>> {
+    // without the exif feature nothing downstream applies an Orientation
+    // tag, so the verbatim payload is safe to keep
+    Some(payload)
 }
 
 /// Extracts the raw XMP packet from the `xml ` aux box.
@@ -306,5 +375,16 @@ fn extract_xmp(image: &JxlImage) -> Option<Vec<u8>> {
     match image.aux_boxes().first_xml() {
         AuxBoxData::Data(xml) => Some(xml.to_vec()),
         _ => None,
+    }
+}
+
+/// Best-effort extraction of a panic message (mirrors the HEIF module).
+fn panic_message(payload: &Box<dyn Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic".to_string()
     }
 }
