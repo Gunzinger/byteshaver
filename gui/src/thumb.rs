@@ -30,6 +30,11 @@ pub const THUMB_EDGE: u32 = 96;
 const MAX_DECODE_ALLOC: u64 = 512 * 1024 * 1024;
 /// LRU cache cap: 1024 × (96² × 4 B) ≈ 37 MiB of texture memory.
 const CACHE_CAP: usize = 1024;
+/// Bound on outstanding thumbnail requests (M-32): the client-side
+/// queue buffered while the worker is paused never grows past this —
+/// scrolling a huge queue during a run no longer enqueues a decode per
+/// row; skipped rows re-request when they become visible again.
+const PENDING_CAP: usize = 512;
 /// Worker poll interval while paused / idle.
 const POLL_INTERVAL: Duration = Duration::from_millis(150);
 
@@ -150,6 +155,13 @@ pub struct ThumbState {
     /// pre-pass input for the table's texture snapshot (one frame of
     /// latency, see `panels/file_table`).
     visible: Vec<ThumbKey>,
+    /// Thumbnail requests buffered while the worker is paused (M-32):
+    /// bounded at [`PENDING_CAP`], oldest entry dropped beyond it.
+    queued: VecDeque<WorkerJob>,
+    /// Path mirror of `queued` (dedup while buffering).
+    queued_paths: HashSet<PathBuf>,
+    /// Last pause state (unpause transition detection).
+    was_paused: bool,
     /// Decoded textures / failure markers, LRU-capped.
     cache: LruCache<ThumbKey, ThumbEntry>,
 }
@@ -181,13 +193,48 @@ impl ThumbState {
             pending_thumbs: HashSet::new(),
             pending_exif: HashSet::new(),
             visible: Vec::new(),
+            queued: VecDeque::new(),
+            queued_paths: HashSet::new(),
+            was_paused: false,
             cache: LruCache::new(CACHE_CAP),
         }
     }
 
     /// Pause flag toggled by the app each frame (decoding contends with a
-    /// saturating conversion job for no user-visible benefit).
-    pub fn set_paused(&self, paused: bool) {
+    /// saturating conversion job for no user-visible benefit). Unpausing
+    /// first flushes the bounded client-side queue (M-32): entries
+    /// buffered while paused are filtered down to the rows still visible
+    /// (when the last visibility set exists) before being handed to the
+    /// worker, so stale scroll positions do not decode.
+    pub fn set_paused(&mut self, paused: bool) {
+        if !paused && self.was_paused {
+            if !self.visible.is_empty() {
+                let visible: HashSet<&PathBuf> =
+                    self.visible.iter().map(|(path, _)| path).collect();
+                self.queued.retain(|job| match job {
+                    WorkerJob::Thumbnail { key: (path, _) } => visible.contains(path),
+                    WorkerJob::Exif { path } => visible.contains(path),
+                });
+            }
+            for job in self.queued.drain(..) {
+                let WorkerJob::Thumbnail { key } = job else {
+                    continue;
+                };
+                if self.pending_thumbs.contains(&key.0) {
+                    continue; // a direct request raced ahead
+                }
+                if self
+                    .jobs
+                    .send(WorkerJob::Thumbnail { key: key.clone() })
+                    .is_err()
+                {
+                    break;
+                }
+                self.pending_thumbs.insert(key.0);
+            }
+            self.queued_paths.clear();
+        }
+        self.was_paused = paused;
         self.paused.store(paused, Ordering::Relaxed);
     }
 
@@ -206,12 +253,33 @@ impl ThumbState {
     /// (Re-)requests thumbnails, most-recently-visible-first (the table
     /// passes its visible rows; the reversed order lets the bottom-most —
     /// usually the scroll anchor — decode first). Requests for cached or
-    /// in-flight paths are dropped.
+    /// in-flight paths are dropped. While the worker is paused the
+    /// requests land in a bounded client-side queue instead (M-32);
+    /// beyond [`PENDING_CAP`] outstanding entries the oldest buffered
+    /// request is dropped (skipped rows re-request once visible again).
     pub fn request_thumbs(&mut self, keys: &[ThumbKey]) {
         for key in keys.iter().rev() {
             let (path, _mtime) = key;
             if self.cache.get(key).is_some() || self.pending_thumbs.contains(path) {
                 continue;
+            }
+            if self.paused.load(Ordering::Relaxed) {
+                if self.queued_paths.contains(path) {
+                    continue;
+                }
+                if self.queued.len() >= PENDING_CAP
+                    && let Some(WorkerJob::Thumbnail { key: (dropped, _) }) =
+                        self.queued.pop_front()
+                {
+                    self.queued_paths.remove(&dropped);
+                }
+                self.queued_paths.insert(path.clone());
+                self.queued
+                    .push_back(WorkerJob::Thumbnail { key: key.clone() });
+                continue;
+            }
+            if self.pending_thumbs.len() >= PENDING_CAP {
+                continue; // worker backed up: bound the outstanding set
             }
             if self
                 .jobs

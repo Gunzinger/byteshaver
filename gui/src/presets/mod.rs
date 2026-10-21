@@ -624,7 +624,9 @@ impl Store {
     /// same title is overwritten in place (edits), otherwise a free
     /// `<slug>[-N].json` name is chosen (collision suffixes `-2`, `-3`,
     /// …). When `previous_title` differs from the new title the old file
-    /// is removed (rename re-slugs). Writes are atomic (tmp + rename).
+    /// is removed after the new one is safely on disk (M-26: a failure
+    /// between the steps must never lose the preset outright). Writes are
+    /// atomic (tmp + rename).
     ///
     /// # Errors
     ///
@@ -634,6 +636,13 @@ impl Store {
         validate(preset)?;
         std::fs::create_dir_all(&self.dir)
             .map_err(|err| format!("cannot create presets dir: {err}"))?;
+        let target = match self.find_file_name_by_title(&preset.title)? {
+            Some(existing) => self.dir.join(existing),
+            None => self.dir.join(self.free_file_name(&preset.title)?),
+        };
+        let json = serde_json::to_string_pretty(&sanitized(preset))
+            .map_err(|err| format!("cannot serialize the preset: {err}"))?;
+        write_atomic(&target, json.as_bytes())?;
         if let Some(previous) = previous_title
             && previous != preset.title
             && let Some(old_file) = self.find_file_name_by_title(previous)?
@@ -641,13 +650,7 @@ impl Store {
             std::fs::remove_file(self.dir.join(old_file))
                 .map_err(|err| format!("cannot remove the renamed preset file: {err}"))?;
         }
-        let target = match self.find_file_name_by_title(&preset.title)? {
-            Some(existing) => self.dir.join(existing),
-            None => self.dir.join(self.free_file_name(&preset.title)?),
-        };
-        let json = serde_json::to_string_pretty(&sanitized(preset))
-            .map_err(|err| format!("cannot serialize the preset: {err}"))?;
-        write_atomic(&target, json.as_bytes())
+        Ok(())
     }
 
     /// Deletes the file carrying `title` (titles are authoritative).

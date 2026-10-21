@@ -17,7 +17,7 @@
 //! again when the next run starts so the queue keeps representing the
 //! user's input selection, not the last run's expansion.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -291,6 +291,35 @@ impl QueueItem {
         }
     }
 
+    /// Builds a discovered (directory/HEIF expansion) row *without*
+    /// touching the filesystem: the outcome already carries the sizes and
+    /// the table's lazy readers fill in dimensions/EXIF only when the row
+    /// becomes visible — discovered rows arrive in a burst at run end, so
+    /// a stat per row would freeze the UI frame (M-29).
+    #[must_use]
+    pub fn discovered(path: PathBuf, outcome: &Outcome) -> Self {
+        let mut item = QueueItem {
+            source_format: ImageFormat::from(path.as_path()),
+            input_size: None,
+            modified: None,
+            status: ItemStatus::Queued,
+            error: None,
+            note: None,
+            output_size: None,
+            metadata_dropped: false,
+            is_dir: false,
+            summary: None,
+            discovered: true,
+            converted_to: None,
+            output_path: None,
+            dimensions: None,
+            exif: None,
+            path,
+        };
+        item.apply_outcome(outcome);
+        item
+    }
+
     /// Whether this row is expected to be convertible in this build
     /// (supported extension and, for HEIF containers, a `dec-heif` build).
     /// Unsupported rows are still enqueued — they surface as per-file
@@ -382,6 +411,14 @@ impl QueueItem {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Queue {
     items: Vec<QueueItem>,
+    /// Path → row index mirror of `items` (M-29): keeps event application
+    /// (FileStarted/FileFinished/Notice lookups) O(1) instead of a linear
+    /// scan per event. Maintained by every mutating method; paths are
+    /// unique (canonical dedup on add).
+    index: HashMap<PathBuf, usize>,
+    /// Bumped on every mutation (row data included) — the file table's
+    /// sort-permutation cache keys off it (M-30).
+    version: u64,
 }
 
 impl Queue {
@@ -399,7 +436,16 @@ impl Queue {
 
     /// Mutable access to the rows (notice attachment from the app).
     pub(crate) fn items_mut(&mut self) -> &mut Vec<QueueItem> {
+        self.version += 1; // raw access may change sort-relevant row data
         &mut self.items
+    }
+
+    /// Monotonic mutation counter (M-30): the table's sort cache
+    /// rebuilds when this changes. Raw `items_mut()` access bumps it too
+    /// (lazily filled dimensions/EXIF change sort keys).
+    #[must_use]
+    pub fn version(&self) -> u64 {
+        self.version
     }
 
     /// Number of rows.
@@ -434,7 +480,9 @@ impl Queue {
             if self.contains(&key) {
                 continue;
             }
+            self.index.entry(key.clone()).or_insert(self.items.len());
             self.items.push(QueueItem::new(key));
+            self.version += 1;
             added += 1;
         }
         added
@@ -444,17 +492,41 @@ impl Queue {
     pub fn remove(&mut self, index: usize) {
         if index < self.items.len() {
             self.items.remove(index);
+            self.rebuild_index();
+            self.version += 1;
         }
     }
 
     /// Removes every row.
     pub fn clear(&mut self) {
         self.items.clear();
+        self.index.clear();
+        self.version += 1;
     }
 
     /// Removes only the transient rows discovered during a run.
     pub fn clear_discovered(&mut self) {
         self.items.retain(|item| !item.discovered);
+        self.rebuild_index();
+        self.version += 1;
+    }
+
+    /// Rebuilds the path → row index mirror.
+    fn rebuild_index(&mut self) {
+        self.index = self
+            .items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| (item.path.clone(), i))
+            .collect();
+    }
+
+    /// Row index of `path` via the index mirror (`None` when absent; the
+    /// entry is verified against the row so a stale mirror can never hit
+    /// the wrong row).
+    pub(crate) fn index_of(&self, path: &Path) -> Option<usize> {
+        let index = *self.index.get(path)?;
+        (self.items.get(index).is_some_and(|item| item.path == path)).then_some(index)
     }
 
     /// The plain input selection for a job spec (queue paths in order,
@@ -492,8 +564,9 @@ impl Queue {
     /// Applies a [`byteshaver::job::JobEvent::FileStarted`] event: flips the
     /// matching row to [`ItemStatus::Running`].
     pub fn apply_file_started(&mut self, path: &Path) {
-        if let Some(item) = self.items.iter_mut().find(|item| item.path == path) {
+        if let Some(item) = self.index_of(path).and_then(|i| self.items.get_mut(i)) {
             item.status = ItemStatus::Running;
+            self.version += 1;
         }
     }
 
@@ -503,22 +576,24 @@ impl Queue {
     /// then appends a discovered row).
     pub fn apply_file_finished(&mut self, path: &Path, outcome: &Outcome) -> bool {
         let running = self
-            .items
-            .iter_mut()
-            .find(|item| item.path == path && item.status == ItemStatus::Running);
+            .index_of(path)
+            .and_then(|i| self.items.get_mut(i))
+            .filter(|item| item.status == ItemStatus::Running);
         let Some(item) = running else {
             return false;
         };
         item.apply_outcome(outcome);
+        self.version += 1;
         true
     }
 
     /// Appends a discovered (directory/HEIF expansion) result row.
     pub fn push_discovered(&mut self, path: PathBuf, outcome: &Outcome) {
-        let mut item = QueueItem::new(path);
-        item.discovered = true;
-        item.apply_outcome(outcome);
-        self.items.push(item);
+        // first occurrence keeps its index slot (same semantics as the
+        // old linear `find`)
+        self.index.entry(path.clone()).or_insert(self.items.len());
+        self.items.push(QueueItem::discovered(path, outcome));
+        self.version += 1;
     }
 
     /// After a job: rows that never received an event (directories, which
@@ -782,6 +857,27 @@ mod tests {
         assert_eq!(queue.len(), 1);
         queue.clear();
         assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn event_lookups_survive_removal() {
+        // the path→row index mirror must follow row removals (M-29)
+        let mut queue = Queue::new();
+        queue.add_paths(vec![
+            PathBuf::from("/x/a.png"),
+            PathBuf::from("/x/b.png"),
+            PathBuf::from("/x/c.png"),
+        ]);
+        queue.remove(0);
+        queue.begin_run(Some("webp"));
+        assert!(queue.apply_file_finished(&PathBuf::from("/x/c.png"), &outcome_encoded()));
+        assert_eq!(queue.items()[1].status, ItemStatus::Encoded);
+        assert!(
+            !queue.apply_file_finished(&PathBuf::from("/x/a.png"), &outcome_encoded()),
+            "the removed row is gone (falls through to discovered)"
+        );
+        queue.apply_file_started(&PathBuf::from("/x/b.png"));
+        assert_eq!(queue.items()[0].status, ItemStatus::Running);
     }
 
     // ---- Run-state transitions -------------------------------------------

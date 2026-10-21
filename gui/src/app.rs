@@ -234,6 +234,9 @@ pub fn ratio_tone(ratio: f32) -> SegTone {
 pub struct App {
     /// The conversion queue.
     pub queue: Queue,
+    /// Cached sort permutation of the queue table (M-30): rebuilt only
+    /// when the queue's version counter or the sort key changed.
+    pub sort_cache: Option<crate::panels::file_table::SortCache>,
     /// Persisted configuration (encoder options, policies, output dir).
     pub settings: Settings,
     /// Compile-time capabilities of the linked core (encoder list, HEIF
@@ -259,6 +262,10 @@ pub struct App {
     pub start_error: Option<String>,
     /// Whether a drag is currently over the window (drop-zone highlight).
     pub drag_hovered: bool,
+    /// Pending native file/folder picker (M-25): started by the drop-zone
+    /// buttons, polled once per frame in `logic` — never a blocking
+    /// round-trip inside the frame.
+    pub file_dialog: Option<crate::panels::drop_zone::PendingFileDialog>,
     /// Draft state of the JXL advanced settings editor.
     pub jxl_draft: JxlAdvancedDraft,
     /// Confetti burst of the last finished run (`None` = no party /
@@ -312,6 +319,10 @@ pub struct App {
     /// *derived* state) — see `crate::chips::chip_selection`.
     pub custom_chip_explicit: bool,
     settings_dirty: bool,
+    /// When the current dirty stretch began (M-27 debounce anchor); the
+    /// save fires once ≥ 500 ms elapsed since this first mark, `on_exit`
+    /// flushes whatever is still pending.
+    settings_dirty_since: Option<Instant>,
 }
 
 /// Draft state of the "save current as preset" modal (plan 14 §4): the
@@ -363,6 +374,7 @@ impl App {
         };
         App {
             queue: Queue::new(),
+            sort_cache: None,
             settings,
             capabilities: byteshaver::job::capabilities(),
             session: Session::new(),
@@ -374,6 +386,7 @@ impl App {
             show_about: false,
             start_error: None,
             drag_hovered: false,
+            file_dialog: None,
             jxl_draft: JxlAdvancedDraft::default(),
             confetti: None,
             flourish: None,
@@ -396,13 +409,15 @@ impl App {
             preset_status: None,
             custom_chip_explicit: false,
             settings_dirty: false,
+            settings_dirty_since: None,
         }
     }
 
     /// Marks the settings as changed (panels call this after edits); the
-    /// next `update` saves them to disk.
+    /// next `update` saves them to disk (debounced, see `logic`).
     pub fn mark_settings_dirty(&mut self) {
         self.settings_dirty = true;
+        self.settings_dirty_since.get_or_insert_with(Instant::now);
     }
 
     /// Whether the settings changed since the last save.
@@ -415,6 +430,7 @@ impl App {
     pub fn save_settings(&mut self) {
         self.settings.save();
         self.settings_dirty = false;
+        self.settings_dirty_since = None;
     }
 
     /// Whether the selected encoder is compiled into this build.
@@ -982,7 +998,28 @@ impl App {
                 };
                 match rx.try_recv() {
                     Ok(event) => event,
-                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => return,
+                    Err(TryRecvError::Empty) => return,
+                    // the worker dropped the reporter without emitting
+                    // `Finished` (a panicked pipeline thread): run the
+                    // same finish path a Finished event would, so the
+                    // app stays operable instead of "running" forever
+                    // (M-23). `join` maps a panicked worker onto a
+                    // report error already; the synthesized message is
+                    // the fallback for a clean-but-silent exit.
+                    Err(TryRecvError::Disconnected) => {
+                        if self.running.is_some() {
+                            self.finish_job();
+                            let message =
+                                "the job ended unexpectedly (worker exited without finishing)";
+                            if let Some(report) = &mut self.report
+                                && report.error.is_none()
+                            {
+                                report.error = Some(message.to_string());
+                                self.start_error = Some(message.to_string());
+                            }
+                        }
+                        return;
+                    }
                 }
             };
             self.apply_event(event);
@@ -1069,9 +1106,8 @@ impl App {
     fn queue_note(&mut self, path: &std::path::Path, message: String) {
         let Some(item) = self
             .queue
-            .items_mut()
-            .iter_mut()
-            .find(|item| item.path == path)
+            .index_of(path)
+            .and_then(|i| self.queue.items_mut().get_mut(i))
         else {
             return;
         };
@@ -1132,8 +1168,7 @@ impl App {
         self.celebrate_run(&report);
         // plan 10 §phase 2 AutoAfterRun: enqueue measurements for every
         // successfully encoded file (the metric worker just un-paused)
-        let auto_pairs =
-            crate::metrics::auto_measure_pairs(&report, self.settings.quality_metric);
+        let auto_pairs = crate::metrics::auto_measure_pairs(&report, self.settings.quality_metric);
         self.report = Some(report);
         for (input, output) in auto_pairs {
             self.metrics.request_measure(
@@ -1235,6 +1270,10 @@ impl eframe::App for App {
             self.drain_events();
         }
 
+        // 2.1 pending native file dialog (M-25): resolve the off-thread
+        // picker result, if any — never a blocking round-trip in the frame
+        crate::panels::drop_zone::poll_dialog(self);
+
         // 2.5 thumbnail/EXIF worker results: textures land in the LRU
         // cache, summaries onto their queue rows (plan 11 §6); the worker
         // pauses while a job runs (decode would contend with rayon)
@@ -1282,12 +1321,26 @@ impl eframe::App for App {
             && self.settings.window_size != Some([width, height])
         {
             self.settings.window_size = Some([width, height]);
-            self.settings_dirty = true;
+            self.mark_settings_dirty();
         }
 
-        // 5. persist changed settings (cheap JSON write, at most per change);
-        // the per-frame window-size capture above keeps the persisted size
-        // current without a separate on_exit hook
+        // 5. persist changed settings — atomic write, debounced (M-27):
+        // interactive edits (drags, column resizes, window sizing) mark
+        // dirty at frame rate; the JSON serialize + fs write runs at
+        // most ~2/s, once 500 ms after the first change. `on_exit`
+        // flushes a still-pending save so quick edit → quit never
+        // loses it.
+        if self.settings_dirty()
+            && self
+                .settings_dirty_since
+                .is_some_and(|since| since.elapsed() >= std::time::Duration::from_millis(500))
+        {
+            self.save_settings();
+        }
+    }
+
+    /// Flushes a still-debounced settings save on shutdown (M-27).
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         if self.settings_dirty() {
             self.save_settings();
         }

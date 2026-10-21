@@ -101,8 +101,13 @@ pub struct MetricState {
     jobs: Sender<MetricJob>,
     results: Receiver<MetricOutcome>,
     paused: Arc<AtomicBool>,
-    /// Input paths with an in-flight request (dedup).
-    pending: HashSet<PathBuf>,
+    /// Input paths with an in-flight Measure request (dedup).
+    pending_measure: HashSet<PathBuf>,
+    /// Input paths with an in-flight Inspect request — a separate set
+    /// (M-28): a shared set silently dropped the inspector decode when a
+    /// measurement of the same file was still running, leaving the
+    /// inspector window waiting forever.
+    pending_inspect: HashSet<PathBuf>,
     /// Measured results, keyed by input path.
     measured: HashMap<PathBuf, MetricEntry>,
     /// Stored failures, keyed by input path (plan 15 F19: errors are
@@ -137,7 +142,8 @@ impl MetricState {
             jobs,
             results,
             paused,
-            pending: HashSet::new(),
+            pending_measure: HashSet::new(),
+            pending_inspect: HashSet::new(),
             measured: HashMap::new(),
             errors: HashMap::new(),
             engine: MetricEngineChoice::default(),
@@ -162,10 +168,10 @@ impl MetricState {
         self.errors.get(input)
     }
 
-    /// Whether `input` has a request in flight.
+    /// Whether `input` has a Measure request in flight.
     #[must_use]
     pub fn is_pending(&self, input: &Path) -> bool {
-        self.pending.contains(input)
+        self.pending_measure.contains(input)
     }
 
     /// Requests a measurement unless one is in flight or a fresh result
@@ -178,7 +184,7 @@ impl MetricState {
         engine: MetricEngineChoice,
         max_edge: u32,
     ) {
-        if self.pending.contains(&input) {
+        if self.pending_measure.contains(&input) {
             return;
         }
         let mtime = file_mtime(&output);
@@ -206,14 +212,15 @@ impl MetricState {
         {
             return; // worker gone (app shutting down)
         }
-        self.pending.insert(input);
+        self.pending_measure.insert(input);
     }
 
-    /// Requests the bounded decode pair of the open inspector (deduped;
-    /// [`super::DISPLAY_MAX_EDGE`] display bound, separate from the
-    /// metric's settings bound).
+    /// Requests the bounded decode pair of the open inspector (deduped
+    /// against in-flight inspections only — measurements of the same
+    /// file must not block it, M-28; [`super::DISPLAY_MAX_EDGE`] display
+    /// bound, separate from the metric's settings bound).
     pub fn request_inspect(&mut self, input: PathBuf, output: PathBuf) {
-        if self.pending.contains(&input) {
+        if self.pending_inspect.contains(&input) {
             return;
         }
         if self
@@ -226,7 +233,7 @@ impl MetricState {
         {
             return;
         }
-        self.pending.insert(input);
+        self.pending_inspect.insert(input);
     }
 
     /// Drops every cached result (e.g. when the engine choice changed so
@@ -257,12 +264,17 @@ impl MetricState {
                     output_mtime,
                     result,
                 }) => {
-                    self.pending.remove(&input);
+                    self.pending_measure.remove(&input);
                     match result {
                         Ok(result) => {
                             self.errors.remove(&input);
-                            self.measured
-                                .insert(input, MetricEntry { output_mtime, result });
+                            self.measured.insert(
+                                input,
+                                MetricEntry {
+                                    output_mtime,
+                                    result,
+                                },
+                            );
                         }
                         Err(message) => {
                             self.measured.remove(&input);
@@ -276,8 +288,13 @@ impl MetricState {
                         }
                     }
                 }
-                Ok(MetricOutcome::Inspected { input, output, a, b }) => {
-                    self.pending.remove(&input);
+                Ok(MetricOutcome::Inspected {
+                    input,
+                    output,
+                    a,
+                    b,
+                }) => {
+                    self.pending_inspect.remove(&input);
                     apply_inspection(input, output, a, b);
                 }
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => return,
@@ -288,16 +305,14 @@ impl MetricState {
 
 /// Output file mtime (`None` when unstatable).
 fn file_mtime(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path).and_then(|meta| meta.modified()).ok()
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
 }
 
 /// Metric-thread loop: sleeps while paused, otherwise takes one job at a
 /// time with a timeout; exits when all senders are gone (app dropped).
-fn worker_loop(
-    jobs: Receiver<MetricJob>,
-    results: Sender<MetricOutcome>,
-    paused: Arc<AtomicBool>,
-) {
+fn worker_loop(jobs: Receiver<MetricJob>, results: Sender<MetricOutcome>, paused: Arc<AtomicBool>) {
     loop {
         if paused.load(Ordering::Relaxed) {
             std::thread::sleep(POLL_INTERVAL);
@@ -375,13 +390,26 @@ mod tests {
                 },
             },
         );
-        state.pending.remove(&input);
-        state.request_measure(input.clone(), output.clone(), MetricEngineChoice::Psnr, 4096);
-        assert!(!state.is_pending(&input), "fresh cache hit skips the request");
+        state.pending_measure.remove(&input);
+        state.request_measure(
+            input.clone(),
+            output.clone(),
+            MetricEngineChoice::Psnr,
+            4096,
+        );
+        assert!(
+            !state.is_pending(&input),
+            "fresh cache hit skips the request"
+        );
         // stale mtime → re-request (the recorded mtime differs from the
         // file's current one)
         state.measured.get_mut(&input).expect("entry").output_mtime = Some(SystemTime::UNIX_EPOCH);
-        state.request_measure(input.clone(), output.clone(), MetricEngineChoice::Psnr, 4096);
+        state.request_measure(
+            input.clone(),
+            output.clone(),
+            MetricEngineChoice::Psnr,
+            4096,
+        );
         assert!(state.is_pending(&input), "stale output triggers re-measure");
         assert!(!state.measured.contains_key(&input), "stale entry dropped");
         // engine mirror is plain data (app syncs it from the settings)
@@ -445,16 +473,30 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         let error = state.error(&input).expect("junk output → stored error");
-        assert!(error.message.to_lowercase().contains("format"), "{}", error.message);
+        assert!(
+            error.message.to_lowercase().contains("format"),
+            "{}",
+            error.message
+        );
         // a second request for the same output is a cached-failure hit
-        state.request_measure(input.clone(), output.clone(), MetricEngineChoice::Psnr, 4096);
+        state.request_measure(
+            input.clone(),
+            output.clone(),
+            MetricEngineChoice::Psnr,
+            4096,
+        );
         assert!(!state.is_pending(&input), "failure deduped like a result");
 
         // rewriting the output (newer mtime) drops the stale failure and
         // the re-request is accepted
         std::thread::sleep(Duration::from_millis(5));
         std::fs::write(&output, &png).expect("rewrite output as a real png");
-        state.request_measure(input.clone(), output.clone(), MetricEngineChoice::Psnr, 4096);
+        state.request_measure(
+            input.clone(),
+            output.clone(),
+            MetricEngineChoice::Psnr,
+            4096,
+        );
         assert!(state.is_pending(&input), "stale error → re-measure");
         for _ in 0..100 {
             state.poll(|_, _, _, _| panic!("no inspection was requested"));

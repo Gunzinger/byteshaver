@@ -34,6 +34,20 @@ mod viewports;
 use eframe::egui;
 
 fn main() -> eframe::Result<()> {
+    // x86-64-v3 runtime guard: release artifacts (and this repo's
+    // .cargo/config.toml dev builds) compile with target-cpu=x86-64-v3 —
+    // on a pre-Haswell CPU the binary would die with SIGILL deep inside
+    // the renderer; fail early with a readable message instead.
+    #[cfg(target_arch = "x86_64")]
+    if !std::arch::is_x86_feature_detected!("avx2") {
+        eprintln!(
+            "byteshaver-gui: this build targets the x86-64-v3 microarchitecture \
+             (AVX2, Intel Haswell / AMD Zen and later), which this CPU does not \
+             support. Please build from source for older CPUs."
+        );
+        std::process::exit(86);
+    }
+
     // settings are loaded before the viewport is created so the persisted
     // window size can seed the native options
     let settings = settings::Settings::load_or_default();

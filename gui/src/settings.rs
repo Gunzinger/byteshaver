@@ -451,7 +451,9 @@ impl Settings {
     }
 
     /// Writes the settings to disk (creating the directory when needed);
-    /// failures are reported on stderr but never fatal.
+    /// atomic (tmp + rename — a crash or full disk mid-write can never
+    /// leave a torn settings file behind, M-27); failures are reported
+    /// on stderr but never fatal.
     pub fn save(&self) {
         let Some(path) = Self::path() else {
             return;
@@ -460,10 +462,9 @@ impl Settings {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(
-                &path,
-                serde_json::to_string_pretty(self).unwrap_or_default(),
-            )?;
+            let tmp = path.with_extension("json.tmp");
+            std::fs::write(&tmp, serde_json::to_string_pretty(self).unwrap_or_default())?;
+            std::fs::rename(&tmp, &path)?;
             Ok(())
         };
         if let Err(err) = write() {
