@@ -8,7 +8,10 @@
 # Usage: build-decode-only-windows.sh <DIST> [JOBS]
 set -euo pipefail
 
-DIST="$(realpath "${1:?usage: build-decode-only-windows.sh <DIST> [JOBS]}")"
+DIST_ARG="${1:?usage: build-decode-only-windows.sh <DIST> [JOBS]}"
+# create the target before resolving it — see build-decode-only.sh
+mkdir -p "$DIST_ARG"
+DIST="$(realpath "$DIST_ARG")"
 JOBS="${2:-$(nproc)}"
 WORK="${LIBHEIF_STATIC_WORKDIR:-$(mktemp -d)}"
 TRIPLE="x86_64-w64-mingw32"
