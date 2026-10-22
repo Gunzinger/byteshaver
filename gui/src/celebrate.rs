@@ -421,7 +421,7 @@ pub fn paint(app: &mut App, ctx: &egui::Context) {
         if confetti.is_alive() && confetti.visible() > 0 {
             let painter = ctx.layer_painter(egui::LayerId::new(
                 egui::Order::Foreground,
-                egui::Id::new("byteshaver-confetti"),
+                egui::Id::unique("byteshaver-confetti"),
             ));
             let fade = confetti.fade_alpha();
             for (rect, rot, color_idx) in confetti.rects() {

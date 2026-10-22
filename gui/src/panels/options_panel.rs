@@ -114,13 +114,13 @@ fn panel_height_target(measured_content_height: f32, viewport_height: f32) -> f3
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     let viewport_height = ctx.viewport_rect().height();
-    let measure_id = egui::Id::new(MEASURED_HEIGHT_ID);
+    let measure_id = egui::Id::unique(MEASURED_HEIGHT_ID);
     let measured = ctx
         .data_mut(|data| data.get_temp::<f32>(measure_id))
         .unwrap_or(PANEL_SEED_HEIGHT);
     let target = panel_height_target(measured, viewport_height);
     let height = ctx.animate_value_with_time(
-        egui::Id::new(ANIMATED_HEIGHT_ID),
+        egui::Id::unique(ANIMATED_HEIGHT_ID),
         target,
         PANEL_ANIMATION_TIME,
     );
@@ -167,7 +167,7 @@ fn collapsing_tree(
         SettingsTree::Options => app.settings.options_tree_open,
         SettingsTree::Policies => app.settings.policies_tree_open,
     };
-    let id = egui::Id::new(id_salt);
+    let id = egui::Id::unique(id_salt);
     let state = CollapsingState::load_with_default_open(ui.ctx(), id, settings_open);
     let header = state.show_header(ui, |ui| {
         ui.strong(title);
@@ -296,7 +296,7 @@ fn custom_disclosure(ui: &mut egui::Ui, app: &mut App) {
     // plan 15 F1/F2: one constant title, open by default in every state
     // (preset or custom), toggled only by the user; egui's persisted
     // memory keeps the choice for the session as before
-    let disclosure_id = egui::Id::new(CUSTOM_FORM_ID);
+    let disclosure_id = egui::Id::unique(CUSTOM_FORM_ID);
     let state = CollapsingState::load_with_default_open(ui.ctx(), disclosure_id, true);
     let header = state.show_header(ui, |ui| {
         ui.strong(ENCODER_OPTIONS_TITLE);
@@ -399,7 +399,7 @@ fn reset_defaults_button(ui: &mut egui::Ui, app: &mut App) {
         app.mark_settings_dirty();
         ui.ctx().data_mut(|data| {
             data.insert_temp(
-                egui::Id::new(RESET_NOTICE_ID),
+                egui::Id::unique(RESET_NOTICE_ID),
                 ResetNotice {
                     at: Instant::now(),
                     count: changed.len(),
@@ -414,14 +414,14 @@ fn reset_defaults_button(ui: &mut egui::Ui, app: &mut App) {
 fn reset_notice_ui(ui: &mut egui::Ui, app: &mut App) {
     let Some(notice) = ui
         .ctx()
-        .data_mut(|data| data.get_temp::<ResetNotice>(egui::Id::new(RESET_NOTICE_ID)))
+        .data_mut(|data| data.get_temp::<ResetNotice>(egui::Id::unique(RESET_NOTICE_ID)))
     else {
         return;
     };
     let elapsed = notice.at.elapsed().as_secs_f32();
     if elapsed >= RESET_NOTICE_FADE_SECS {
         ui.ctx()
-            .data_mut(|data| data.remove::<ResetNotice>(egui::Id::new(RESET_NOTICE_ID)));
+            .data_mut(|data| data.remove::<ResetNotice>(egui::Id::unique(RESET_NOTICE_ID)));
         return;
     }
     let alpha = 1.0 - elapsed / RESET_NOTICE_FADE_SECS;
@@ -431,7 +431,7 @@ fn reset_notice_ui(ui: &mut egui::Ui, app: &mut App) {
         app.settings.encoder = notice.undo.clone();
         app.mark_settings_dirty();
         ui.ctx()
-            .data_mut(|data| data.remove::<ResetNotice>(egui::Id::new(RESET_NOTICE_ID)));
+            .data_mut(|data| data.remove::<ResetNotice>(egui::Id::unique(RESET_NOTICE_ID)));
     }
     ui.ctx()
         .request_repaint_after(std::time::Duration::from_millis(120));
@@ -1207,29 +1207,29 @@ fn manage_body(app: &App, ui: &mut egui::Ui, rows: &ManageRows, intents: &mut Ma
     // inline rename editor (draft prefilled with the current title)
     let rename = ui
         .ctx()
-        .data_mut(|data| data.get_temp::<String>(egui::Id::new(RENAME_EDIT_ID)));
+        .data_mut(|data| data.get_temp::<String>(egui::Id::unique(RENAME_EDIT_ID)));
     if let Some(old) = rename {
         ui.separator();
         ui.horizontal(|ui| {
             ui.label("New title:");
             let mut draft = ui
                 .ctx()
-                .data_mut(|data| data.get_temp::<String>(egui::Id::new(RENAME_DRAFT_ID)))
+                .data_mut(|data| data.get_temp::<String>(egui::Id::unique(RENAME_DRAFT_ID)))
                 .unwrap_or_else(|| old.clone());
             let response = ui.text_edit_singleline(&mut draft);
             ui.ctx()
-                .data_mut(|data| data.insert_temp(egui::Id::new(RENAME_DRAFT_ID), draft.clone()));
+                .data_mut(|data| data.insert_temp(egui::Id::unique(RENAME_DRAFT_ID), draft.clone()));
             if ui.button("Rename").clicked() || response.lost_focus() {
                 intents.rename_submit = Some((old.clone(), draft));
                 ui.ctx().data_mut(|data| {
-                    data.remove::<String>(egui::Id::new(RENAME_EDIT_ID));
-                    data.remove::<String>(egui::Id::new(RENAME_DRAFT_ID));
+                    data.remove::<String>(egui::Id::unique(RENAME_EDIT_ID));
+                    data.remove::<String>(egui::Id::unique(RENAME_DRAFT_ID));
                 });
             }
             if ui.button("Cancel").clicked() {
                 ui.ctx().data_mut(|data| {
-                    data.remove::<String>(egui::Id::new(RENAME_EDIT_ID));
-                    data.remove::<String>(egui::Id::new(RENAME_DRAFT_ID));
+                    data.remove::<String>(egui::Id::unique(RENAME_EDIT_ID));
+                    data.remove::<String>(egui::Id::unique(RENAME_DRAFT_ID));
                 });
             }
         });
@@ -1238,14 +1238,14 @@ fn manage_body(app: &App, ui: &mut egui::Ui, rows: &ManageRows, intents: &mut Ma
     // inline description editor (draft prefilled with the current text)
     let description_edit = ui
         .ctx()
-        .data_mut(|data| data.get_temp::<String>(egui::Id::new(DESCRIPTION_EDIT_ID)));
+        .data_mut(|data| data.get_temp::<String>(egui::Id::unique(DESCRIPTION_EDIT_ID)));
     if let Some(title) = description_edit {
         ui.separator();
         ui.horizontal(|ui| {
             ui.label(format!("Description of {title:?}:"));
             let mut draft = ui
                 .ctx()
-                .data_mut(|data| data.get_temp::<String>(egui::Id::new(DESCRIPTION_DRAFT_ID)))
+                .data_mut(|data| data.get_temp::<String>(egui::Id::unique(DESCRIPTION_DRAFT_ID)))
                 .unwrap_or_else(|| app_user_description(&rows.user, &title));
             ui.add(
                 egui::TextEdit::multiline(&mut draft)
@@ -1253,19 +1253,19 @@ fn manage_body(app: &App, ui: &mut egui::Ui, rows: &ManageRows, intents: &mut Ma
                     .desired_rows(2),
             );
             ui.ctx().data_mut(|data| {
-                data.insert_temp(egui::Id::new(DESCRIPTION_DRAFT_ID), draft.clone());
+                data.insert_temp(egui::Id::unique(DESCRIPTION_DRAFT_ID), draft.clone());
             });
             if ui.button("Save").clicked() {
                 intents.description_submit = Some((title.clone(), draft.clone()));
                 ui.ctx().data_mut(|data| {
-                    data.remove::<String>(egui::Id::new(DESCRIPTION_EDIT_ID));
-                    data.remove::<String>(egui::Id::new(DESCRIPTION_DRAFT_ID));
+                    data.remove::<String>(egui::Id::unique(DESCRIPTION_EDIT_ID));
+                    data.remove::<String>(egui::Id::unique(DESCRIPTION_DRAFT_ID));
                 });
             }
             if ui.button("Cancel").clicked() {
                 ui.ctx().data_mut(|data| {
-                    data.remove::<String>(egui::Id::new(DESCRIPTION_EDIT_ID));
-                    data.remove::<String>(egui::Id::new(DESCRIPTION_DRAFT_ID));
+                    data.remove::<String>(egui::Id::unique(DESCRIPTION_EDIT_ID));
+                    data.remove::<String>(egui::Id::unique(DESCRIPTION_DRAFT_ID));
                 });
             }
         });
@@ -1274,7 +1274,7 @@ fn manage_body(app: &App, ui: &mut egui::Ui, rows: &ManageRows, intents: &mut Ma
     // inline delete confirm swap
     let confirming = ui
         .ctx()
-        .data_mut(|data| data.get_temp::<String>(egui::Id::new(DELETE_CONFIRM_ID)));
+        .data_mut(|data| data.get_temp::<String>(egui::Id::unique(DELETE_CONFIRM_ID)));
     if let Some(title) = confirming {
         ui.separator();
         ui.horizontal(|ui| {
@@ -1285,11 +1285,11 @@ fn manage_body(app: &App, ui: &mut egui::Ui, rows: &ManageRows, intents: &mut Ma
             if ui.button("Yes, delete").clicked() {
                 intents.delete_confirmed = Some(title.clone());
                 ui.ctx()
-                    .data_mut(|data| data.remove::<String>(egui::Id::new(DELETE_CONFIRM_ID)));
+                    .data_mut(|data| data.remove::<String>(egui::Id::unique(DELETE_CONFIRM_ID)));
             }
             if ui.button("Keep").clicked() {
                 ui.ctx()
-                    .data_mut(|data| data.remove::<String>(egui::Id::new(DELETE_CONFIRM_ID)));
+                    .data_mut(|data| data.remove::<String>(egui::Id::unique(DELETE_CONFIRM_ID)));
             }
         });
     }
@@ -1392,7 +1392,7 @@ fn manage_actions(app: &mut App, ctx: &egui::Context, intents: ManageIntents) {
 /// delete-confirm) — sets `id_salt` to `value` and clears its draft slot.
 fn ui_context_set(ctx: &egui::Context, id_salt: &str, value: String) {
     ctx.data_mut(|data| {
-        data.insert_temp(egui::Id::new(id_salt), value);
+        data.insert_temp(egui::Id::unique(id_salt), value);
     });
 }
 
