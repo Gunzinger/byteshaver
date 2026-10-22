@@ -1,0 +1,635 @@
+<!doctype html>
+<!-- Preview contact sheet for the byteshaver pixel-art propositions.
+     Open in a browser: docs/img/icon-proposals/shaver/index.html
+     All propositions are pixel art: 16x16 grids at 32px cells, transparent
+     background. Grids live in generate.py (01-05) and generate-more.py
+     (06-50); edit and re-run. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>byteshaver pixel-art icon propositions</title>
+<style>
+  :root { color-scheme: dark light; }
+  body { font-family: system-ui, sans-serif; margin: 2rem; background: #f1f5f9; color: #0f172a; }
+  .card { background: #fff; border-radius: 14px; padding: 1.25rem; margin-bottom: 1.5rem;
+          box-shadow: 0 1px 4px rgba(0,0,0,.12); }
+  h1 { font-size: 1.4rem; } h2 { font-size: 1.05rem; margin: 0 0 .25rem; }
+  p.note { color: #475569; margin: .2rem 0 .9rem; max-width: 70ch; }
+  .row { display: flex; align-items: flex-end; gap: 1.5rem; flex-wrap: wrap; }
+  .swatch { text-align: center; font-size: .72rem; color: #64748b; }
+  .dark, .light { padding: .6rem; border-radius: 10px; display: inline-block; }
+  .dark { background: #0f172a; } .light { background: #f8fafc; border: 1px solid #e2e8f0; }
+  img { display: block; image-rendering: pixelated; }
+  img.px16, img.px32, img.px64 { border-radius: 4px; }
+</style>
+</head>
+<body>
+<h1>byteshaver — pixel-art icon propositions</h1>
+<p>Pixel art on a 16×16 grid (32px cells, flat palette, hard edges,
+   <code>shape-rendering="crispEdges"</code>), transparent background — the tiles
+   below just prove it works on both. Symbolism stays on the name (shaver,
+   bytes) and the function (batch image conversion / shrinking). 01–05 are the
+   first shaver set; 06–50 extend it. Regenerate via
+   <code>generate.py</code> / <code>generate-more.py</code>.</p>
+ <div class="card" id="c01">
+  <h2>01 — Razor</h2>
+  <p class="note">The tool alone: a big steel blade cartridge with bold slots and a chunky striped teal handle on a diagonal.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="01-razor.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="01-razor.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="01-razor.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="01-razor.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="01-razor.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c02">
+  <h2>02 — Electric shaver</h2>
+  <p class="note">Wide perforated foil head, teal body, amber power button.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="02-electric-shaver.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="02-electric-shaver.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="02-electric-shaver.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="02-electric-shaver.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="02-electric-shaver.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c03">
+  <h2>03 — Razor shaving an image</h2>
+  <p class="note">Classic image icon with its corner cleanly shaved off; trimmed pixels drift away in image colors.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="03-razor-image.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="03-razor-image.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="03-razor-image.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="03-razor-image.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="03-razor-image.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c04">
+  <h2>04 — Electric shaver trimming an image</h2>
+  <p class="note">The foil head sits right on the image's corner mid-shave, pixels flying out from under it.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="04-electric-image.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="04-electric-image.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="04-electric-image.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="04-electric-image.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="04-electric-image.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c05">
+  <h2>05 — Torn image</h2>
+  <p class="note">A nod to the old-browser missing-image icon: torn zigzag edge, razor resting where the tear starts.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="05-torn-image.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="05-torn-image.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="05-torn-image.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="05-torn-image.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="05-torn-image.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c06">
+  <h2>06 — Razor, vertical</h2>
+  <p class="note">The hand razor head-up: bold slotted cartridge, teal grip handle with rubber stripes. Symmetric and calm; a strong taskbar silhouette.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="06-razor-vertical.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="06-razor-vertical.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="06-razor-vertical.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="06-razor-vertical.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="06-razor-vertical.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c07">
+  <h2>07 — Razor, horizontal</h2>
+  <p class="note">The same tool lying on its side — a wide, low mark that fills taskbar rectangles nicely.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="07-razor-horizontal.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="07-razor-horizontal.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="07-razor-horizontal.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="07-razor-horizontal.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="07-razor-horizontal.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c08">
+  <h2>08 — Razor, amber grip</h2>
+  <p class="note">Diagonal razor with an amber grip — the warm-accent variant of the classic diagonal.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="08-razor-amber.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="08-razor-amber.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="08-razor-amber.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="08-razor-amber.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="08-razor-amber.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c09">
+  <h2>09 — Safety razor</h2>
+  <p class="note">The classic T-shaped double-edge razor. Instantly reads 'shaver' even at 16px; monochrome-safe.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="09-safety-razor.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="09-safety-razor.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="09-safety-razor.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="09-safety-razor.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="09-safety-razor.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c10">
+  <h2>10 — Razor, fresh cut</h2>
+  <p class="note">The razor with a dashed trail and sparks — motion, something was just shaved.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="10-razor-cut-trail.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="10-razor-cut-trail.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="10-razor-cut-trail.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="10-razor-cut-trail.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="10-razor-cut-trail.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c11">
+  <h2>11 — Electric shaver, LED</h2>
+  <p class="note">Foil shaver with a green charge LED next to the amber power button — the 'device' face of the brand.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="11-electric-led.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="11-electric-led.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="11-electric-led.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="11-electric-led.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="11-electric-led.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c12">
+  <h2>12 — Mini trimmer</h2>
+  <p class="note">A slim single-purpose trimmer: narrow foil, long body. The most minimal electric silhouette.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="12-mini-trimmer.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="12-mini-trimmer.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="12-mini-trimmer.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="12-mini-trimmer.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="12-mini-trimmer.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c13">
+  <h2>13 — Electric shaver, angled</h2>
+  <p class="note">The electric shaver tilted 45° — same energy as the diagonal razor, foil head instead.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="13-electric-angled.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="13-electric-angled.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="13-electric-angled.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="13-electric-angled.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="13-electric-angled.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c14">
+  <h2>14 — Foil close-up</h2>
+  <p class="note">Just the perforated foil, magnified: an abstract steel grid with a shine. Abstract-logo territory.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="14-foil-closeup.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="14-foil-closeup.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="14-foil-closeup.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="14-foil-closeup.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="14-foil-closeup.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c15">
+  <h2>15 — Electric shaver, cabled</h2>
+  <p class="note">Shaver with its cable curling away — a bit of character for larger sizes.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="15-electric-cable.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="15-electric-cable.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="15-electric-cable.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="15-electric-cable.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="15-electric-cable.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c16">
+  <h2>16 — Razor split</h2>
+  <p class="note">An image sliced along the diagonal, the top-right half removed — the boldest 'cutting an image' statement.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="16-razor-split.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="16-razor-split.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="16-razor-split.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="16-razor-split.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="16-razor-split.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c17">
+  <h2>17 — Razor, mirrored cut</h2>
+  <p class="note">The corner shave mirrored to the top-left; same story as the flagship, opposite sweep.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="17-razor-mirror.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="17-razor-mirror.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="17-razor-mirror.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="17-razor-mirror.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="17-razor-mirror.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c18">
+  <h2>18 — Edge strip shave</h2>
+  <p class="note">A thin strip being sliced off the image's right edge — shaving as a strip of pixels, not a corner.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="18-razor-strip.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="18-razor-strip.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="18-razor-strip.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="18-razor-strip.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="18-razor-strip.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c19">
+  <h2>19 — Big razor, tiny image</h2>
+  <p class="note">A tiny photo being nibbled by an oversized razor — playful size contrast, very legible at 16px.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="19-razor-tiny-image.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="19-razor-tiny-image.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="19-razor-tiny-image.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="19-razor-tiny-image.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="19-razor-tiny-image.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c20">
+  <h2>20 — Polaroid shave</h2>
+  <p class="note">The classic thick-framed instant photo losing its corner to a blade cartridge. Nostalgic and literal.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="20-razor-polaroid.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="20-razor-polaroid.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="20-razor-polaroid.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="20-razor-polaroid.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="20-razor-polaroid.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c21">
+  <h2>21 — Shaved clippings</h2>
+  <p class="note">The corner bite plus clippings falling like hair — sky, sun and grass pixels dropping away.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="21-razor-clippings.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="21-razor-clippings.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="21-razor-clippings.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="21-razor-clippings.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="21-razor-clippings.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c22">
+  <h2>22 — Photo stack shave</h2>
+  <p class="note">Two stacked photos; the razor is shaving the top one. 'Batch' enters the story.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="22-razor-photo-stack.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="22-razor-photo-stack.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="22-razor-photo-stack.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="22-razor-photo-stack.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="22-razor-photo-stack.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c23">
+  <h2>23 — Electric trim, mirrored</h2>
+  <p class="note">The electric shaver trimming an image from the left — mirror of the flagship combination.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="23-electric-image-left.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="23-electric-image-left.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="23-electric-image-left.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="23-electric-image-left.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="23-electric-image-left.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c24">
+  <h2>24 — Electric edge strip</h2>
+  <p class="note">The foil pushes a strip of image off the right edge — conversion as a conveyor.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="24-electric-strip.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="24-electric-strip.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="24-electric-strip.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="24-electric-strip.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="24-electric-strip.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c25">
+  <h2>25 — Image haircut</h2>
+  <p class="note">The shaver passes over the image's top edge leaving a fresh hairline — the gentlest shave of the set.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="25-electric-haircut.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="25-electric-haircut.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="25-electric-haircut.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="25-electric-haircut.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="25-electric-haircut.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c26">
+  <h2>26 — Shaving bytes off</h2>
+  <p class="note">The combination that spells the name: the shaver trims the image and green 0/1 bytes fall out.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="26-electric-bytes.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="26-electric-bytes.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="26-electric-bytes.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="26-electric-bytes.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="26-electric-bytes.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c27">
+  <h2>27 — Electric stack shave</h2>
+  <p class="note">The electric shaver working through a stack of photos — batch processing, told in one frame.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="27-electric-stack.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="27-electric-stack.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="27-electric-stack.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="27-electric-stack.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="27-electric-stack.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c28">
+  <h2>28 — Trimmer, tiny image</h2>
+  <p class="note">Minimal pairing: a small trimmer and a small photo, corner to corner.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="28-trimmer-tiny-image.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="28-trimmer-tiny-image.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="28-trimmer-tiny-image.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="28-trimmer-tiny-image.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="28-trimmer-tiny-image.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c29">
+  <h2>29 — B, corner shaved</h2>
+  <p class="note">The brand initial with its corner freshly shaved off, razor still resting in the cut.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="29-B-cut.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="29-B-cut.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="29-B-cut.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="29-B-cut.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="29-B-cut.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c30">
+  <h2>30 — B with razor</h2>
+  <p class="note">A teal B leaning against a parked razor — name and tool side by side.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="30-B-razor.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="30-B-razor.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="30-B-razor.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="30-B-razor.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="30-B-razor.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c31">
+  <h2>31 — B shedding bits</h2>
+  <p class="note">The B sheds green 0/1 bits — bytes leaving the file.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="31-B-bits.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="31-B-bits.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="31-B-bits.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="31-B-bits.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="31-B-bits.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c32">
+  <h2>32 — Byte chip</h2>
+  <p class="note">A memory-chip marked B getting a trim — bytes as hardware, shave as optimization.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="32-byte-chip.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="32-byte-chip.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="32-byte-chip.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="32-byte-chip.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="32-byte-chip.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c33">
+  <h2>33 — Data stream cut</h2>
+  <p class="note">A row of 0/1 data with a razor cut through it; the tail bytes fall away.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="33-data-stream-cut.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="33-data-stream-cut.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="33-data-stream-cut.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="33-data-stream-cut.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="33-data-stream-cut.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c34">
+  <h2>34 — B badge</h2>
+  <p class="note">The initial framed as an app-icon badge — the most conventional mark of the B family.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="34-B-badge.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="34-B-badge.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="34-B-badge.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="34-B-badge.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="34-B-badge.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c35">
+  <h2>35 — B, flat top</h2>
+  <p class="note">The razor gave the B a fresh flat-top haircut. A little humor, very readable.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="35-B-flat-top.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="35-B-flat-top.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="35-B-flat-top.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="35-B-flat-top.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="35-B-flat-top.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c36">
+  <h2>36 — Image to bytes</h2>
+  <p class="note">The image sheds a vertical strip of 0/1 bytes — pixels becoming data under the blade.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="36-image-byte-strip.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="36-image-byte-strip.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="36-image-byte-strip.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="36-image-byte-strip.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="36-image-byte-strip.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c37">
+  <h2>37 — Big to small</h2>
+  <p class="note">A big washed-out frame becomes a small vivid tile — the whole product promise in three glyphs.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="37-big-to-small.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="37-big-to-small.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="37-big-to-small.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="37-big-to-small.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="37-big-to-small.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c38">
+  <h2>38 — Two formats</h2>
+  <p class="note">The same picture as two different tiles with a swap arrow between — conversion without words.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="38-two-formats.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="38-two-formats.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="38-two-formats.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="38-two-formats.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="38-two-formats.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c39">
+  <h2>39 — Pixelation</h2>
+  <p class="note">One image, split in half: fine on the left, chunky blocks on the right — compression as coarser pixels.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="39-pixelation.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="39-pixelation.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="39-pixelation.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="39-pixelation.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="39-pixelation.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c40">
+  <h2>40 — Squeeze</h2>
+  <p class="note">Chunky arrows pressing a classic image icon — compression as pressure, in image-icon colors.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="40-squeeze-image.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="40-squeeze-image.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="40-squeeze-image.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="40-squeeze-image.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="40-squeeze-image.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c41">
+  <h2>41 — Many to one</h2>
+  <p class="note">A column of photos collapses into a single tile — batch input, single output.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="41-many-to-one.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="41-many-to-one.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="41-many-to-one.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="41-many-to-one.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="41-many-to-one.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c42">
+  <h2>42 — Image, down</h2>
+  <p class="note">The image icon with a heavy down arrow — 'smaller' as a single gesture.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="42-image-down.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="42-image-down.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="42-image-down.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="42-image-down.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="42-image-down.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c43">
+  <h2>43 — Batch shave</h2>
+  <p class="note">Four images in a grid, the razor working on the last one — batch + shave in one mark.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="43-batch-shave.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="43-batch-shave.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="43-batch-shave.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="43-batch-shave.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="43-batch-shave.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c44">
+  <h2>44 — Stack slide</h2>
+  <p class="note">The blade slides out from between a stack of photos — batch as a deck of images.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="44-stack-slide.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="44-stack-slide.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="44-stack-slide.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="44-stack-slide.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="44-stack-slide.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c45">
+  <h2>45 — Image, zipped</h2>
+  <p class="note">The image icon zipped shut down the middle — compression as a zipper.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="45-image-zip.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="45-image-zip.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="45-image-zip.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="45-image-zip.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="45-image-zip.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c46">
+  <h2>46 — Clean image</h2>
+  <p class="note">The image icon with a sparkle — 'optimized', the quiet before/after.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="46-image-sparkle.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="46-image-sparkle.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="46-image-sparkle.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="46-image-sparkle.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="46-image-sparkle.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c47">
+  <h2>47 — Image, down arrow</h2>
+  <p class="note">A calm variant of the shrink story: image icon plus a soft amber down arrow.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="47-image-down-arrow.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="47-image-down-arrow.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="47-image-down-arrow.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="47-image-down-arrow.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="47-image-down-arrow.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c48">
+  <h2>48 — Shave trail</h2>
+  <p class="note">The razor with a spray of image-colored pixels behind it — pure motion, minimal shapes.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="48-shave-trail.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="48-shave-trail.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="48-shave-trail.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="48-shave-trail.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="48-shave-trail.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c49">
+  <h2>49 — B, sliced</h2>
+  <p class="note">The B cut clean through; the lower half fades to steel. Edgy, typographic.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="49-B-slice.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="49-B-slice.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="49-B-slice.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="49-B-slice.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="49-B-slice.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+<div class="card" id="c50">
+  <h2>50 — Batch loop</h2>
+  <p class="note">A dotted orbit circles the image — everything processed, nothing missed, batch as a loop.</p>
+  <div class="row">
+    <span class="swatch"><span class="dark"><img src="50-batch-loop.svg" width="256"></span><br>256px dark</span>
+    <span class="swatch"><span class="dark"><img src="50-batch-loop.svg" width="64"></span><br>64px</span>
+    <span class="swatch"><span class="light"><img src="50-batch-loop.svg" width="64"></span><br>64px light</span>
+    <span class="swatch"><span class="dark"><img src="50-batch-loop.svg" width="32"></span><br>32px</span>
+    <span class="swatch"><span class="dark"><img src="50-batch-loop.svg" width="16"></span><br>16px</span>
+  </div>
+</div>
+
+</body>
+</html>

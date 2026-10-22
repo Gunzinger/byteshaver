@@ -23,6 +23,7 @@ implement it without re-doing ecosystem research.
 | [06-animated-avif-experimental.md](06-animated-avif-experimental.md) | WS6 — animated AVIF (experimental) | WS5, WS1 | standalone after WS5 |
 | [07-headless-core-job-api.md](07-headless-core-job-api.md) | WS7 — headless job API (pre-GUI amendment) | WS0 | after WS1–WS6 or in parallel (small) |
 | [08-gui.md](08-gui.md) | WS8 — desktop GUI | WS7 | single agent |
+| [09-app-icon-and-build-metadata.md](09-app-icon-and-build-metadata.md) | release polish — app icon + build metadata (commit hash) | nothing | standalone |
 
 ## Suggested execution order
 

@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" shape-rendering="crispEdges">
+  <!-- pixel-art proposal: 16x16 grid, 32px cells, flat palette, crisp edges -->
+  <rect width="512" height="512" rx="112" fill="#0b1220"/>
+  <rect x="192" y="32" width="128" height="32" fill="#2dd4bf"/>
+  <rect x="128" y="64" width="256" height="32" fill="#2dd4bf"/>
+  <rect x="160" y="96" width="192" height="32" fill="#2dd4bf"/>
+  <rect x="192" y="128" width="128" height="32" fill="#2dd4bf"/>
+  <rect x="128" y="192" width="256" height="32" fill="#020617"/>
+  <rect x="128" y="224" width="32" height="32" fill="#020617"/>
+  <rect x="160" y="224" width="192" height="32" fill="#64748b"/>
+  <rect x="352" y="224" width="32" height="32" fill="#020617"/>
+  <rect x="128" y="256" width="32" height="32" fill="#020617"/>
+  <rect x="160" y="256" width="32" height="32" fill="#64748b"/>
+  <rect x="192" y="256" width="32" height="32" fill="#fbbf24"/>
+  <rect x="224" y="256" width="128" height="32" fill="#64748b"/>
+  <rect x="352" y="256" width="32" height="32" fill="#020617"/>
+  <rect x="128" y="288" width="256" height="32" fill="#020617"/>
+  <rect x="192" y="352" width="128" height="32" fill="#2dd4bf"/>
+  <rect x="160" y="384" width="192" height="32" fill="#2dd4bf"/>
+  <rect x="128" y="416" width="256" height="32" fill="#2dd4bf"/>
+  <rect x="192" y="448" width="128" height="32" fill="#2dd4bf"/>
+</svg>
