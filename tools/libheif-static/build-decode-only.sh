@@ -17,7 +17,13 @@
 # Usage: build-decode-only.sh <DIST> [JOBS]
 set -euo pipefail
 
-DIST="$(realpath "${1:?usage: build-decode-only.sh <DIST> [JOBS]}")"
+DIST_ARG="${1:?usage: build-decode-only.sh <DIST> [JOBS]}"
+# create the target before resolving it: GNU realpath requires every path
+# component except the last to exist, and callers pass not-yet-created
+# nested paths on a cache miss (the CI glibc step passes
+# heif-deps-glibc/dist with neither component existing)
+mkdir -p "$DIST_ARG"
+DIST="$(realpath "$DIST_ARG")"
 JOBS="${2:-$(nproc)}"
 WORK="${LIBHEIF_STATIC_WORKDIR:-$(mktemp -d)}"
 
