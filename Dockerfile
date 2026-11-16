@@ -46,7 +46,7 @@ FROM ${SOURCE} AS byteshaver-bin
 # --- runtime -----------------------------------------------------------------
 # TODO(audit M-41): digest-pin at release time (FROM alpine:3.22@sha256:...)
 # so published images cannot silently re-base
-FROM alpine:3.22
+FROM alpine:3.24
 COPY --from=byteshaver-bin /byteshaver /usr/local/bin/byteshaver
 COPY THIRD-PARTY-NOTICES.md docs/dependency-licenses.md /usr/share/doc/byteshaver/
 RUN chmod +x /usr/local/bin/byteshaver \
